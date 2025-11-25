@@ -1,0 +1,13 @@
+opencv-python-headless
+redis
+requests
+pymavlink
+pyqt5
+pyqtwebengine
+pyserial
+scipy
+folium
+keyboard
+asyncio
+websockets
+ultralytics

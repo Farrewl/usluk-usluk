@@ -14,13 +14,12 @@ class Config:
             except Exception as e:
                 print(f"PERINGATAN: Gagal membaca {TUNING_FILE}. Menggunakan nilai default. Error: {e}")
         
-        # --- MODEL & PORT (Tidak dapat di-tuning) ---
         self.MODEL_PATH = WEIGHTS_DIR + 'buoy.pt'    
-        self.CAMERA_INDEX = 1
-        self.WAYPOINT_PHOTO_DIR = "waypoint_captures" # <-- PERBAIKAN 1
+        self.CAMERA_INDEX = 0
+        self.WAYPOINT_PHOTO_DIR = "waypoint_captures"
         self.FRAME_WIDTH = 1280
         self.FRAME_HEIGHT = 720
-        self.SERIAL_PORT = 'COM9' 
+        self.SERIAL_PORT = 'COM3' 
         self.BAUD_RATE = 57600
         self.OFFBOARD_STREAM_RATE_HZ = 30
         self.RED_BALL_CLASS_ID = 1
@@ -32,7 +31,7 @@ class Config:
         self.BLUE_BOX_MODEL_PATH = WEIGHTS_DIR + 'box_biru.pt'
         self.BLUE_BOX_CLASS_ID = 0
         self.BLUE_BOX_PHOTO_LEGS = [8]
-        self.WAYPOINT_PHOTO_CAMERA_INDEX = 0
+        self.WAYPOINT_PHOTO_CAMERA_INDEX = 1
         self.RED_DOCK_MODEL_PATH = WEIGHTS_DIR + 'box_merah.pt'
         self.RED_BOX_CLASS_ID = 0
         self.RED_BOX_NAV_AFTER_WP = 8
@@ -48,9 +47,6 @@ class Config:
         self.MISSION_CHANNEL = "asv_mission"
         self.YOLO_HALF_PRECISION = False
         self.YOLO_DEVICE = 'cpu'
-        
-        # --- PARAMETER YANG DAPAT DI-TUNING ---
-        # (Menggunakan saved_params.get() untuk memuat nilai atau menggunakan default)
 
         # Navigasi Umum
         self.ACCEPTANCE_RADIUS_M = saved_params.get('ACCEPTANCE_RADIUS_M', 2.0)
@@ -66,15 +62,14 @@ class Config:
 
         # Misi Gate (Buoy)
         self.GATE_WIDTH_METERS = saved_params.get('GATE_WIDTH_METERS', 1.0)
-        self.VISION_ENABLED_LEGS = [1,3, 5] # Tidak di-tuning, dianggap konstan
+        self.VISION_ENABLED_LEGS = [1,3,5] # Tidak di-tuning, dianggap konstan
         self.MIN_BUOY_AREA_PX = saved_params.get('MIN_BUOY_AREA_PX', 80)
         self.GATE_AREA_SIMILARITY_RATIO = saved_params.get('GATE_AREA_SIMILARITY_RATIO', 0.5)
 
-        # --- PERBAIKAN 2: TAMBAHKAN BLOK INI ---
         # Misi Foto Waypoint
         self.STOP_AND_PHOTO_AT_WP = saved_params.get('STOP_AND_PHOTO_AT_WP', []) # Default: list kosong
         self.WAYPOINT_PHOTO_STOP_DURATION_S = saved_params.get('WAYPOINT_PHOTO_STOP_DURATION_S', 3.0)
-        # --- AKHIR PERBAIKAN 2 ---
+        self.DETECTION_CONFIRM_DURATION_S = saved_params.get('DETECTION_CONFIRM_DURATION_S', 0.5)
 
         # Misi Box Hijau
         self.SEARCH_THRUST = saved_params.get('SEARCH_THRUST', 0.4)

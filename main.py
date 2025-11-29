@@ -6,8 +6,8 @@ from PyQt5.QtCore import QThread, pyqtSignal, QUrl, QTimer, Qt
 from PyQt5.QtGui import QImage, QPixmap
 
 # uncomment aja salah satu
-#from modules.simulator_backend import NavigatorThread
-from modules.navigator_backend import NavigatorThread
+from modules.simulator_backend import NavigatorThread
+#from modules.navigator_backend import NavigatorThread
 
 CFG_PATH = "modules/config/"
 WAYPOINT_FILE = CFG_PATH + "plan.csv"

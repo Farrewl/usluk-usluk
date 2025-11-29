@@ -11,3 +11,5 @@ keyboard
 asyncio
 websockets
 ultralytics
+skfuzzy
+

@@ -1,9 +1,11 @@
-import sys, os, math, time, folium, csv, cv2
+import sys, os, math, time, folium, csv, cv2, json
 import numpy as np
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDial, QFormLayout, QTableWidget, QTableWidgetItem, QDoubleSpinBox, QSpinBox, QScrollArea, QSplitter, QFrame, QPushButton)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDial, QFormLayout, QTableWidget, QTableWidgetItem, QDoubleSpinBox, QSpinBox, QScrollArea, QSplitter, QFrame, QPushButton, QLineEdit)
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QThread, pyqtSignal, QUrl, QTimer, Qt
 from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtWebChannel import QWebChannel
+from PyQt5.QtCore import pyqtSlot, QObject
 
 # uncomment aja salah satu
 from modules.simulator_backend import NavigatorThread
@@ -25,16 +27,25 @@ try:
 except Exception as e:
     print(f"Warning: Could not load {WAYPOINT_FILE}. {e}")
 
+class MapBridge(QObject):
+    wpMoved = pyqtSignal(int, float, float)
+    @pyqtSlot(int, float, float)
+    def update_waypoint_pos(self, index, lat, lon):
+        print(f"[MapBridge] Waypoint #{index+1} moved to: {lat}, {lon}")
+        self.wpMoved.emit(index, lat, lon)
+
 class MainWindow(QMainWindow):
-    
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("ASV Live Dashboard (PyQt5 Version)")
         self.setGeometry(100, 100, 1600, 900)
         self.map_js_ready = False
+        self.map_bridge = MapBridge()
+        self.map_bridge.wpMoved.connect(self.on_waypoint_dragged)
+        self.map_channel = QWebChannel()
+        self.map_channel.registerObject("bridge", self.map_bridge)
         self.current_lat = 0.0
         self.current_lon = 0.0
-        self.recorded_waypoints = list(WAYPOINTS) 
         self.nav_thread = NavigatorThread(WAYPOINTS, self) 
         map_frame = self._create_map_frame()
         video_widget = self._create_video_widget()
@@ -59,7 +70,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(main_splitter)
         self.nav_thread.newData.connect(self.update_ui)
         self.nav_thread.start()
-        
+
         print("Window created. Loading map widget in 0.5 seconds...")
         QTimer.singleShot(500, self.initialize_map_widget)
 
@@ -83,10 +94,9 @@ class MainWindow(QMainWindow):
                 self.map_view.deleteLater()
             
             self.map_loading_label.show()
-            
             self.map_view = QWebEngineView()
+            self.map_view.page().setWebChannel(self.map_channel)
             self.map_frame.layout().addWidget(self.map_view)
-            
             self._generate_folium_map()
             
             abs_path = os.path.abspath(TMP_MAP_FILE)
@@ -116,12 +126,8 @@ class MainWindow(QMainWindow):
             
         m = folium.Map(location=[avg_lat, avg_lon], zoom_start=18, tiles="CartoDB positron")
         
-        for i, wp in enumerate(current_wps, start=1):
-            folium.Marker(
-                location=[wp['lat'], wp['lon']], 
-                popup=f"Waypoint #{i}\n({wp['lat']:.6f}, {wp['lon']:.6f})", 
-                icon=folium.Icon(color='blue', icon='flag')
-            ).add_to(m)
+        # for i, wp in enumerate(current_wps, start=1):
+            # folium.Marker(location=[wp['lat'], wp['lon']], popup=f"Waypoint #{i}\n({wp['lat']:.6f}, {wp['lon']:.6f})", icon=folium.Icon(color='blue', icon='flag')).add_to(m)
             
         if len(current_wps) > 1:
             for i in range(1, len(current_wps)): 
@@ -133,22 +139,9 @@ class MainWindow(QMainWindow):
                 is_vision_leg = i in VISION_ENABLED_LEGS 
                 
                 if is_vision_leg:
-                    folium.PolyLine(
-                        locations=locs, 
-                        color='green', 
-                        weight=4, 
-                        opacity=0.8,
-                        popup=f"Leg (Menuju WP #{i}) (VISION ON)"
-                    ).add_to(m)
+                    folium.PolyLine(locations=locs, color='green', weight=4, opacity=0.8, popup=f"Leg (Menuju WP #{i}) (VISION ON)").add_to(m)
                 else:
-                    folium.PolyLine(
-                        locations=locs, 
-                        color='gray', 
-                        weight=3, 
-                        opacity=0.8, 
-                        dash_array='5, 10',
-                        popup=f"Leg (Menuju WP #{i}) (Transit)"
-                    ).add_to(m)
+                    folium.PolyLine(locations=locs, color='gray', weight=3, opacity=0.8, dash_array='5, 10', popup=f"Leg (Menuju WP #{i}) (TRANSIT)").add_to(m)
             
         m.save(TMP_MAP_FILE)
         print(f"Generated {TMP_MAP_FILE} with vision legs")
@@ -160,9 +153,68 @@ class MainWindow(QMainWindow):
         if self.nav_thread.navigator.waypoints:
             start_lat = self.nav_thread.navigator.waypoints[0]['lat']
             start_lon = self.nav_thread.navigator.waypoints[0]['lon']
-            
+        
+        current_wps_json = json.dumps(self.nav_thread.navigator.waypoints)
+        
         js_code = f"""
         (function() {{
+            // --- 1. CARI INSTANCE PETA LEAFLET ---
+            // Folium mengacak nama variabel map (misal: map_123abc), jadi kita cari manual di window.
+            var map = null;
+            for (var key in window) {{
+                if (window[key] instanceof L.Map) {{
+                    map = window[key];
+                    break;
+                }}
+            }}
+
+            if (!map) {{
+                console.error("Leaflet Map instance not found!");
+                return;
+            }}
+
+            // --- 2. SETUP BRIDGE ---
+            if (typeof QWebChannel !== "undefined") {{
+                new QWebChannel(qt.webChannelTransport, function(channel) {{
+                    window.pyBridge = channel.objects.bridge;
+                    console.log("Bridge connected!");
+                    initDraggableMarkers({current_wps_json});
+                }});
+            }} else {{
+                console.error("QWebChannel not loaded!");
+            }}
+
+            // --- 3. FUNGSI MARKER DRAGGABLE ---
+            window.markers = [];
+
+            function initDraggableMarkers(waypoints) {{
+                // Hapus marker lama jika ada untuk mencegah duplikasi
+                if (window.markers) {{
+                    window.markers.forEach(m => map.removeLayer(m));
+                }}
+                window.markers = [];
+
+                waypoints.forEach(function(wp, index) {{
+                    // Membuat Marker yang DRAGGABLE
+                    var marker = L.marker([wp.lat, wp.lon], {{
+                        draggable: true,
+                        title: "WP #" + (index + 1)
+                    }}).addTo(map); // Pastikan ditambahkan ke 'map' yang sudah ditemukan
+
+                    marker.bindPopup("<b>Waypoint #" + (index + 1) + "</b><br>Drag to move");
+
+                    // Event saat selesai geser -> Kirim ke Python
+                    marker.on('dragend', function(e) {{
+                        var newPos = e.target.getLatLng();
+                        console.log("WP Dragged:", index, newPos.lat, newPos.lng);
+                        window.pyBridge.update_waypoint_pos(index, newPos.lat, newPos.lng);
+                    }});
+
+                    window.markers.push(marker);
+                }});
+            }}
+
+            // --- 4. ICON KAPAL (VEHICLE) ---
             var fa_css = document.createElement('link');
             fa_css.rel = 'stylesheet';
             fa_css.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css';
@@ -182,30 +234,44 @@ class MainWindow(QMainWindow):
             }}).addTo(map);
 
             window.updateVehiclePosition = function(lat, lon, yaw_deg) {{
-                var newLatLng = L.latLng(lat, lon);
-                window.vehicleMarker.setLatLng(newLatLng);
-                window.vehicleMarker.setRotationAngle(yaw_deg);
+                if(window.vehicleMarker){{
+                    var newLatLng = L.latLng(lat, lon);
+                    window.vehicleMarker.setLatLng(newLatLng);
+                    var iconDiv = window.vehicleMarker.getElement();
+                    if(iconDiv) {{
+                        var iTag = iconDiv.querySelector('i');
+                        if(iTag) {{
+                            iTag.style.transform = 'rotate(' + yaw_deg + 'deg)';
+                        }}
+                    }}
+                }}
             }};
 
-            window.addWaypointMarker = function(lat, lon, text) {{
-                L.marker([lat, lon], {{
-                    icon: L.icon({{
-                        iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
-                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
-                        iconAnchor: [12, 41],
-                        popupAnchor: [1, -34]
-                    }})
-                }}).addTo(map).bindPopup(text);
-            }};
-            
         }})();
         """
+
+        qwebchannel_js = "qrc:///qtwebchannel/qwebchannel.js"
+
+        loader_js = f"""
+        var script = document.createElement('script');
+        script.src = "{qwebchannel_js}";
+        script.onload = function() {{
+            {js_code}
+        }};
+        document.head.appendChild(script);
+        """
+        
         if hasattr(self, 'map_view'):
-            self.map_view.page().runJavaScript(js_code)
+            self.map_view.page().runJavaScript(loader_js)
         
         self.map_js_ready = True
-# (Class Config Anda tidak berubah, ini sudah benar)
         print("Map JavaScript is ready.")
+
+    def on_waypoint_dragged(self, index, new_lat, new_lon):
+        if index < len(self.nav_thread.navigator.waypoints):
+            self.nav_thread.navigator.waypoints[index]['lat'] = new_lat
+            self.nav_thread.navigator.waypoints[index]['lon'] = new_lon
+            print(f"[GUI] Updated WP #{index+1} in memory.")
 
     def _create_video_widget(self):
         self.video_label = QLabel("Waiting for video feed...")
@@ -241,253 +307,105 @@ class MainWindow(QMainWindow):
         self.monitor_table.horizontalHeader().setStretchLastSection(True)
         return self.monitor_table
 
-    # =======================================================================
-    # === FUNGSI DI BAWAH INI TELAH DIGANTI DENGAN VERSI LENGKAP ===
-    # =======================================================================
+    def _add_tuning_list(self, label_text, config_key):
+        widget = QLineEdit()
+        widget.setPlaceholderText("Contoh: 1, 3, 5")
+        current_list = getattr(self.nav_thread.config, config_key, [])
+        if isinstance(current_list, list): widget.setText(", ".join(map(str, current_list)))
+
+        def save_list():
+            text = widget.text()
+            try:
+                new_list = [int(x.strip()) for x in text.split(',') if x.strip().isdigit()]
+                print(f"[GUI] Updating list {config_key} -> {new_list}")
+                self.nav_thread.update_config_param(config_key, new_list)
+                widget.setText(", ".join(map(str, new_list)))
+            except Exception as e:
+                print(f"Error parsing list: {e}")
+
+        widget.editingFinished.connect(save_list)
+        self.tuning_layout.addRow(label_text, widget)
+        return widget
+
+    def _add_tuning_row(self, label_text, config_key, min_val, max_val, step, is_int=False):
+        widget = QSpinBox() if is_int else QDoubleSpinBox()
+        widget.setRange(min_val, max_val)
+        widget.setSingleStep(step)
+        current_val = getattr(self.nav_thread.config, config_key, 0)
+        widget.setValue(current_val)
+        widget.valueChanged.connect(lambda v, k=config_key: self.nav_thread.update_config_param(k, v))
+        self.tuning_layout.addRow(label_text, widget)
+        return widget
+
+    def _add_header(self, text):
+        label = QLabel(text)
+        label.setStyleSheet("font-size: 14px; font-weight: bold; margin-top: 10px;")
+        self.tuning_layout.addRow(label)
+
     def _create_tuning_widget(self):
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         widget = QWidget()
+
         self.tuning_layout = QFormLayout(widget)
         self.tuning_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-    
-        # Helper untuk membuat header
-        def add_header(text):
-            label = QLabel(text)
-            label.setStyleSheet("font-size: 14px; font-weight: bold; margin-top: 10px;")
-            self.tuning_layout.addRow(label)
-    
-        # === NAVIGASI UMUM ===
-        add_header("Navigasi Umum & GPS")
-        self.tune_acceptance_radius = QDoubleSpinBox()
-        self.tune_acceptance_radius.setRange(0.5, 10.0); self.tune_acceptance_radius.setSingleStep(0.1)
-        self.tune_acceptance_radius.setValue(self.nav_thread.config.ACCEPTANCE_RADIUS_M)
-        self.tuning_layout.addRow("ACCEPTANCE_RADIUS_M:", self.tune_acceptance_radius)
-    
-        self.tune_thrust = QDoubleSpinBox()
-        self.tune_thrust.setRange(0, 1.0); self.tune_thrust.setSingleStep(0.05)
-        self.tune_thrust.setValue(self.nav_thread.config.THRUST_VALUE)
-        self.tuning_layout.addRow("THRUST_VALUE (Transit):", self.tune_thrust)
-    
-        self.tune_transition_duration = QDoubleSpinBox()
-        self.tune_transition_duration.setRange(0, 5.0); self.tune_transition_duration.setSingleStep(0.1)
-        self.tune_transition_duration.setValue(self.nav_thread.config.TRANSITION_DURATION_S)
-        self.tuning_layout.addRow("TRANSITION_DURATION_S:", self.tune_transition_duration)
-    
-        self.tune_geofence_width = QDoubleSpinBox()
-        self.tune_geofence_width.setRange(0.5, 10.0); self.tune_geofence_width.setSingleStep(0.1)
-        self.tune_geofence_width.setValue(self.nav_thread.config.GEOFENCE_WIDTH_METERS)
-        self.tuning_layout.addRow("GEOFENCE_WIDTH_METERS:", self.tune_geofence_width)
-    
-        # === PARAMETER VISION BERSAMA ===
-        add_header("Parameter Vision (Global)")
-        self.tune_focalpx = QSpinBox() # Focal length biasanya integer
-        self.tune_focalpx.setRange(100, 2000); self.tune_focalpx.setSingleStep(10)
-        self.tune_focalpx.setValue(self.nav_thread.config.FOCAL_LENGTH_PX)
-        self.tuning_layout.addRow("FOCAL_LENGTH_PX:", self.tune_focalpx)
-    
-        self.tune_p_gain = QDoubleSpinBox()
-        self.tune_p_gain.setRange(0.0, 10.0); self.tune_p_gain.setSingleStep(0.1)
-        self.tune_p_gain.setValue(self.nav_thread.config.VISION_P_GAIN)
-        self.tuning_layout.addRow("VISION_P_GAIN:", self.tune_p_gain)
-    
-        self.tune_smoothing_alpha = QDoubleSpinBox()
-        self.tune_smoothing_alpha.setRange(0.0, 1.0); self.tune_smoothing_alpha.setSingleStep(0.05)
-        self.tune_smoothing_alpha.setValue(self.nav_thread.config.VISION_SMOOTHING_ALPHA)
-        self.tuning_layout.addRow("VISION_SMOOTHING_ALPHA:", self.tune_smoothing_alpha)
-    
-        self.tune_roi_cutoff = QDoubleSpinBox()
-        self.tune_roi_cutoff.setRange(0.0, 1.0); self.tune_roi_cutoff.setSingleStep(0.05)
-        self.tune_roi_cutoff.setValue(self.nav_thread.config.ROI_TOP_CUTOFF_PERCENT)
-        self.tuning_layout.addRow("ROI_TOP_CUTOFF_PERCENT:", self.tune_roi_cutoff)
-    
-        # === MISI GATE (BUOY) ===
-        add_header("Misi Gate (Buoy Merah/Hijau)")
-        self.tune_gate_width = QDoubleSpinBox()
-        self.tune_gate_width.setRange(0.5, 5.0); self.tune_gate_width.setSingleStep(0.1)
-        self.tune_gate_width.setValue(self.nav_thread.config.GATE_WIDTH_METERS)
-        self.tuning_layout.addRow("GATE_WIDTH_METERS:", self.tune_gate_width)
-    
-        self.tune_min_buoy_area = QSpinBox()
-        self.tune_min_buoy_area.setRange(0, 5000); self.tune_min_buoy_area.setSingleStep(10)
-        self.tune_min_buoy_area.setValue(self.nav_thread.config.MIN_BUOY_AREA_PX)
-        self.tuning_layout.addRow("MIN_BUOY_AREA_PX:", self.tune_min_buoy_area)
-    
-        self.tune_gate_area_ratio = QDoubleSpinBox()
-        self.tune_gate_area_ratio.setRange(0.0, 1.0); self.tune_gate_area_ratio.setSingleStep(0.05)
-        self.tune_gate_area_ratio.setValue(self.nav_thread.config.GATE_AREA_SIMILARITY_RATIO)
-        self.tuning_layout.addRow("GATE_AREA_SIMILARITY_RATIO:", self.tune_gate_area_ratio)
-    
-        # === MISI BOX HIJAU ===
-        add_header("Misi Foto Box Hijau")
-        self.tune_search_thrust = QDoubleSpinBox()
-        self.tune_search_thrust.setRange(0, 1.0); self.tune_search_thrust.setSingleStep(0.05)
-        self.tune_search_thrust.setValue(self.nav_thread.config.SEARCH_THRUST)
-        self.tuning_layout.addRow("SEARCH_THRUST (Hijau):", self.tune_search_thrust)
-    
-        self.tune_align_thrust = QDoubleSpinBox()
-        self.tune_align_thrust.setRange(0, 1.0); self.tune_align_thrust.setSingleStep(0.05)
-        self.tune_align_thrust.setValue(self.nav_thread.config.ALIGN_THRUST)
-        self.tuning_layout.addRow("ALIGN_THRUST (Hijau):", self.tune_align_thrust)
-        
-        self.tune_retreat_thrust = QDoubleSpinBox()
-        self.tune_retreat_thrust.setRange(-1.0, 0.0); self.tune_retreat_thrust.setSingleStep(0.05)
-        self.tune_retreat_thrust.setValue(self.nav_thread.config.RETREAT_THRUST)
-        self.tuning_layout.addRow("RETREAT_THRUST (Hijau):", self.tune_retreat_thrust)
-    
-        self.tune_retreat_dur = QDoubleSpinBox()
-        self.tune_retreat_dur.setRange(0.0, 10.0); self.tune_retreat_dur.setSingleStep(0.1)
-        self.tune_retreat_dur.setValue(self.nav_thread.config.RETREAT_DURATION_S)
-        self.tuning_layout.addRow("RETREAT_DURATION_S (Hijau):", self.tune_retreat_dur)
-    
-        self.tune_box_width = QDoubleSpinBox()
-        self.tune_box_width.setRange(0.1, 2.0); self.tune_box_width.setSingleStep(0.05)
-        self.tune_box_width.setValue(self.nav_thread.config.BOX_WIDTH_METERS)
-        self.tuning_layout.addRow("BOX_WIDTH_METERS (Hijau):", self.tune_box_width)
-    
-        self.tune_box_approach_dist = QDoubleSpinBox()
-        self.tune_box_approach_dist.setRange(0.5, 5.0); self.tune_box_approach_dist.setSingleStep(0.1)
-        self.tune_box_approach_dist.setValue(self.nav_thread.config.BOX_APPROACH_DISTANCE_M)
-        self.tuning_layout.addRow("BOX_APPROACH_DISTANCE_M (Hijau):", self.tune_box_approach_dist)
-        
-        self.tune_yaw_search_box = QSpinBox()
-        self.tune_yaw_search_box.setRange(-180, 180); self.tune_yaw_search_box.setSingleStep(5)
-        self.tune_yaw_search_box.setValue(self.nav_thread.config.YAW_SEARCH_BOX)
-        self.tuning_layout.addRow("YAW_SEARCH_BOX (Hijau):", self.tune_yaw_search_box)
-        
-        self.tune_box_lat_thrust = QDoubleSpinBox()
-        self.tune_box_lat_thrust.setRange(-1.0, 1.0); self.tune_box_lat_thrust.setSingleStep(0.05)
-        self.tune_box_lat_thrust.setValue(self.nav_thread.config.BOX_SEARCH_LATERAL_THRUST)
-        self.tuning_layout.addRow("BOX_SEARCH_LATERAL_THRUST:", self.tune_box_lat_thrust)
-    
-        # === MISI BOX BIRU ===
-        add_header("Misi Foto Box Biru")
-        self.tune_blue_box_search_thrust = QDoubleSpinBox()
-        self.tune_blue_box_search_thrust.setRange(0, 1.0); self.tune_blue_box_search_thrust.setSingleStep(0.05)
-        self.tune_blue_box_search_thrust.setValue(self.nav_thread.config.BLUE_BOX_SEARCH_THRUST)
-        self.tuning_layout.addRow("SEARCH_THRUST (Biru):", self.tune_blue_box_search_thrust)
-    
-        self.tune_blue_box_align_thrust = QDoubleSpinBox()
-        self.tune_blue_box_align_thrust.setRange(0, 1.0); self.tune_blue_box_align_thrust.setSingleStep(0.05)
-        self.tune_blue_box_align_thrust.setValue(self.nav_thread.config.BLUE_BOX_ALIGN_THRUST)
-        self.tuning_layout.addRow("ALIGN_THRUST (Biru):", self.tune_blue_box_align_thrust)
-    
-        self.tune_blue_box_width = QDoubleSpinBox()
-        self.tune_blue_box_width.setRange(0.1, 2.0); self.tune_blue_box_width.setSingleStep(0.05)
-        self.tune_blue_box_width.setValue(self.nav_thread.config.BLUE_BOX_WIDTH_METERS)
-        self.tuning_layout.addRow("BOX_WIDTH_METERS (Biru):", self.tune_blue_box_width)
-    
-        self.tune_blue_box_approach_dist = QDoubleSpinBox()
-        self.tune_blue_box_approach_dist.setRange(0.5, 5.0); self.tune_blue_box_approach_dist.setSingleStep(0.1)
-        self.tune_blue_box_approach_dist.setValue(self.nav_thread.config.BLUE_BOX_APPROACH_DISTANCE_M)
-        self.tuning_layout.addRow("APPROACH_DISTANCE_M (Biru):", self.tune_blue_box_approach_dist)
-    
-        self.tune_blue_box_lat_offset = QDoubleSpinBox()
-        self.tune_blue_box_lat_offset.setRange(-5.0, 5.0); self.tune_blue_box_lat_offset.setSingleStep(0.1)
-        self.tune_blue_box_lat_offset.setValue(self.nav_thread.config.BLUE_BOX_LATERAL_OFFSET_M)
-        self.tuning_layout.addRow("LATERAL_OFFSET_M (Biru):", self.tune_blue_box_lat_offset)
-        
-        self.tune_blue_box_yaw_search = QSpinBox()
-        self.tune_blue_box_yaw_search.setRange(-180, 180); self.tune_blue_box_yaw_search.setSingleStep(5)
-        self.tune_blue_box_yaw_search.setValue(self.nav_thread.config.BLUE_BOX_YAW_SEARCH)
-        self.tuning_layout.addRow("YAW_SEARCH (Biru):", self.tune_blue_box_yaw_search)
-    
-        # === MISI DOCKING (BOX MERAH) ===
-        add_header("Misi Docking (Box Merah)")
-        self.tune_dock_align_thrust = QDoubleSpinBox()
-        self.tune_dock_align_thrust.setRange(0, 1.0); self.tune_dock_align_thrust.setSingleStep(0.05)
-        self.tune_dock_align_thrust.setValue(self.nav_thread.config.DOCK_ALIGN_THRUST)
-        self.tuning_layout.addRow("DOCK_ALIGN_THRUST:", self.tune_dock_align_thrust)
-        
-        self.tune_dock_hold_dur = QDoubleSpinBox()
-        self.tune_dock_hold_dur.setRange(0.0, 20.0); self.tune_dock_hold_dur.setSingleStep(0.5)
-        self.tune_dock_hold_dur.setValue(self.nav_thread.config.DOCK_HOLD_DURATION_S)
-        self.tuning_layout.addRow("DOCK_HOLD_DURATION_S:", self.tune_dock_hold_dur)
-    
-        self.tune_red_box_width = QDoubleSpinBox()
-        self.tune_red_box_width.setRange(0.1, 2.0); self.tune_red_box_width.setSingleStep(0.05)
-        self.tune_red_box_width.setValue(self.nav_thread.config.RED_BOX_WIDTH_METERS)
-        self.tuning_layout.addRow("BOX_WIDTH_METERS (Merah):", self.tune_red_box_width)
-    
-        self.tune_red_box_dock_dist = QDoubleSpinBox()
-        self.tune_red_box_dock_dist.setRange(0.1, 5.0); self.tune_red_box_dock_dist.setSingleStep(0.1)
-        self.tune_red_box_dock_dist.setValue(self.nav_thread.config.RED_BOX_DOCK_DISTANCE_M)
-        self.tuning_layout.addRow("DOCK_DISTANCE_M (Merah):", self.tune_red_box_dock_dist)
-    
-        self.tune_yaw_search_dock = QSpinBox()
-        self.tune_yaw_search_dock.setRange(-180, 180); self.tune_yaw_search_dock.setSingleStep(5)
-        self.tune_yaw_search_dock.setValue(self.nav_thread.config.YAW_SEARCH_DOCK)
-        self.tuning_layout.addRow("YAW_SEARCH_DOCK (Merah):", self.tune_yaw_search_dock)
-    
-        # === PARAMETER YOLO & VIDEO ===
-        add_header("YOLO, Video, & Sesi")
-        self.tune_yolo_frame_skip = QSpinBox()
-        self.tune_yolo_frame_skip.setRange(0, 10); self.tune_yolo_frame_skip.setSingleStep(1)
-        self.tune_yolo_frame_skip.setValue(self.nav_thread.config.YOLO_FRAME_SKIP)
-        self.tuning_layout.addRow("YOLO_FRAME_SKIP:", self.tune_yolo_frame_skip)
-    
-        self.tune_yolo_inf_size = QSpinBox()
-        self.tune_yolo_inf_size.setRange(320, 1280); self.tune_yolo_inf_size.setSingleStep(32)
-        self.tune_yolo_inf_size.setValue(self.nav_thread.config.YOLO_INFERENCE_SIZE)
-        self.tuning_layout.addRow("YOLO_INFERENCE_SIZE:", self.tune_yolo_inf_size)
-    
-        self.tune_session_video_fps = QDoubleSpinBox()
-        self.tune_session_video_fps.setRange(1.0, 30.0); self.tune_session_video_fps.setSingleStep(1.0)
-        self.tune_session_video_fps.setValue(self.nav_thread.config.SESSION_VIDEO_FPS)
-        self.tuning_layout.addRow("SESSION_VIDEO_FPS:", self.tune_session_video_fps)
-    
-        
-        # === KONEKSI SINYAL (WAJIB DIPERBARUI SEMUA) ===
+
+        self._add_header("Navigasi Umum & GPS")
+        self.tune_acceptance_radius = self._add_tuning_row("ACCEPTANCE_RADIUS_M:", "ACCEPTANCE_RADIUS_M", 0.5, 10.0, 0.1)
+        self.tune_thrust = self._add_tuning_row("THRUST_VALUE (Transit):", "THRUST_VALUE", 0.0, 1.0, 0.05)
+        self.tune_transition_duration = self._add_tuning_row("TRANSITION_DURATION_S:", "TRANSITION_DURATION_S", 0.0, 5.0, 0.1)
+        self.tune_geofence_width = self._add_tuning_row("GEOFENCE_WIDTH_METERS:", "GEOFENCE_WIDTH_METERS", 0.5, 10.0, 0.1)
+
+        self._add_header("Parameter Vision (Global)")
+        self.tune_focalpx = self._add_tuning_row("FOCAL_LENGTH_PX:", "FOCAL_LENGTH_PX", 100, 2000, 10, is_int=True)
+        self.tune_p_gain = self._add_tuning_row("VISION_P_GAIN:", "VISION_P_GAIN", 0.0, 10.0, 0.1)
+        self.tune_smoothing_alpha = self._add_tuning_row("VISION_SMOOTHING_ALPHA:", "VISION_SMOOTHING_ALPHA", 0.0, 1.0, 0.05)
+        self.tune_roi_cutoff = self._add_tuning_row("ROI_TOP_CUTOFF_PERCENT:", "ROI_TOP_CUTOFF_PERCENT", 0.0, 1.0, 0.05)
+
+        self._add_header("Misi Gate (Buoy)")
+        self.tune_gate_width = self._add_tuning_row("GATE_WIDTH_METERS:", "GATE_WIDTH_METERS", 0.5, 5.0, 0.1)
+        self.tune_min_buoy_area = self._add_tuning_row("MIN_BUOY_AREA_PX:", "MIN_BUOY_AREA_PX", 0, 5000, 10, is_int=True)
+        self.tune_gate_area_ratio = self._add_tuning_row("GATE_AREA_SIMILARITY_RATIO:", "GATE_AREA_SIMILARITY_RATIO", 0.0, 1.0, 0.05)
+
+        self._add_header("Misi Foto Box Hijau")
+        self.tune_search_thrust = self._add_tuning_row("SEARCH_THRUST:", "SEARCH_THRUST", 0.0, 1.0, 0.05)
+        self.tune_align_thrust = self._add_tuning_row("ALIGN_THRUST:", "ALIGN_THRUST", 0.0, 1.0, 0.05)
+        self.tune_retreat_thrust = self._add_tuning_row("RETREAT_THRUST:", "RETREAT_THRUST", -1.0, 0.0, 0.05)
+        self.tune_retreat_dur = self._add_tuning_row("RETREAT_DURATION_S:", "RETREAT_DURATION_S", 0.0, 10.0, 0.1)
+        self.tune_box_width = self._add_tuning_row("BOX_WIDTH_METERS:", "BOX_WIDTH_METERS", 0.1, 2.0, 0.05)
+        self.tune_box_approach_dist = self._add_tuning_row("APPROACH_DISTANCE_M:", "BOX_APPROACH_DISTANCE_M", 0.5, 5.0, 0.1)
+        self.tune_yaw_search_box = self._add_tuning_row("YAW_SEARCH_BOX:", "YAW_SEARCH_BOX", -180, 180, 5, is_int=True)
+        self.tune_box_lat_thrust = self._add_tuning_row("LATERAL_THRUST:", "BOX_SEARCH_LATERAL_THRUST", -1.0, 1.0, 0.05)
+
+        self._add_header("Misi Foto Box Biru")
+        self.tune_blue_box_search_thrust = self._add_tuning_row("SEARCH_THRUST:", "BLUE_BOX_SEARCH_THRUST", 0.0, 1.0, 0.05)
+        self.tune_blue_box_align_thrust = self._add_tuning_row("ALIGN_THRUST:", "BLUE_BOX_ALIGN_THRUST", 0.0, 1.0, 0.05)
+        self.tune_blue_box_width = self._add_tuning_row("BOX_WIDTH_METERS:", "BLUE_BOX_WIDTH_METERS", 0.1, 2.0, 0.05)
+        self.tune_blue_box_approach_dist = self._add_tuning_row("APPROACH_DISTANCE_M:", "BLUE_BOX_APPROACH_DISTANCE_M", 0.5, 5.0, 0.1)
+        self.tune_blue_box_lat_offset = self._add_tuning_row("LATERAL_OFFSET_M:", "BLUE_BOX_LATERAL_OFFSET_M", -5.0, 5.0, 0.1)
+        self.tune_blue_box_yaw_search = self._add_tuning_row("YAW_SEARCH:", "BLUE_BOX_YAW_SEARCH", -180, 180, 5, is_int=True)
+
+        self._add_header("Misi Docking (Box Merah)")
+        self.tune_dock_align_thrust = self._add_tuning_row("ALIGN_THRUST:", "DOCK_ALIGN_THRUST", 0.0, 1.0, 0.05)
+        self.tune_dock_hold_dur = self._add_tuning_row("HOLD_DURATION_S:", "DOCK_HOLD_DURATION_S", 0.0, 20.0, 0.5)
+        self.tune_red_box_width = self._add_tuning_row("BOX_WIDTH_METERS:", "RED_BOX_WIDTH_METERS", 0.1, 2.0, 0.05)
+        self.tune_red_box_dock_dist = self._add_tuning_row("DOCK_DISTANCE_M:", "RED_BOX_DOCK_DISTANCE_M", 0.1, 5.0, 0.1)
+        self.tune_yaw_search_dock = self._add_tuning_row("YAW_SEARCH:", "YAW_SEARCH_DOCK", -180, 180, 5, is_int=True)
+
+        self._add_header("YOLO & System")
+        self.tune_yolo_frame_skip = self._add_tuning_row("YOLO_FRAME_SKIP:", "YOLO_FRAME_SKIP", 0, 10, 1, is_int=True)
+        self.tune_yolo_inf_size = self._add_tuning_row("YOLO_INFERENCE_SIZE:", "YOLO_INFERENCE_SIZE", 320, 1280, 32, is_int=True)
+        self.tune_session_video_fps = self._add_tuning_row("SESSION_VIDEO_FPS:", "SESSION_VIDEO_FPS", 1.0, 30.0, 1.0)
+
+        self._add_header("Trigger Misi (Waypoint Index)")
+        self._add_tuning_list("VISION_ENABLED_LEGS (Gate):", "VISION_ENABLED_LEGS")
+        self._add_tuning_list("PHOTO_BOX_LEGS (Hijau):", "PHOTO_BOX_LEGS")
+        self._add_tuning_list("BLUE_BOX_PHOTO_LEGS (Biru):", "BLUE_BOX_PHOTO_LEGS")
+        self._add_tuning_list("STOP_AND_PHOTO_AT_WP:", "STOP_AND_PHOTO_AT_WP")
+
         scroll_area.setWidget(widget)
-        
-        # Navigasi Umum
-        self.tune_acceptance_radius.valueChanged.connect(self.nav_thread.update_acceptance_radius)
-        self.tune_thrust.valueChanged.connect(self.nav_thread.update_thrust)
-        self.tune_transition_duration.valueChanged.connect(self.nav_thread.update_transition_duration)
-        self.tune_geofence_width.valueChanged.connect(self.nav_thread.update_geofence_width)
-    
-        # Vision Global
-        self.tune_focalpx.valueChanged.connect(self.nav_thread.update_focalpx)
-        self.tune_p_gain.valueChanged.connect(self.nav_thread.update_p_gain)
-        self.tune_smoothing_alpha.valueChanged.connect(self.nav_thread.update_smoothing_alpha)
-        self.tune_roi_cutoff.valueChanged.connect(self.nav_thread.update_roi_cutoff)
-    
-        # Misi Gate (Buoy)
-        self.tune_gate_width.valueChanged.connect(self.nav_thread.update_gate_width)
-        self.tune_min_buoy_area.valueChanged.connect(self.nav_thread.update_min_buoy_area)
-        self.tune_gate_area_ratio.valueChanged.connect(self.nav_thread.update_gate_area_ratio)
-    
-        # Misi Box Hijau
-        self.tune_search_thrust.valueChanged.connect(self.nav_thread.update_search_thrust)
-        self.tune_align_thrust.valueChanged.connect(self.nav_thread.update_align_thrust)
-        self.tune_retreat_thrust.valueChanged.connect(self.nav_thread.update_retreat_thrust)
-        self.tune_retreat_dur.valueChanged.connect(self.nav_thread.update_retreat_duration)
-        self.tune_box_width.valueChanged.connect(self.nav_thread.update_box_width)
-        self.tune_box_approach_dist.valueChanged.connect(self.nav_thread.update_box_approach_dist)
-        self.tune_yaw_search_box.valueChanged.connect(self.nav_thread.update_yaw_search_box)
-        self.tune_box_lat_thrust.valueChanged.connect(self.nav_thread.update_box_lat_thrust)
-    
-        # Misi Box Biru
-        self.tune_blue_box_search_thrust.valueChanged.connect(self.nav_thread.update_blue_box_search_thrust)
-        self.tune_blue_box_align_thrust.valueChanged.connect(self.nav_thread.update_blue_box_align_thrust)
-        self.tune_blue_box_width.valueChanged.connect(self.nav_thread.update_blue_box_width)
-        self.tune_blue_box_approach_dist.valueChanged.connect(self.nav_thread.update_blue_box_approach_dist)
-        self.tune_blue_box_lat_offset.valueChanged.connect(self.nav_thread.update_blue_box_lat_offset)
-        self.tune_blue_box_yaw_search.valueChanged.connect(self.nav_thread.update_blue_box_yaw_search)
-    
-        # Misi Docking (Box Merah)
-        self.tune_dock_align_thrust.valueChanged.connect(self.nav_thread.update_dock_align_thrust)
-        self.tune_dock_hold_dur.valueChanged.connect(self.nav_thread.update_dock_hold_dur)
-        self.tune_red_box_width.valueChanged.connect(self.nav_thread.update_red_box_width)
-        self.tune_red_box_dock_dist.valueChanged.connect(self.nav_thread.update_red_box_dock_dist)
-        self.tune_yaw_search_dock.valueChanged.connect(self.nav_thread.update_yaw_search_dock)
-    
-        # YOLO & Video
-        self.tune_yolo_frame_skip.valueChanged.connect(self.nav_thread.update_yolo_frame_skip)
-        self.tune_yolo_inf_size.valueChanged.connect(self.nav_thread.update_yolo_inf_size)
-        self.tune_session_video_fps.valueChanged.connect(self.nav_thread.update_session_video_fps)
-    
         return scroll_area
+
     # =======================================================================
     # === AKHIR DARI FUNGSI YANG DIGANTI ===
     # =======================================================================
@@ -568,21 +486,18 @@ class MainWindow(QMainWindow):
             
         lat = self.current_lat
         lon = self.current_lon
-        
-        wp_data = {'lat': lat, 'lon': lon}
-        self.recorded_waypoints.append(wp_data)
-        
-        wp_index = len(self.recorded_waypoints) - 1
-        
-        text = f"New WP #{wp_index + 1} ({lat:.6f}, {lon:.6f})"
-        
-        self.wp_status_label.setText(f"Recorded: {text}")
-        
-        if hasattr(self, 'map_view') and self.map_js_ready:
-            self.map_view.page().runJavaScript(f"addWaypointMarker({lat}, {lon}, '{text}');")
+
+        self.nav_thread.navigator.waypoints.append({'lat': lat, 'lon': lon})
+        new_index = len(self.nav_thread.navigator.waypoints) - 1
+
+        text = f"Added WP #{new_index + 1} ({lat:.6f}, {lon:.6f})"
+        self.wp_status_label.setText(text)
+
+        print("[GUI] Waypoint recorded directly to memory. Refreshing map...")
+        self.initialize_map_widget()
 
     def on_save_waypoints(self):
-        wps_to_save = self.recorded_waypoints
+        wps_to_save = self.nav_thread.navigator.waypoints
 
         try:
             with open(WAYPOINT_FILE, mode='w', newline='', encoding='utf-8') as f:
@@ -590,7 +505,7 @@ class MainWindow(QMainWindow):
                 writer.writeheader()
                 writer.writerows(wps_to_save)
 
-            self.wp_status_label.setText(f"Saved {len(wps_to_save)} WPs. Reloading mission...")
+            self.wp_status_label.setText(f"Saved {len(wps_to_save)} WPs to {WAYPOINT_FILE}")
             
             self.nav_thread.update_waypoints(wps_to_save)
             
@@ -600,24 +515,22 @@ class MainWindow(QMainWindow):
             self.wp_status_label.setText(f"Error saving: {e}")
 
     def on_clear_waypoints(self):
-        self.recorded_waypoints.clear()
-        self.wp_status_label.setText("Cleared. Press 'Save' to commit empty list.")
+        self.nav_thread.navigator.waypoints = []
+        self.wp_status_label.setText("All waypoints cleared (in memory). Save to commit.")
         
         self.initialize_map_widget()
+
             
     def closeEvent(self, event):
         print("Closing application...")
         self.nav_thread.stop()
         self.nav_thread.wait()
         
-        # --- PERUBAHAN DI SINI: MENAMBAHKAN PENYIMPANAN KONFIGURASI ---
         if hasattr(self.nav_thread, 'save_config_to_file'):
             print("Menyimpan parameter tuning terakhir...")
             self.nav_thread.save_config_to_file()
-        # --------------------------------------------------------
         
-        if os.path.exists(TMP_MAP_FILE):
-            os.remove(TMP_MAP_FILE)
+        if os.path.exists(TMP_MAP_FILE): os.remove(TMP_MAP_FILE)
             
         event.accept()
 

@@ -1446,6 +1446,10 @@ class NavigatorThread(QThread):
             'YOLO_FRAME_SKIP': self.config.YOLO_FRAME_SKIP,
             'YOLO_INFERENCE_SIZE': self.config.YOLO_INFERENCE_SIZE,
             'SESSION_VIDEO_FPS': self.config.SESSION_VIDEO_FPS,
+            'VISION_ENABLED_LEGS': self.config.VISION_ENABLED_LEGS,
+            'PHOTO_BOX_LEGS': self.config.PHOTO_BOX_LEGS,
+            'BLUE_BOX_PHOTO_LEGS': self.config.BLUE_BOX_PHOTO_LEGS,
+            'STOP_AND_PHOTO_AT_WP': self.config.STOP_AND_PHOTO_AT_WP
         }
         try:
             with open(TUNING_FILE, 'w') as f:
@@ -1454,129 +1458,12 @@ class NavigatorThread(QThread):
         except Exception as e:
             print(f"ERROR: Gagal menyimpan parameter tuning: {e}")
 
-    def update_acceptance_radius(self, value):
-        self.config.ACCEPTANCE_RADIUS_M = value
-        print(f"Backend ACCEPTANCE_RADIUS_M set to {value}")
-    def update_thrust(self, value):
-        self.config.THRUST_VALUE = value
-        print(f"Backend THRUST_VALUE set to {value}")
-    def update_transition_duration(self, value):
-        self.config.TRANSITION_DURATION_S = value
-        print(f"Backend TRANSITION_DURATION_S set to {value}")
-    def update_geofence_width(self, value):
-        self.config.GEOFENCE_WIDTH_METERS = value
-        print(f"Backend GEOFENCE_WIDTH_METERS set to {value}")
-    def update_focalpx(self, value):
-        self.config.FOCAL_LENGTH_PX = value
-        print(f"Backend FOCAL_LENGTH_PX set to {value}")
-    def update_p_gain(self, value):
-        self.config.VISION_P_GAIN = value
-        print(f"Backend VISION_P_GAIN set to {value}")
-    def update_smoothing_alpha(self, value):
-        self.config.VISION_SMOOTHING_ALPHA = value
-        print(f"Backend VISION_SMOOTHING_ALPHA set to {value}")
-    def update_roi_cutoff(self, value):
-        self.config.ROI_TOP_CUTOFF_PERCENT = value
-        print(f"Backend ROI_TOP_CUTOFF_PERCENT set to {value}")
-    def update_gate_width(self, value):
-        self.config.GATE_WIDTH_METERS = value
-        print(f"Backend GATE_WIDTH_METERS set to {value}")
-    def update_min_buoy_area(self, value):
-        self.config.MIN_BUOY_AREA_PX = value
-        print(f"Backend MIN_BUOY_AREA_PX set to {value}")
-    def update_gate_area_ratio(self, value):
-        self.config.GATE_AREA_SIMILARITY_RATIO = value
-        print(f"Backend GATE_AREA_SIMILARITY_RATIO set to {value}")
-    def update_search_thrust(self, value):
-        self.config.SEARCH_THRUST = value
-        print(f"Backend SEARCH_THRUST set to {value}")
-    def update_align_thrust(self, value):
-        self.config.ALIGN_THRUST = value
-        print(f"Backend ALIGN_THRUST set to {value}")
-    def update_retreat_thrust(self, value):
-        self.config.RETREAT_THRUST = value
-        print(f"Backend RETREAT_THRUST set to {value}")
-    def update_retreat_duration(self, value):
-        self.config.RETREAT_DURATION_S = value
-        print(f"Backend RETREAT_DURATION_S set to {value}")
-    def update_box_width(self, value):
-        self.config.BOX_WIDTH_METERS = value
-        print(f"Backend BOX_WIDTH_METERS set to {value}")
-    def update_box_approach_dist(self, value):
-        self.config.BOX_APPROACH_DISTANCE_M = value
-        print(f"Backend BOX_APPROACH_DISTANCE_M set to {value}")
-    def update_yaw_search_box(self, value):
-        self.config.YAW_SEARCH_BOX = value
-        print(f"Backend YAW_SEARCH_BOX set to {value}")
-    def update_box_lat_thrust(self, value):
-        self.config.BOX_SEARCH_LATERAL_THRUST = value
-        print(f"Backend BOX_SEARCH_LATERAL_THRUST set to {value}")
-    def update_blue_box_search_thrust(self, value):
-        self.config.BLUE_BOX_SEARCH_THRUST = value
-        print(f"Backend BLUE_BOX_SEARCH_THRUST set to {value}")
-    def update_blue_box_align_thrust(self, value):
-        self.config.BLUE_BOX_ALIGN_THRUST = value
-        print(f"Backend BLUE_BOX_ALIGN_THRUST set to {value}")
-    def update_blue_box_width(self, value):
-        self.config.BLUE_BOX_WIDTH_METERS = value
-        print(f"Backend BLUE_BOX_WIDTH_METERS set to {value}")
-    def update_blue_box_approach_dist(self, value):
-        self.config.BLUE_BOX_APPROACH_DISTANCE_M = value
-        print(f"Backend BLUE_BOX_APPROACH_DISTANCE_M set to {value}")
-    def update_blue_box_lat_offset(self, value):
-        self.config.BLUE_BOX_LATERAL_OFFSET_M = value
-        print(f"Backend BLUE_BOX_LATERAL_OFFSET_M set to {value}")
-    def update_blue_box_yaw_search(self, value):
-        self.config.BLUE_BOX_YAW_SEARCH = value
-        print(f"Backend BLUE_BOX_YAW_SEARCH set to {value}")
-    def update_dock_align_thrust(self, value):
-        self.config.DOCK_ALIGN_THRUST = value
-        print(f"Backend DOCK_ALIGN_THRUST set to {value}")
-    def update_dock_hold_dur(self, value):
-        self.config.DOCK_HOLD_DURATION_S = value
-        print(f"Backend DOCK_HOLD_DURATION_S set to {value}")
-    def update_red_box_width(self, value):
-        self.config.RED_BOX_WIDTH_METERS = value
-        print(f"Backend RED_BOX_WIDTH_METERS set to {value}")
-    def update_red_box_dock_dist(self, value):
-        self.config.RED_BOX_DOCK_DISTANCE_M = value
-        print(f"Backend RED_BOX_DOCK_DISTANCE_M set to {value}")
-    def update_yaw_search_dock(self, value):
-        self.config.YAW_SEARCH_DOCK = value
-        print(f"Backend YAW_SEARCH_DOCK set to {value}")
-    def update_yolo_frame_skip(self, value):
-        self.config.YOLO_FRAME_SKIP = value
-        print(f"Backend YOLO_FRAME_SKIP set to {value}")
-    def update_yolo_inf_size(self, value):
-        self.config.YOLO_INFERENCE_SIZE = value
-        print(f"Backend YOLO_INFERENCE_SIZE set to {value}")
-    def update_session_video_fps(self, value):
-        self.config.SESSION_VIDEO_FPS = value
-        print(f"Backend SESSION_VIDEO_FPS set to {value}")
-    def update_p_gain(self, value):
-        self.config.VISION_P_GAIN = value
-        print(f"Backend P_GAIN set to {value}")
-    def update_thrust(self, value):
-        self.config.THRUST_VALUE = value
-        print(f"Backend THRUST set to {value}")
-    def update_min_buoy_area(self, value):
-        self.config.MIN_BUOY_AREA_PX = value
-        print(f"Backend MIN_BUOY_AREA_PX set to {value}")
-    def update_retreat_duration(self, value):
-        self.config.RETREAT_DURATION_S = value
-        print(f"Backend RETREAT_DURATION_S set to {value}")
-    def update_search_thrust(self, value):
-        self.config.SEARCH_THRUST = value
-        print(f"Backend SEARCH_THRUST set to {value}")
-    def update_align_thrust(self, value):
-        self.config.ALIGN_THRUST = value
-        print(f"Backend ALIGN_THRUST set to {value}")
-    def update_focalpx(self, value):
-        self.config.FOCAL_LENGTH_PX = value
-        print(f"Backend FOCAL_LENGTH_PX set to {value}")
-    def update_acceptance_radius(self, value):
-        self.config.ACCEPTANCE_RADIUS_M = value
-        print(f"Backend ACCEPTANCE_RADIUS_M set to {value}")
+    def update_config_param(self, key, value):
+        if hasattr(self.config, key):
+            setattr(self.config, key, value)
+            print(f"[TUNING] {key} updated to {value}")
+        else:
+            print(f"[ERROR] Config key '{key}' not found!")
         
     def run(self):
         print("Starting NavigatorThread (ASLI DENGAN PX4 & REDIS)...")

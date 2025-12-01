@@ -207,7 +207,7 @@ class VisionOffboardNavigator:
         
         self.video_writer = None
 
-        self.stream_display_mode = "processed" # Default: Full Mission
+        self.stream_display_mode = "raw" # Default: Raw Mode
         self.command_stop_event = threading.Event()
         self.command_thread = threading.Thread(target=self._redis_command_listener, daemon=True)
         self.command_thread.start()

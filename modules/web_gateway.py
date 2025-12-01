@@ -5,10 +5,10 @@ import redis.exceptions as redis_exceptions
 import json
 
 # === KONFIGURASI ===
-NGROK_HOST = "dashboardaterolas.app" # SESUAIKAN INI
+WEB_HOST = "dashboardaterolas.app" # SESUAIKAN INI
 
-TELEMETRY_URI = f"wss://{NGROK_HOST}/ws/telemetry"
-VISION_URI = f"wss://{NGROK_HOST}/ws/vision_control" 
+TELEMETRY_URI = f"wss://{WEB_HOST}/ws/telemetry"
+VISION_URI = f"wss://{WEB_HOST}/ws/vision_control" 
 
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
@@ -16,6 +16,8 @@ REDIS_PORT = 6379
 TELEMETRY_CHANNEL = "asv_telemetry"
 VISION_CHANNEL = "asv_vision"
 MISSION_CHANNEL = "asv_mission"
+
+COMMAND_CHANNEL = "asv_commands"
 # ===================
 
 async def relay_redis_to_websocket(redis_channel, websocket_uri):
@@ -63,6 +65,22 @@ async def relay_redis_to_websocket(redis_channel, websocket_uri):
         
         await asyncio.sleep(3) # Tunggu 3 detik sebelum menyambung ulang
 
+async def relay_web_commands_to_redis():
+    uri = VISION_URI # Gunakan jalur socket vision
+    while True:
+        try:
+            async with websockets.connect(uri) as websocket:
+                r = await redis.from_url(f"redis://{REDIS_HOST}:{REDIS_PORT}")
+                async for message in websocket:
+                    try:
+                        data = json.loads(message)
+                        # Tangkap perintah ganti mode stream
+                        if data.get("action") == "set_stream_mode":
+                            await r.publish(COMMAND_CHANNEL, json.dumps(data['payload']))
+                    except: pass
+        except:
+            await asyncio.sleep(3)
+
 async def main():
     """Menjalankan ketiga tugas relay secara bersamaan."""
     
@@ -75,8 +93,10 @@ async def main():
     task_mission = asyncio.create_task(
         relay_redis_to_websocket(MISSION_CHANNEL, VISION_URI) 
     )
+
+    task_commands = asyncio.create_task(relay_web_commands_to_redis())
     
-    await asyncio.gather(task_telemetry, task_vision, task_mission)
+    await asyncio.gather(task_telemetry, task_vision, task_mission, task_commands)
 
 if __name__ == "__main__":
     print("Memulai Web Gateway (Reporter)...")

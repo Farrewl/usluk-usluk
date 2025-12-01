@@ -4,6 +4,7 @@ from pymavlink import mavutil
 from PyQt5.QtCore import QThread, pyqtSignal
 import numpy as np
 import sys, time, math, cv2, csv, redis, base64, threading, requests, random, subprocess, re
+import os, json
 
 try:
     import skfuzzy as fuzz
@@ -206,6 +207,11 @@ class VisionOffboardNavigator:
         
         self.video_writer = None
 
+        self.stream_display_mode = "raw" # Default: Raw Mode
+        self.command_stop_event = threading.Event()
+        self.command_thread = threading.Thread(target=self._redis_command_listener, daemon=True)
+        self.command_thread.start()
+
         self.current_nuc_signal_ms = 0 # Menyimpan latensi dalam ms
         self.signal_stop_event = threading.Event()
         self.signal_thread = threading.Thread(target=self._signal_monitor_loop, daemon=True)
@@ -270,6 +276,27 @@ class VisionOffboardNavigator:
             time.sleep(2)
         print("THREAD SINYAL: Berhenti.")
 
+    def _redis_command_listener(self):
+        """Mendengarkan perintah dari Web via Redis."""
+        if not self.redis_client: return
+        print("THREAD COMMAND: Mendengarkan channel 'asv_commands'...")
+        pubsub = self.redis_client.pubsub()
+        pubsub.subscribe("asv_commands")
+        
+        while not self.command_stop_event.is_set():
+            message = pubsub.get_message()
+            if message and message['type'] == 'message':
+                try:
+                    data = json.loads(message['data'])
+                    if 'mode' in data:
+                        new_mode = data['mode']
+                        if new_mode in ["raw", "processed"]:
+                            self.stream_display_mode = new_mode
+                            print(f"\n[COMMAND] Mode Stream diubah ke: {new_mode.upper()}")
+                except Exception:
+                    pass
+            time.sleep(0.1)
+
     def run(self, data_signal):
         print("Mempersiapkan mode Offboard..."); self._prepare_for_offboard()
         print("Menunggu data telemetri pertama (GPS 3D Fix & Attitude)...")
@@ -305,12 +332,16 @@ class VisionOffboardNavigator:
                 self._publish_telemetry()
 
                 ret, frame_high_res = self.cap.read()
+
+                
                 if not ret:
                     print("Frame kamera gagal dibaca! Menggunakan frame hitam.")
                     frame = np.zeros((self.processing_height, self.processing_width, 3), dtype=np.uint8)
                     time.sleep(0.1)
                 else:
                     frame = cv2.resize(frame_high_res, (self.processing_width, self.processing_height), interpolation=cv2.INTER_LINEAR)
+
+                frame_raw = frame.copy()
 
                 if self.roi_top_y_cutoff > 0:
                     cv2.rectangle(frame, (0, 0), (self.processing_width, self.roi_top_y_cutoff), (0, 0, 0), -1)
@@ -761,7 +792,16 @@ class VisionOffboardNavigator:
 
                 self._stream_offboard_command(thrust, target_yaw_angle_rad, print_status, lateral_thrust=lateral_thrust)
                 
-                self._visualize(frame, detections, best_gate, best_box, best_red_box, jarak_ke_wp, box_distance, red_box_distance, print_status)
+                buoy_counts = self._visualize(
+                    frame, detections, best_gate, best_box, best_red_box, 
+                    jarak_ke_wp, box_distance, red_box_distance, print_status
+                )
+
+                if self.redis_client:
+                    with self.redis_frame_lock:
+                        if self.redis_publish_data is None:
+                            img_to_send = frame if self.stream_display_mode == "processed" else frame_raw
+                            self.redis_publish_data = (img_to_send, buoy_counts)
                 
                 current_pitch_deg = 0.0; current_roll_deg = 0.0
                 if self.last_attitude_msg:
@@ -1194,10 +1234,12 @@ class VisionOffboardNavigator:
         
         if self.video_writer is not None: self.video_writer.write(frame)
         
-        if self.redis_client:
-            with self.redis_frame_lock:
-                if self.redis_publish_data is None: 
-                    self.redis_publish_data = (frame, buoy_counts)
+        # if self.redis_client:
+        #     with self.redis_frame_lock:
+        #         if self.redis_publish_data is None:
+        #             img_to_send = frame if self.stream_display_mode == "processed" else frame_raw
+        #             self.redis_publish_data = (img_to_send, buoy_counts)
+        return buoy_counts
 
     def _upload_snapshot_to_server(self, file_path, filename):
         if not os.path.exists(file_path):

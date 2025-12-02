@@ -226,17 +226,27 @@ class VisionOffboardNavigator:
         while not self.redis_stop_event.is_set():
             frame_to_publish = None
             counts_to_publish = None
+            extra_info = None # Variabel baru
+            
             with self.redis_frame_lock:
                 if self.redis_publish_data is not None:
-                    frame_to_publish, counts_to_publish = self.redis_publish_data
+                    # Unpack 3 item sekarang
+                    frame_to_publish, counts_to_publish, extra_info = self.redis_publish_data
                     frame_to_publish = frame_to_publish.copy() 
                     self.redis_publish_data = None 
-            if frame_to_publish is not None and counts_to_publish is not None and self.redis_client:
+            
+            if frame_to_publish is not None and self.redis_client:
                 try:
-                    status_message = f"STATE: {self.current_state} | WP: {self.current_waypoint_index}"
-                    _, buffer = cv2.imencode('.jpg', frame_to_publish, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    _, buffer = cv2.imencode('.jpg', frame_to_publish, [cv2.IMWRITE_JPEG_QUALITY, 60])
                     jpg_as_base64 = base64.b64encode(buffer).decode('utf-8')
-                    payload = {"type": "vision_update", "status": status_message, "frame_base64": jpg_as_base64, "buoy_counts": counts_to_publish}
+                    
+                    payload = {
+                        "type": "vision_update",
+                        "frame_base64": jpg_as_base64,
+                        "buoy_counts": counts_to_publish,
+                        # Masukkan info tambahan ke payload JSON
+                        "info": extra_info 
+                    }
                     self.redis_client.publish(self.config.VISION_CHANNEL, json.dumps(payload))
                 except Exception as e:
                     pass
@@ -333,15 +343,17 @@ class VisionOffboardNavigator:
 
                 ret, frame_high_res = self.cap.read()
 
+                frame_raw = None
+
                 
                 if not ret:
                     print("Frame kamera gagal dibaca! Menggunakan frame hitam.")
                     frame = np.zeros((self.processing_height, self.processing_width, 3), dtype=np.uint8)
                     time.sleep(0.1)
+                    frame_raw = frame.copy()
                 else:
                     frame = cv2.resize(frame_high_res, (self.processing_width, self.processing_height), interpolation=cv2.INTER_LINEAR)
-
-                frame_raw = frame.copy()
+                    frame_raw = frame.copy()
 
                 if self.roi_top_y_cutoff > 0:
                     cv2.rectangle(frame, (0, 0), (self.processing_width, self.roi_top_y_cutoff), (0, 0, 0), -1)
@@ -801,7 +813,26 @@ class VisionOffboardNavigator:
                     with self.redis_frame_lock:
                         if self.redis_publish_data is None:
                             img_to_send = frame if self.stream_display_mode == "processed" else frame_raw
-                            self.redis_publish_data = (img_to_send, buoy_counts)
+                            
+                            # --- KUMPULKAN DATA TEXT DI SINI ---
+                            # Siapkan string untuk P-Gain
+                            gain_str = f"{self.last_used_p_gain:.2f}"
+                            if FUZZY_ENABLED and self.last_used_p_gain != self.config.VISION_P_GAIN and self.last_used_p_gain > 0.0:
+                                gain_str += " (Fuzzy)"
+                            
+                            # Bungkus data penting
+                            extra_data = {
+                                "state": self.current_state,
+                                "wp_idx": self.current_waypoint_index,
+                                "wp_dist": f"{jarak_ke_wp:.1f}", # Jarak ke WP
+                                "nav_status": print_status,      # Status navigasi (VISION/TRANSIT/dll)
+                                "p_gain": gain_str,
+                                "box_dist": f"{box_distance:.2f}" if box_distance != float('inf') else "-",
+                                "dock_dist": f"{red_box_distance:.2f}" if red_box_distance != float('inf') else "-"
+                            }
+                            
+                            # Masukkan ke antrian (Tuple 3 item)
+                            self.redis_publish_data = (img_to_send, buoy_counts, extra_data)
                 
                 current_pitch_deg = 0.0; current_roll_deg = 0.0
                 if self.last_attitude_msg:

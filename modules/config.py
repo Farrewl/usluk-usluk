@@ -28,11 +28,11 @@ class Config:
         self.BOX_MODEL_PATH = WEIGHTS_DIR + 'box_hijau.pt' 
         self.GREEN_BOX_CLASS_ID = 0
         self.PHOTO_BOX_LEGS = [6]
-        self.BLUE_BOX_MODEL_PATH = WEIGHTS_DIR + 'box_biru.pt'
+        self.BLUE_BOX_MODEL_PATH = WEIGHTS_DIR + 'best_blue_dark.pt'
         self.BLUE_BOX_CLASS_ID = 0
         self.BLUE_BOX_PHOTO_LEGS = [8]
         self.WAYPOINT_PHOTO_CAMERA_INDEX = 1
-        self.RED_DOCK_MODEL_PATH = WEIGHTS_DIR + 'box_hijau.pt'
+        self.RED_DOCK_MODEL_PATH = WEIGHTS_DIR + 'best_red_new.pt'
         self.RED_BOX_CLASS_ID = 0
         self.RED_BOX_NAV_AFTER_WP = 8
 

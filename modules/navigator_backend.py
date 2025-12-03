@@ -686,15 +686,95 @@ class VisionOffboardNavigator:
                     thrust = 0.0 
                     target_yaw_angle_rad = self.current_yaw_rad
                     elapsed = time.time() - self.task_timer
-                    if elapsed < 0.5: print_status = f"PHOTO_BLUE (Stopping..)"
-                    elif elapsed < 1.0: 
+                    
+                    # 1. Fase Stabilisasi (0.0s - 2.0s)
+                    # Beri waktu kapal berhenti total agar buih hilang & air tenang
+                    if elapsed < 2.0: 
+                        print_status = f"PHOTO_BLUE (Stabilizing.. {elapsed:.1f}s)"
+                    
+                    # 2. Fase Eksekusi Foto Cerdas (Setelah 2 detik)
+                    elif elapsed < 4.0: 
                         if not hasattr(self, 'blue_box_photo_taken'):
-                            print("--- Mengambil Foto Box Biru (Kamera 0) ---")
-                            self._take_waypoint_photo() 
+                            print("\n=== [WP 8] MEMULAI PROSEDUR SMART PHOTO ===")
+
+                            # A. Matikan Kamera Navigasi (Best Practice)
+                            if self.cap.isOpened():
+                                self.cap.release()
+                                print("[WP 8] Kamera Navigasi dipause untuk hemat bandwidth.")
+                            time.sleep(0.5) 
+
+                            # B. Buka Kamera Bawah Air
+                            cam_bawah = cv2.VideoCapture(self.config.WAYPOINT_PHOTO_CAMERA_INDEX, cv2.CAP_DSHOW)
+                            
+                            if cam_bawah.isOpened():
+                                # Set Resolusi (Penting agar konsisten)
+                                cam_bawah.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.FRAME_WIDTH)
+                                cam_bawah.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.FRAME_HEIGHT)
+
+                                # C. WARM-UP LOOP (Wajib!)
+                                # Buang 15 frame awal untuk adaptasi cahaya (Auto-Exposure)
+                                print("[WP 8] Warming up sensor (15 frames)...")
+                                for _ in range(15): 
+                                    cam_bawah.read()
+
+                                # D. SMART CAPTURE LOOP (Maksimal 5x percobaan)
+                                foto_sukses = False
+                                for percobaan in range(1, 6):
+                                    ret_bawah, frame_bawah = cam_bawah.read()
+                                    
+                                    if ret_bawah:
+                                        # Hitung rata-rata kecerahan
+                                        avg_brightness = np.mean(frame_bawah)
+                                        print(f"[WP 8] Percobaan {percobaan}: Brightness = {avg_brightness:.2f}")
+
+                                        # Logika Validasi: 
+                                        # Tolak jika terlalu Putih (>230) atau Gelap Gulita (<5)
+                                        if 5 < avg_brightness < 230:
+                                            # --- FOTO BAGUS ---
+                                            timestamp = int(time.time())
+                                            # Pastikan self.config.WAYPOINT_PHOTO_DIR sudah diset di config
+                                            filename = os.path.join(self.config.WAYPOINT_PHOTO_DIR, f"WP8_BlueBox_{timestamp}.jpg")
+                                            
+                                            if not os.path.exists(self.config.WAYPOINT_PHOTO_DIR):
+                                                os.makedirs(self.config.WAYPOINT_PHOTO_DIR)
+                                                
+                                            cv2.imwrite(filename, frame_bawah)
+                                            print(f"[WP 8] FOTO DISIMPAN: {filename}")
+                                            
+                                            # Upload Async
+                                            threading.Thread(target=self._upload_snapshot_to_server, args=(filename, os.path.basename(filename)), daemon=True).start()
+                                            
+                                            foto_sukses = True
+                                            break # Keluar loop percobaan
+                                        else:
+                                            print(f"[WP 8] Foto Ditolak (Overexposed/Underexposed). Retrying...")
+                                            time.sleep(0.5) # Jeda sedikit sebelum coba lagi
+                                    else:
+                                        print("[WP 8] Gagal membaca frame (ret=False).")
+                                        time.sleep(0.2)
+
+                                if not foto_sukses:
+                                    print("[WP 8] GAGAL mendapatkan foto bagus setelah 5x percobaan.")
+
+                                cam_bawah.release()
+                            else:
+                                print("[WP 8] ERROR: Gagal membuka kamera bawah air!")
+                            
                             self.blue_box_photo_taken = True
+                            
+                            # E. Nyalakan Lagi Kamera Navigasi
+                            print("[WP 8] Restarting Nav Camera...")
+                            self.cap = cv2.VideoCapture(self.config.CAMERA_INDEX, cv2.CAP_DSHOW)
+                            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.FRAME_WIDTH)
+                            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.FRAME_HEIGHT)
+                            # Warmup nav camera
+                            for _ in range(5): self.cap.read()
+
                         print_status = f"PHOTO_BLUE (Snap!)"
+                    
+                    # 3. Fase Selesai
                     else:
-                        if elapsed > self.config.WAYPOINT_PHOTO_STOP_DURATION_S:
+                        if elapsed > (self.config.WAYPOINT_PHOTO_STOP_DURATION_S + 2.0): # Tambah kompensasi waktu
                             print(f"Foto Selesai. Mundur...")
                             if hasattr(self, 'blue_box_photo_taken'): del self.blue_box_photo_taken
                             self._set_state_and_publish("BLUE_BOX_RETREAT")

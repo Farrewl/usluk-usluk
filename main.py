@@ -8,7 +8,7 @@ from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtCore import pyqtSlot, QObject
 
 # uncomment aja salah satu
-#from modules.simulator_backend import NavigatorThread
+# from modules.simulator_backend import NavigatorThread
 from modules.navigator_backend import NavigatorThread
 
 CFG_PATH = "modules/config/"

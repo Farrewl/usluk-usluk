@@ -812,7 +812,11 @@ class VisionOffboardNavigator:
                 if self.redis_client:
                     with self.redis_frame_lock:
                         if self.redis_publish_data is None:
-                            img_to_send = frame if self.stream_display_mode == "processed" else frame_raw
+                            # Pastikan frame_raw tersedia, jika tidak gunakan frame sebagai fallback
+                            if self.stream_display_mode == "processed":
+                                img_to_send = frame
+                            else:
+                                img_to_send = frame_raw if 'frame_raw' in locals() and frame_raw is not None else frame
                             
                             # --- KUMPULKAN DATA TEXT DI SINI ---
                             # Siapkan string untuk P-Gain

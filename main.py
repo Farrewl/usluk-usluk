@@ -8,8 +8,8 @@ from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtCore import pyqtSlot, QObject
 
 # uncomment aja salah satu
-from modules.simulator_backend import NavigatorThread
-#from modules.navigator_backend import NavigatorThread
+#from modules.simulator_backend import NavigatorThread
+from modules.navigator_backend import NavigatorThread
 
 CFG_PATH = "modules/config/"
 WAYPOINT_FILE = CFG_PATH + "plan.csv"
@@ -125,10 +125,7 @@ class MainWindow(QMainWindow):
             avg_lon = sum(wp['lon'] for wp in current_wps) / len(current_wps)
             
         m = folium.Map(location=[avg_lat, avg_lon], zoom_start=18, tiles="CartoDB positron")
-        
-        # for i, wp in enumerate(current_wps, start=1):
-            # folium.Marker(location=[wp['lat'], wp['lon']], popup=f"Waypoint #{i}\n({wp['lat']:.6f}, {wp['lon']:.6f})", icon=folium.Icon(color='blue', icon='flag')).add_to(m)
-            
+          
         if len(current_wps) > 1:
             for i in range(1, len(current_wps)): 
                 wp_prev = current_wps[i-1]
@@ -158,8 +155,6 @@ class MainWindow(QMainWindow):
         
         js_code = f"""
         (function() {{
-            // --- 1. CARI INSTANCE PETA LEAFLET ---
-            // Folium mengacak nama variabel map (misal: map_123abc), jadi kita cari manual di window.
             var map = null;
             for (var key in window) {{
                 if (window[key] instanceof L.Map) {{
@@ -173,7 +168,6 @@ class MainWindow(QMainWindow):
                 return;
             }}
 
-            // --- 2. SETUP BRIDGE ---
             if (typeof QWebChannel !== "undefined") {{
                 new QWebChannel(qt.webChannelTransport, function(channel) {{
                     window.pyBridge = channel.objects.bridge;
@@ -184,7 +178,6 @@ class MainWindow(QMainWindow):
                 console.error("QWebChannel not loaded!");
             }}
 
-            // --- 3. FUNGSI MARKER DRAGGABLE ---
             window.markers = [];
 
             function initDraggableMarkers(waypoints) {{
@@ -214,7 +207,6 @@ class MainWindow(QMainWindow):
                 }});
             }}
 
-            // --- 4. ICON KAPAL (VEHICLE) ---
             var fa_css = document.createElement('link');
             fa_css.rel = 'stylesheet';
             fa_css.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css';
@@ -406,10 +398,6 @@ class MainWindow(QMainWindow):
         scroll_area.setWidget(widget)
         return scroll_area
 
-    # =======================================================================
-    # === AKHIR DARI FUNGSI YANG DIGANTI ===
-    # =======================================================================
-        
     def _create_recording_widget(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)

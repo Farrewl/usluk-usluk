@@ -66,8 +66,8 @@ class SimOffboardNavigator:
         jarak['JAUH'] = fuzz.trapmf(jarak.universe, [0.5, 1.0, 10, 10])
         error['KECIL'] = fuzz.trapmf(error.universe, [0, 0, 50, 100])
         error['BESAR'] = fuzz.trapmf(error.universe, [50, 100, 320, 320])
-        p_gain['RENDAH'] = 0.5; p_gain['TINGGI'] = 2.0
-        
+        p_gain['RENDAH'] = fuzz.trimf(p_gain.universe, [0, 0.5, 1.0])
+        p_gain['TINGGI'] = fuzz.trimf(p_gain.universe, [1.5, 2.0, 3.0])
         rules = [
             ctrl.Rule(jarak['DEKAT'], p_gain['RENDAH']),
             ctrl.Rule(jarak['JAUH'] & error['KECIL'], p_gain['RENDAH']),

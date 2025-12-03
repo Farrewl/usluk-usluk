@@ -19,7 +19,7 @@ class Config:
         self.WAYPOINT_PHOTO_DIR = "waypoint_captures"
         self.FRAME_WIDTH = 1280
         self.FRAME_HEIGHT = 720
-        self.SERIAL_PORT = 'COM3' 
+        self.SERIAL_PORT = 'COM9' 
         self.BAUD_RATE = 57600
         self.OFFBOARD_STREAM_RATE_HZ = 30
         self.RED_BALL_CLASS_ID = 1
@@ -32,7 +32,7 @@ class Config:
         self.BLUE_BOX_CLASS_ID = 0
         self.BLUE_BOX_PHOTO_LEGS = [8]
         self.WAYPOINT_PHOTO_CAMERA_INDEX = 1
-        self.RED_DOCK_MODEL_PATH = WEIGHTS_DIR + 'box_merah.pt'
+        self.RED_DOCK_MODEL_PATH = WEIGHTS_DIR + 'box_hijau.pt'
         self.RED_BOX_CLASS_ID = 0
         self.RED_BOX_NAV_AFTER_WP = 8
 

@@ -19,7 +19,7 @@ class Config:
         self.WAYPOINT_PHOTO_DIR = "waypoint_captures"
         self.FRAME_WIDTH = 1280
         self.FRAME_HEIGHT = 720
-        self.SERIAL_PORT = 'COM9' 
+        self.SERIAL_PORT = 'COM8' 
         self.BAUD_RATE = 57600
         self.OFFBOARD_STREAM_RATE_HZ = 30
         self.RED_BALL_CLASS_ID = 1

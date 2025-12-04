@@ -681,21 +681,104 @@ class VisionOffboardNavigator:
                             self.last_vision_correction_rad = 0.0
                             thrust = 0.0
 
+                # --- [MODIFIKASI FINAL: WP 8 SMART CAPTURE + FORCE UPLOAD] ---
                 elif self.current_state == "TAKE_BLUE_BOX_PHOTO":
                     print_status = f"PHOTO_BLUE_BOX"
                     thrust = 0.0 
                     target_yaw_angle_rad = self.current_yaw_rad
                     elapsed = time.time() - self.task_timer
-                    if elapsed < 0.5: print_status = f"PHOTO_BLUE (Stopping..)"
-                    elif elapsed < 1.0: 
+                    
+                    # Fase 1: Stabilisasi (2 Detik)
+                    if elapsed < 2.0: 
+                        print_status = f"PHOTO_BLUE (Stabilizing..)"
+                    
+                    # Fase 2: Eksekusi Smart Capture
+                    elif elapsed < 4.0: 
                         if not hasattr(self, 'blue_box_photo_taken'):
-                            print("--- Mengambil Foto Box Biru (Kamera 0) ---")
-                            self._take_waypoint_photo() 
+                            print("\n=== [WP 8] MEMULAI PROSEDUR SMART PHOTO ===")
+
+                            # A. Matikan Kamera Navigasi
+                            if self.cap.isOpened():
+                                self.cap.release()
+                                print("[WP 8] Kamera Navigasi dipause.")
+                            time.sleep(1.0) 
+
+                            # B. Buka Kamera Bawah (Index 1) dengan Settingan Terang
+                            cam_bawah = cv2.VideoCapture(self.config.WAYPOINT_PHOTO_CAMERA_INDEX, cv2.CAP_DSHOW)
+                            
+                            if cam_bawah.isOpened():
+                                # Settingan "Obat Kuat"
+                                cam_bawah.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                                cam_bawah.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                                cam_bawah.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1) # Force Auto ON (Value 1)
+
+                                print("[WP 8] Warming up sensor (20 frames)...")
+                                for _ in range(20): cam_bawah.read()
+
+                                foto_sukses = False
+                                last_frame_bawah = None # Simpan frame terakhir
+
+                                # C. Loop Percobaan
+                                for percobaan in range(1, 6):
+                                    ret_b, frame_b = cam_bawah.read()
+                                    if ret_b:
+                                        last_frame_bawah = frame_b.copy() # Backup frame
+                                        avg_bright = np.mean(frame_b)
+                                        print(f"[WP 8] Try {percobaan}: Brightness = {avg_bright:.2f}")
+                                        
+                                        # Validasi Brightness > 1.0 (Bisa dinaikkan jika perlu)
+                                        if avg_bright > 1.0:
+                                            timestamp = int(time.time())
+                                            fname_short = f"WP8_BlueBox_OK_{timestamp}.jpg"
+                                            fname_full = os.path.join(self.config.WAYPOINT_PHOTO_DIR, fname_short)
+                                            
+                                            if not os.path.exists(self.config.WAYPOINT_PHOTO_DIR): 
+                                                os.makedirs(self.config.WAYPOINT_PHOTO_DIR)
+                                                
+                                            cv2.imwrite(fname_full, frame_b)
+                                            print(f"[WP 8] FOTO SUKSES: {fname_full}")
+                                            
+                                            threading.Thread(target=self._upload_snapshot_to_server, args=(fname_full, fname_short), daemon=True).start()
+                                            foto_sukses = True
+                                            break
+                                        else:
+                                            print("[WP 8] Foto Gelap. Retry...")
+                                            time.sleep(0.2)
+                                
+                                # --- FALLBACK: UPLOAD MESKIPUN GELAP ---
+                                if not foto_sukses and last_frame_bawah is not None:
+                                    print("[PERINGATAN] Gagal mendapatkan foto terang setelah 5x percobaan.")
+                                    print("[ACTION] Mengupload foto terakhir (meskipun gelap) sebagai bukti data.")
+                                    
+                                    timestamp = int(time.time())
+                                    fname_short = f"WP8_BlueBox_DARK_{timestamp}.jpg"
+                                    fname_full = os.path.join(self.config.WAYPOINT_PHOTO_DIR, fname_short)
+                                    
+                                    if not os.path.exists(self.config.WAYPOINT_PHOTO_DIR): 
+                                        os.makedirs(self.config.WAYPOINT_PHOTO_DIR)
+                                    
+                                    cv2.imwrite(fname_full, last_frame_bawah)
+                                    # Tetap upload ke web
+                                    threading.Thread(target=self._upload_snapshot_to_server, args=(fname_full, fname_short), daemon=True).start()
+
+                                cam_bawah.release()
+                            else:
+                                print("[WP 8] Gagal buka kamera bawah air!")
+                            
                             self.blue_box_photo_taken = True
+                            
+                            # D. Nyalakan Lagi Kamera Navigasi
+                            print("[WP 8] Restarting Nav Camera...")
+                            self.cap = cv2.VideoCapture(self.config.CAMERA_INDEX, cv2.CAP_DSHOW)
+                            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.FRAME_WIDTH)
+                            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.FRAME_HEIGHT)
+                            for _ in range(5): self.cap.read() 
+
                         print_status = f"PHOTO_BLUE (Snap!)"
+                    
+                    # Fase 3: Selesai
                     else:
-                        if elapsed > self.config.WAYPOINT_PHOTO_STOP_DURATION_S:
-                            print(f"Foto Selesai. Mundur...")
+                        if elapsed > (self.config.WAYPOINT_PHOTO_STOP_DURATION_S + 2.0):
                             if hasattr(self, 'blue_box_photo_taken'): del self.blue_box_photo_taken
                             self._set_state_and_publish("BLUE_BOX_RETREAT")
                             self.task_timer = time.time()
@@ -999,23 +1082,26 @@ class VisionOffboardNavigator:
         return scaled_correction_rad
 
     def _take_photo(self, frame):
-        if not self.config.SAVE_GREEN_BOX_PHOTO:
-            print("--- [Config] SAVE_GREEN_BOX_PHOTO di-set False. Melewatkan penyimpanan foto. ---")
-            return
+        if not self.config.SAVE_GREEN_BOX_PHOTO: return
         try:
             if not os.path.exists("captures"): os.makedirs("captures")
-            filename = os.path.join("captures", f"photo_capture_{int(time.time())}.jpg")
-            success = cv2.imwrite(filename, frame)
+            # Nama file unik dengan timestamp
+            filename_short = f"green_box_{int(time.time())}.jpg"
+            filename_full = os.path.join("captures", filename_short)
+            
+            success = cv2.imwrite(filename_full, frame)
             if success:
-                print(f"--- Foto disimpan sebagai {filename} ---")
-                threading.Thread(target=self._upload_snapshot_to_server, args=(filename, os.path.basename(filename)), daemon=True).start()
+                print(f"--- Foto Box Hijau disimpan: {filename_full} ---")
+                # Trigger Upload di Thread terpisah
+                threading.Thread(target=self._upload_snapshot_to_server, args=(filename_full, filename_short), daemon=True).start()
             else:
-                print(f"Gagal menyimpan foto ke {filename} (cv2.imwrite gagal)")
+                print(f"Gagal menyimpan foto ke {filename_full}")
         except Exception as e:
             print(f"Gagal menyimpan foto: {e}")
 
+    # --- [MODIFIKASI 2: Update _take_waypoint_photo dengan Settingan Terang] ---
     def _take_waypoint_photo(self):
-        print(f"Mencoba membuka Kamera Foto WP (Indeks {self.config.WAYPOINT_PHOTO_CAMERA_INDEX})...")
+        print(f"Membuka Kamera WP (Index {self.config.WAYPOINT_PHOTO_CAMERA_INDEX})...")
         cap = None 
         try:
             cam_idx = self.config.WAYPOINT_PHOTO_CAMERA_INDEX
@@ -1023,37 +1109,37 @@ class VisionOffboardNavigator:
             if not cap.isOpened():
                 print(f"ERROR: Gagal membuka kamera foto waypoint di indeks {cam_idx}.")
                 return
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.FRAME_WIDTH)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.FRAME_HEIGHT)
-            time.sleep(0.5) 
+            
+            # === SETTINGAN OBAT KUAT ===
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1) # Force Brightness
+            
+            # Warmup 20 frame (Wajib)
+            for _ in range(20): cap.read()
+            
             ret, frame = cap.read()
             if not ret:
-                print("ERROR: Gagal mengambil frame dari kamera foto waypoint setelah dibuka.")
-                cap.release() 
-                return
-            print("Frame foto berhasil diambil.")
-        except Exception as e:
-            print(f"ERROR saat mengakses kamera foto: {e}")
-            if cap is not None and cap.isOpened():
-                cap.release()
-            return
-        finally:
-            if cap is not None and cap.isOpened():
-                cap.release()
-                print("Kamera foto WP ditutup.")
+                print("ERROR: Gagal mengambil frame WP.")
+                cap.release(); return
+                
+            print("Frame foto WP berhasil diambil.")
+            cap.release()
 
-        try:
+            # Simpan & Upload
             dir_name = self.config.WAYPOINT_PHOTO_DIR
             if not os.path.exists(dir_name): os.makedirs(dir_name)
-            filename = os.path.join(dir_name, f"wp_photo_WP{self.current_waypoint_index}_{int(time.time())}.jpg")
-            success = cv2.imwrite(filename, frame)
+            
+            filename_short = f"wp_photo_WP{self.current_waypoint_index}_{int(time.time())}.jpg"
+            filename_full = os.path.join(dir_name, filename_short)
+            
+            success = cv2.imwrite(filename_full, frame)
             if success:
-                print(f"--- Foto Waypoint disimpan sebagai {filename} ---")
-                threading.Thread(target=self._upload_snapshot_to_server, args=(filename, os.path.basename(filename)), daemon=True).start()
-            else:
-                print(f"Gagal menyimpan foto waypoint ke {filename}")
+                print(f"--- Foto Waypoint disimpan: {filename_full} ---")
+                threading.Thread(target=self._upload_snapshot_to_server, args=(filename_full, filename_short), daemon=True).start()
         except Exception as e:
-            print(f"Gagal menyimpan foto waypoint: {e}")
+            print(f"ERROR saat akses kamera foto: {e}")
+            if cap and cap.isOpened(): cap.release()
 
     def _find_best_gate(self, detections):
         red_balls = detections.get(self.config.RED_BALL_CLASS_ID, [])

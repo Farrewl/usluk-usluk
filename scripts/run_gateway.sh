@@ -9,4 +9,4 @@ if [ -d .venv ]; then
   source .venv/bin/activate
 fi
 
-exec "$PY" -m app.gateway
+exec "$PY" -u -m app.gateway

@@ -128,7 +128,7 @@ class MainWindow(QMainWindow):
             avg_lat = sum(wp['lat'] for wp in current_wps) / len(current_wps)
             avg_lon = sum(wp['lon'] for wp in current_wps) / len(current_wps)
             
-        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=18, tiles="CartoDB positron")
+        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=18, tiles="OpenStreetMap")
           
         if len(current_wps) > 1:
             for i in range(1, len(current_wps)): 
@@ -211,13 +211,8 @@ class MainWindow(QMainWindow):
                 }});
             }}
 
-            var fa_css = document.createElement('link');
-            fa_css.rel = 'stylesheet';
-            fa_css.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css';
-            document.head.appendChild(fa_css);
-
             var vehicleIcon = L.divIcon({{
-                html: '<i class="fa fa-arrow-up" style="font-size: 24px; color: #ff0000;"></i>',
+                html: '<div style="font-size: 22px; color: #ff0000; text-align: center; line-height: 24px;">&#9650;</div>',
                 className: 'vehicle-icon',
                 iconSize: [24, 24],
                 iconAnchor: [12, 12]
@@ -235,9 +230,9 @@ class MainWindow(QMainWindow):
                     window.vehicleMarker.setLatLng(newLatLng);
                     var iconDiv = window.vehicleMarker.getElement();
                     if(iconDiv) {{
-                        var iTag = iconDiv.querySelector('i');
-                        if(iTag) {{
-                            iTag.style.transform = 'rotate(' + yaw_deg + 'deg)';
+                        var arrowDiv = iconDiv.querySelector('div');
+                        if(arrowDiv) {{
+                            arrowDiv.style.transform = 'rotate(' + yaw_deg + 'deg)';
                         }}
                     }}
                 }}

@@ -1,0 +1,30 @@
+# ============================================================
+# .gitattributes — asv_backend
+# Menandai tipe file untuk diff & konflik yang lebih bersih.
+# ============================================================
+
+# Binary / hasil training — tidak pernah di-diff sebagai teks
+*.pt  binary
+*.onnx binary
+
+# Gambar & video
+*.jpg  binary
+*.jpeg binary
+*.png  binary
+*.mp4  binary
+*.avi  binary
+
+# Semua teks Wajib LF (hindari perang CRLF antar anggota di Windows/Linux)
+* text=auto eol=lf
+*.py  text eol=lf
+*.c   text eol=lf
+*.cpp text eol=lf
+*.h   text eol=lf
+*.hpp text eol=lf
+*.md  text eol=lf
+*.csv text eol=lf
+*.json text eol=lf
+*.sh  text eol=lf
+
+# File batch Windows dibiarkan CRLF agar aman di cmd
+*.bat text eol=crlf

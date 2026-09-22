@@ -1,15 +1,30 @@
-opencv-python-headless
-redis
-requests
-pymavlink
+# ============================================================
+# Dependensi Python ASV — bagi-bagi 3 grup agar jelas.
+# Install:  pip install -r requirements.txt
+# ============================================================
+
+# --- GUI dashboard ---
 pyqt5
 pyqtwebengine
-pyserial
-scipy
 folium
-keyboard
-asyncio
-websockets
-ultralytics
-scikit-fuzzy
 
+# --- Komputer vision ---
+opencv-python-headless      # tidak butuh GUI window (kepala Pi)
+ultralytics                 # training & inferensi YOLO (untuk sekarang)
+numpy
+
+# --- Telemetri & hardware ---
+pymavlink                   # MAVLink UART ke Pixhawk
+pyserial
+scipy                       # dipakai scikit-fuzzy di belakang layar
+
+# --- Kecerdasan kontrol ---
+scikit-fuzzy                # fuzzy Sugeno untuk gate & docking
+
+# --- Komunikasi web ---
+redis
+websockets
+requests
+
+# --- Tooling ---
+keyboard                    # shortcut dev (opsional)

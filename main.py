@@ -7,13 +7,17 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtCore import pyqtSlot, QObject
 
-# uncomment aja salah satu
-from modules.simulation_in_ground import NavigatorThread
-# from modules.navigator_backend import NavigatorThread
+# Pilih backend: simulator darat (kamera asli) atau navigator asli (Pixhawk).
+# Cukup uncomment salah satu.
+from app.simulator import NavigatorThread
+# from app.navigator import NavigatorThread
 
-CFG_PATH = "modules/config/"
-WAYPOINT_FILE = CFG_PATH + "plan.csv"
-TMP_MAP_FILE = CFG_PATH + "temp_map.html"
+# Path konfigurasi standar (lihat app/settings.py)
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+CFG_PATH = os.path.join(ROOT_DIR, "config")
+WAYPOINT_FILE = os.path.join(CFG_PATH, "plan.csv")
+TMP_MAP_FILE = os.path.join(ROOT_DIR, "data", "temp_map.html")
+os.makedirs(os.path.dirname(TMP_MAP_FILE), exist_ok=True)
 
 WAYPOINTS = [] 
 try:

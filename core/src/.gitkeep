@@ -1,0 +1,2 @@
+# Threshold git tidak menyimpan folder kosong; kehadiran file ini
+# menjaga struktur core/ (include, src, tests) tetap terlihat.

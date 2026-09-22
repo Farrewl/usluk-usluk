@@ -1,4 +1,24 @@
-# Ignore common image file extensions
+# ============================================================
+# .gitignore — asv_backend
+# File besar / output runtime TIDAK di-versi-git.
+# (File yang dulu sudah ter-track tetap di history; lihat docs/ARCHITECTURE.md)
+# ============================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Output runtime (folder kerja kapal)
+data/*
+!data/README.md
+
+# Model YOLO — berat (~6 MB/file), unduh via scripts/download_weights.sh
+weights/*.pt
+
+# Media (dulu pernah ter-track, sekarang tidak)
 *.jpg
 *.jpeg
 *.png
@@ -6,4 +26,17 @@
 *.bmp
 *.tiff
 *.webp
-*.svg
+*.mp4
+*.avi
+
+# Peta sementara yang di-generate GUI
+temp_map.html
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / tooling
+.vscode/
+.idea/
+*.swp

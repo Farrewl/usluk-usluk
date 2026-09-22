@@ -40,18 +40,51 @@ def _load_saved_params():
         return {}
 
 
-def save_params(config):
-    """Simpan parameter tuning (atribut Config yang primitif/list) ke file JSON.
+# Parameter yang BOLEH disimpan/upload ke tuning_params.json.
+# Kunci ini dipakai bersama _load_saved_params(): key lain (path model,
+# port serial, host redis, index kamera, ...) TIDAK ikut tersimpan agar
+# file tetap portable antar mesin (Windows dev / Pi / laptop mana pun).
+TUNING_PARAM_KEYS = frozenset({
+    # video & navigasi umum
+    "SESSION_VIDEO_FPS", "ACCEPTANCE_RADIUS_M", "THRUST_VALUE",
+    "TRANSITION_DURATION_S", "GEOFENCE_WIDTH_METERS",
+    # vision global
+    "FOCAL_LENGTH_PX", "VISION_P_GAIN", "VISION_SMOOTHING_ALPHA",
+    "ROI_TOP_CUTOFF_PERCENT",
+    # misi gate (buoy)
+    "GATE_WIDTH_METERS", "VISION_ENABLED_LEGS", "MIN_BUOY_AREA_PX",
+    "GATE_AREA_SIMILARITY_RATIO",
+    # misi foto waypoint
+    "STOP_AND_PHOTO_AT_WP", "WAYPOINT_PHOTO_STOP_DURATION_S",
+    "DETECTION_CONFIRM_DURATION_S",
+    # misi box hijau
+    "PHOTO_BOX_LEGS", "SEARCH_THRUST", "ALIGN_THRUST", "RETREAT_THRUST",
+    "RETREAT_DURATION_S", "BOX_WIDTH_METERS", "BOX_APPROACH_DISTANCE_M",
+    "YAW_SEARCH_BOX", "BOX_SEARCH_LATERAL_THRUST",
+    # misi box biru
+    "BLUE_BOX_PHOTO_LEGS", "BLUE_BOX_WIDTH_METERS",
+    "BLUE_BOX_APPROACH_DISTANCE_M", "BLUE_BOX_LATERAL_OFFSET_M",
+    "BLUE_BOX_ALIGN_THRUST", "BLUE_BOX_SEARCH_THRUST", "BLUE_BOX_YAW_SEARCH",
+    # misi docking (box merah)
+    "RED_BOX_WIDTH_METERS", "RED_BOX_DOCK_DISTANCE_M", "DOCK_ALIGN_THRUST",
+    "DOCK_HOLD_DURATION_S", "YAW_SEARCH_DOCK",
+    # YOLO
+    "YOLO_FRAME_SKIP", "YOLO_INFERENCE_SIZE",
+})
 
-    Dipanggil saat GUI ditutup dan oleh thread simulator.
+
+def save_params(config):
+    """Simpan parameter tuning (hanya key di TUNING_PARAM_KEYS) ke file JSON.
+
+    Dipanggil saat GUI ditutup dan oleh thread simulator. Atribut internal
+    (path model, port, host, index kamera) sengaja TIDAK ikut tersimpan
+    supaya tuning_params.json tetap portable antar mesin & antar tim.
     """
-    import types
-    editable = {}
-    for key, value in vars(config).items():
-        if key.startswith("_"):
-            continue
-        if isinstance(value, (int, float, bool, str, list, dict)):
-            editable[key] = value
+    editable = {
+        key: value
+        for key, value in vars(config).items()
+        if key in TUNING_PARAM_KEYS
+    }
     try:
         os.makedirs(CONFIG_DIR, exist_ok=True)
         with open(TUNING_FILE, 'w') as f:
@@ -105,7 +138,7 @@ class Config:
 
         # ---------- Misi gate (buoy) ----------
         self.GATE_WIDTH_METERS = saved.get('GATE_WIDTH_METERS', 1.0)
-        self.VISION_ENABLED_LEGS = [1, 3, 5]       # leg yang aktif deteksi gate
+        self.VISION_ENABLED_LEGS = saved.get('VISION_ENABLED_LEGS', [1, 3, 5])
         self.MIN_BUOY_AREA_PX = saved.get('MIN_BUOY_AREA_PX', 80)
         self.GATE_AREA_SIMILARITY_RATIO = saved.get('GATE_AREA_SIMILARITY_RATIO', 0.5)
 
@@ -115,7 +148,7 @@ class Config:
         self.DETECTION_CONFIRM_DURATION_S = saved.get('DETECTION_CONFIRM_DURATION_S', 0.5)
 
         # ---------- Misi box hijau ----------
-        self.PHOTO_BOX_LEGS = [6]
+        self.PHOTO_BOX_LEGS = saved.get('PHOTO_BOX_LEGS', [6])
         self.SEARCH_THRUST = saved.get('SEARCH_THRUST', 0.4)
         self.ALIGN_THRUST = saved.get('ALIGN_THRUST', 0.3)
         self.RETREAT_THRUST = saved.get('RETREAT_THRUST', -0.7)
@@ -127,7 +160,7 @@ class Config:
         self.BOX_SEARCH_LATERAL_THRUST = saved.get('BOX_SEARCH_LATERAL_THRUST', -0.2)
 
         # ---------- Misi box biru ----------
-        self.BLUE_BOX_PHOTO_LEGS = [8]
+        self.BLUE_BOX_PHOTO_LEGS = saved.get('BLUE_BOX_PHOTO_LEGS', [8])
         self.BLUE_BOX_CLASS_ID = 0
         self.BLUE_BOX_WIDTH_METERS = saved.get('BLUE_BOX_WIDTH_METERS', 0.6)
         self.BLUE_BOX_APPROACH_DISTANCE_M = saved.get('BLUE_BOX_APPROACH_DISTANCE_M', 1.5)

@@ -1,5 +1,6 @@
 from . import settings as cfg
 from . import geo
+from .camera import open_camera
 from ultralytics import YOLO
 from pymavlink import mavutil
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -156,9 +157,10 @@ class VisionOffboardNavigator:
             self.blue_box_model = None
 
         print(f"Membuka kamera utama (Indeks {self.config.CAMERA_INDEX})...");
-        self.cap = cv2.VideoCapture(self.config.CAMERA_INDEX, cv2.CAP_DSHOW)
+        self.cap = open_camera(self.config.CAMERA_INDEX, self.config.FRAME_WIDTH,
+                               self.config.FRAME_HEIGHT)
         
-        if not self.cap.isOpened(): 
+        if self.cap is None: 
             raise IOError(f"FATAL: Tidak bisa membuka kamera utama di indeks {self.config.CAMERA_INDEX}.")
 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.FRAME_WIDTH)
@@ -705,9 +707,9 @@ class VisionOffboardNavigator:
                             time.sleep(1.0) 
 
                             # B. Buka Kamera Bawah (Index 1) dengan Settingan Terang
-                            cam_bawah = cv2.VideoCapture(self.config.WAYPOINT_PHOTO_CAMERA_INDEX, cv2.CAP_DSHOW)
+                            cam_bawah = open_camera(self.config.WAYPOINT_PHOTO_CAMERA_INDEX, 640, 480)
                             
-                            if cam_bawah.isOpened():
+                            if cam_bawah and cam_bawah.isOpened():
                                 # Settingan "Obat Kuat"
                                 cam_bawah.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                                 cam_bawah.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -770,9 +772,8 @@ class VisionOffboardNavigator:
                             
                             # D. Nyalakan Lagi Kamera Navigasi
                             print("[WP 8] Restarting Nav Camera...")
-                            self.cap = cv2.VideoCapture(self.config.CAMERA_INDEX, cv2.CAP_DSHOW)
-                            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.FRAME_WIDTH)
-                            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.FRAME_HEIGHT)
+                            self.cap = open_camera(self.config.CAMERA_INDEX, self.config.FRAME_WIDTH,
+                               self.config.FRAME_HEIGHT)
                             for _ in range(5): self.cap.read() 
 
                         print_status = f"PHOTO_BLUE (Snap!)"
@@ -1106,8 +1107,8 @@ class VisionOffboardNavigator:
         cap = None 
         try:
             cam_idx = self.config.WAYPOINT_PHOTO_CAMERA_INDEX
-            cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW) 
-            if not cap.isOpened():
+            cap = open_camera(cam_idx, 640, 480) 
+            if cap is None:
                 print(f"ERROR: Gagal membuka kamera foto waypoint di indeks {cam_idx}.")
                 return
             

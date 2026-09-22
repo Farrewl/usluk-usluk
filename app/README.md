@@ -4,6 +4,8 @@
 |---|---|
 | `settings.py` | Semua parameter & path standar (satu sumber) |
 | `geo.py` | Matematika geodetik murni (haversine, bearing, cross-track) |
+| `camera.py` | Buka kamera sesuai OS (V4L2/DSHOW) + kalibrasi exposure + cari index yang bisa |
+| `mavlink_telemetry.py` | Baca telemetri MAVLink Pixhawk (attitude roll/pitch/yaw, posisi) non-blocking |
 | `navigator.py` | Navigasi asli: state machine misi + MAVLink offboard (Pixhawk) |
 | `simulator.py` | 2 simulator darat: `GroundSimNavigator` (kamera asli) & `MockSimNavigator` (tanpa kamera) |
 | `gateway.py` | Relay Redis ↔ WebSocket ke dashboard web (jalan: `python -m app.gateway`) |

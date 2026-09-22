@@ -103,7 +103,7 @@ class Config:
         self.BOX_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'box_hijau.pt')  # foto box hijau
         self.BLUE_BOX_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best_blue_dark.pt')  # box biru (foto samping)
         self.RED_DOCK_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best_red_new.pt')  # docking box merah
-        self.CAMERA_INDEX = 0                      # kamera navigasi (depan)
+        self.CAMERA_INDEX = 1                     # kamera navigasi (depan)
         self.WAYPOINT_PHOTO_CAMERA_INDEX = 1       # kamera bawah air (foto WP 8)
         self.FRAME_WIDTH = 1280
         self.FRAME_HEIGHT = 720

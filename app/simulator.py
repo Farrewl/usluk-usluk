@@ -1,8 +1,10 @@
 """
-app/simulator.py — Simulator untuk menguji GUI TANPA kapal asli.
+app/simulator.py — Simulator untuk menguji GUI.
 
-Dua mode eksperimen yang TIDAK menyentuh Pixhawk/serial:
+Dua mode eksperimen yang TIDAK perlu kapal asli:
   1. GroundSimNavigator  — kamera ASLI + model YOLO asli, posisi GPS di-mock.
+                           Bila Pixhawk terhubung (USB/MAVLink), roll/pitch/yaw
+                           ikut IMU NYATA (lihat app/mavlink_telemetry.py).
                            (dulu: modules/simulation_in_ground.py)
   2. MockSimNavigator    — tanpa kamera: objek vision & fisika dibuat sintetis.
                            (dulu: modules/simulator_backend.py)
@@ -36,6 +38,14 @@ try:
     CAMERA_AVAILABLE = True
 except ImportError:
     CAMERA_AVAILABLE = False
+
+try:
+    from .camera import open_camera, find_working_camera, make_fallback_frame
+    CAMERA_HELPER = True
+except ImportError:
+    CAMERA_HELPER = False
+
+from . import mavlink_telemetry as mavlink_mod
 
 try:
     import redis
@@ -80,9 +90,12 @@ class GroundSimNavigator:
 
         # --- KAMERA ASLI ---
         print(f"[SIM] Membuka Kamera Utama (Index {self.config.CAMERA_INDEX})...")
-        self.cap = cv2.VideoCapture(self.config.CAMERA_INDEX, cv2.CAP_DSHOW)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.FRAME_WIDTH)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.FRAME_HEIGHT)
+        self.cap = (find_working_camera(self.config.CAMERA_INDEX,
+                                        width=self.config.FRAME_WIDTH,
+                                        height=self.config.FRAME_HEIGHT)
+                    if CAMERA_HELPER else None)
+        if self.cap is None:
+            print("[SIM] Kamera utama TIDAK terbuka — pakai frame sintetis.")
 
         # --- MODEL YOLO ASLI ---
         if YOLO_AVAILABLE:
@@ -143,15 +156,14 @@ class GroundSimNavigator:
     def _execute_smart_capture_procedure(self):
         """Ganti ke kamera bawah air, hangatkan 20 frame, simpan & upload foto."""
         print("\n=== [WP 8] PROSEDUR SMART PHOTO (REAL HARDWARE) ===")
-        if self.cap.isOpened():
+        if self.cap and self.cap.isOpened():
             self.cap.release()
             print("[WP 8] Kamera navigasi dipause.")
         time.sleep(1.0)
 
-        cam_bawah = cv2.VideoCapture(self.config.WAYPOINT_PHOTO_CAMERA_INDEX, cv2.CAP_DSHOW)
-        if cam_bawah.isOpened():
-            cam_bawah.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cam_bawah.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cam_bawah = (open_camera(self.config.WAYPOINT_PHOTO_CAMERA_INDEX, 640, 480)
+                     if CAMERA_HELPER else None)
+        if cam_bawah and cam_bawah.isOpened():
             cam_bawah.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # paksa auto-exposure ON
 
             for _ in range(20):
@@ -172,12 +184,14 @@ class GroundSimNavigator:
                                      daemon=True).start()
                     time.sleep(1.0)
                     break
-        cam_bawah.release()
+        if cam_bawah:
+            cam_bawah.release()
 
         # hidupkan kembali kamera navigasi
-        self.cap = cv2.VideoCapture(self.config.CAMERA_INDEX, cv2.CAP_DSHOW)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.FRAME_WIDTH)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.FRAME_HEIGHT)
+        self.cap = (find_working_camera(self.config.CAMERA_INDEX,
+                                        width=self.config.FRAME_WIDTH,
+                                        height=self.config.FRAME_HEIGHT)
+                    if CAMERA_HELPER else None)
 
     # ------------------- Redis / upload -------------------
     def _upload_snapshot_to_server(self, file_path, filename):
@@ -214,9 +228,25 @@ class GroundSimNavigator:
     def run(self, data_signal):
         print("--- [SIM] GROUND SIMULATOR (kamera + YOLO asli) START ---")
         self.running = True
+
+        # --- Telemetri NYATA dari Pixhawk (kalau terhubung) ---
+        self.mav = mavlink_mod.MavlinkTelemetry(port=self.config.SERIAL_PORT,
+                                                baud=self.config.BAUD_RATE)
+        if not mavlink_mod.MAVLINK_AVAILABLE:
+            print("[SIM] pymavlink belum terpasang — attitude dari mock.")
+        elif self.mav.connect(timeout_s=5.0):
+            print("[SIM] Telemetri MAVLink AKTIF — roll/pitch/yaw dari Pixhawk.")
+        else:
+            print("[SIM] Pixhawk offline — roll/pitch/yaw dari mock.")
+        self._last_mav_log = 0.0
+
         while self.running:
-            ret, frame = self.cap.read()
-            if not ret:
+            # --- Baca frame kamera (None-safe bila kamera tidak ada) ---
+            if self.cap is not None:
+                ret, frame = self.cap.read()
+            else:
+                ret, frame = False, None
+            if not ret or frame is None:
                 frame = np.zeros((self.config.FRAME_HEIGHT, self.config.FRAME_WIDTH, 3),
                                  dtype=np.uint8)
                 cv2.putText(frame, "CAMERA ERROR", (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
@@ -318,10 +348,32 @@ class GroundSimNavigator:
             speed = 1.5 if self.sim_step in (1, 3, 5) else 0.2
             self._update_mock_position(target['lat'], target['lon'], speed_mps=speed)
 
+            # --- Telemetri: utamakan data NYATA dari Pixhawk bila ada ---
+            if self.mav is not None:
+                self.mav.poll()
+            use_real = (self.mav is not None and self.mav.connected
+                        and self.mav.has_attitude)
+            if use_real:
+                yaw_deg = self.mav.yaw_deg
+                pitch_deg = self.mav.pitch_deg
+                roll_deg = self.mav.roll_deg
+                lat = self.mav.lat if self.mav.lat is not None else self.current_lat
+                lon = self.mav.lon if self.mav.lon is not None else self.current_lon
+                now = time.time()
+                if now - self._last_mav_log > 2.5:
+                    print(f"[MAV] roll={roll_deg:6.1f} pitch={pitch_deg:6.1f} "
+                          f"yaw={yaw_deg:6.1f} lat={lat:.6f} lon={lon:.6f}")
+                    self._last_mav_log = now
+            else:
+                yaw_deg = math.degrees(self.current_yaw_rad)
+                pitch_deg = 0.0
+                roll_deg = 0.0
+                lat, lon = self.current_lat, self.current_lon
+
             data_signal.emit({
-                "lat": self.current_lat, "lon": self.current_lon,
-                "yaw_deg": math.degrees(self.current_yaw_rad),
-                "pitch_deg": 0.0, "roll_deg": 0.0,
+                "lat": lat, "lon": lon,
+                "yaw_deg": yaw_deg,
+                "pitch_deg": pitch_deg, "roll_deg": roll_deg,
                 "state": self.current_state,
                 "target_wp_idx": self.current_waypoint_index,
                 "dist_to_wp_m": self.dist_to_wp,
@@ -335,6 +387,8 @@ class GroundSimNavigator:
 
     def stop(self):
         self.running = False
+        if getattr(self, 'mav', None):
+            self.mav.close()
         if self.cap:
             self.cap.release()
 

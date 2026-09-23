@@ -360,7 +360,7 @@ class GroundSimNavigator:
                 lat = self.mav.lat if self.mav.lat is not None else self.current_lat
                 lon = self.mav.lon if self.mav.lon is not None else self.current_lon
                 now = time.time()
-                if now - self._last_mav_log > 2.5:
+                if now - self._last_mav_log > 10.0:
                     print(f"[MAV] roll={roll_deg:6.1f} pitch={pitch_deg:6.1f} "
                           f"yaw={yaw_deg:6.1f} lat={lat:.6f} lon={lon:.6f}")
                     self._last_mav_log = now
@@ -377,6 +377,9 @@ class GroundSimNavigator:
                 "state": self.current_state,
                 "target_wp_idx": self.current_waypoint_index,
                 "dist_to_wp_m": self.dist_to_wp,
+                "groundspeed": self.mav.groundspeed if use_real else self.current_groundspeed,
+                "mavlink_ok": bool(self.mav.connected) if self.mav else False,
+                "gps_fix": bool(self.mav.lat is not None) if use_real else True,
                 "frame": processed_frame,
             })
 
@@ -636,6 +639,9 @@ class MockSimNavigator:
                 "state": self.current_state,
                 "target_wp_idx": self.current_waypoint_index,
                 "dist_to_wp_m": jarak_wp,
+                "groundspeed": 0.0,
+                "mavlink_ok": False,
+                "gps_fix": True,
                 "frame": frame,
             })
             time.sleep(1.0 / 20.0)

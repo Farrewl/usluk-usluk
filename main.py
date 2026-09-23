@@ -3,7 +3,8 @@ import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDial, QFormLayout, QTableWidget, QTableWidgetItem, QDoubleSpinBox, QSpinBox, QScrollArea, QSplitter, QFrame, QPushButton, QLineEdit)
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QThread, pyqtSignal, QUrl, QTimer, Qt
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont
+from PyQt5.QtCore import QRect, QPoint
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtCore import pyqtSlot, QObject
 
@@ -37,6 +38,89 @@ class MapBridge(QObject):
     def update_waypoint_pos(self, index, lat, lon):
         print(f"[MapBridge] Waypoint #{index+1} moved to: {lat}, {lon}")
         self.wpMoved.emit(index, lat, lon)
+
+class HudOverlay(QWidget):
+    """Overlay HUD di atas video: crosshair tengah, badge state (kiri-atas),
+    heading + koordinat (kanan-atas). Transparan & tidak menangkap mouse."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._state = "NO_TELEM"
+        self._yaw = 0.0
+        self._lat = 0.0
+        self._lon = 0.0
+        self._dist = 0.0
+
+    def set_data(self, state, yaw, lat, lon, dist):
+        self._state = state
+        self._yaw = yaw
+        self._lat = lat
+        self._lon = lon
+        self._dist = dist
+        self.update()
+
+    def paintEvent(self, _event):  # noqa: N802 - API Qt
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        cx, cy = w // 2, h // 2
+
+        # --- crosshair tipis di tengah ---
+        pen = QPen(QColor(255, 255, 255, 70))
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.drawLine(cx, 0, cx, h)
+        painter.drawLine(0, cy, w, cy)
+        radius = max(6, min(w, h) // 16)
+        painter.drawEllipse(QPoint(cx, cy), radius, radius)
+
+        # --- badge state (kiri-atas) ---
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 150))
+        painter.drawRoundedRect(8, 8, 220, 30, 6, 6)
+        accent = QColor(0, 255, 170) if self._state.startswith(
+            ("GATE", "DOCK", "PHOTO", "RETREAT")) else QColor(255, 255, 255)
+        font = QFont("monospace")
+        font.setBold(True)
+        font.setPointSize(11)
+        painter.setFont(font)
+        painter.setPen(accent)
+        painter.drawText(QRect(16, 12, 204, 22),
+                         Qt.AlignLeft | Qt.AlignVCenter, f"STATE: {self._state}")
+        painter.setPen(Qt.NoPen)
+
+        # --- heading + koordinat (kanan-atas) ---
+        painter.setBrush(QColor(0, 0, 0, 150))
+        painter.drawRoundedRect(w - 272, 8, 264, 46, 6, 6)
+        info = (f"H {self._yaw:5.1f}°   d {self._dist:5.1f} m\n"
+                f"{self._lat:.6f}, {self._lon:.6f}")
+        painter.setFont(QFont("monospace", 10))
+        painter.setPen(QColor(255, 255, 255))
+        painter.drawText(QRect(w - 264, 12, 248, 38),
+                         Qt.AlignLeft | Qt.AlignVCenter, info)
+        painter.end()
+
+
+class VideoPanel(QWidget):
+    """Panel video: label video + HUD overlay yang ikut meresize."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.video_label = QLabel("Waiting for video feed...")
+        self.video_label.setAlignment(Qt.AlignCenter)
+        self.video_label.setStyleSheet("background-color: #000; color: #FFF;")
+        layout.addWidget(self.video_label)
+        self.hud = HudOverlay(self)
+        self.hud.setGeometry(0, 0, self.width(), self.height())
+        self.hud.raise_()
+
+    def resizeEvent(self, event):  # noqa: N802 - API Qt
+        self.hud.setGeometry(0, 0, self.width(), self.height())
+        self.hud.raise_()
+        super().resizeEvent(event)
 
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
@@ -73,10 +157,29 @@ class MainWindow(QMainWindow):
         main_splitter.setSizes([int(self.width() * 0.7), int(self.width() * 0.3)])
         self.setCentralWidget(main_splitter)
         self.nav_thread.newData.connect(self.update_ui)
+        self._setup_status_bar()
         self.nav_thread.start()
 
         print("Window created. Loading map widget in 0.5 seconds...")
         QTimer.singleShot(500, self.initialize_map_widget)
+
+    def _setup_status_bar(self):
+        """Baris status bawah: chip telemetri live (MAV, GPS, speed, FPS, state)."""
+        bar = self.statusBar()
+        bar.setStyleSheet(
+            "QStatusBar { background: #26303b; color: #cfd8dc; }"
+            "QStatusBar::item { border: none; }")
+        self.chip_mav = QLabel("● MAV: --")
+        self.chip_gps = QLabel("GPS: --")
+        self.chip_speed = QLabel("SPD: --")
+        self.chip_fps = QLabel("FPS: --")
+        self.chip_state = QLabel("STATE: --")
+        for chip in (self.chip_mav, self.chip_gps, self.chip_speed,
+                     self.chip_fps, self.chip_state):
+            chip.setStyleSheet(
+                "font-family: monospace; font-weight: bold;"
+                "padding: 2px 10px; color: #cfd8dc;")
+            bar.addPermanentWidget(chip)
 
     def _create_map_frame(self):
         self.map_frame = QFrame()
@@ -265,28 +368,53 @@ class MainWindow(QMainWindow):
             print(f"[GUI] Updated WP #{index+1} in memory.")
 
     def _create_video_widget(self):
-        self.video_label = QLabel("Waiting for video feed...")
-        self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setStyleSheet("background-color: #000; color: #FFF;")
-        return self.video_label
+        self.video_panel = VideoPanel()
+        self.video_label = self.video_panel.video_label
+        self.hud_overlay = self.video_panel.hud
+        return self.video_panel
 
     def _create_ahrs_widget(self):
         widget = QWidget()
-        layout = QFormLayout(widget)
-        
-        self.yaw_dial = QDial()
-        self.yaw_dial.setRange(-180, 180); self.yaw_dial.setWrapping(True); self.yaw_dial.setEnabled(False); self.yaw_dial.setNotchesVisible(True)
-        layout.addRow("Yaw:", self.yaw_dial)
-        
-        self.pitch_dial = QDial()
-        self.pitch_dial.setRange(-90, 90); self.pitch_dial.setEnabled(False); self.pitch_dial.setNotchesVisible(True)
-        layout.addRow("Pitch:", self.pitch_dial)
-        
-        self.roll_dial = QDial()
-        self.roll_dial.setRange(-180, 180); self.roll_dial.setWrapping(True); self.roll_dial.setEnabled(False); self.roll_dial.setNotchesVisible(True)
-        layout.addRow("Roll:", self.roll_dial)
-        
-        widget.setMinimumHeight(200)
+        layout = QVBoxLayout(widget)
+
+        title = QLabel("ATTITUDE (IMU)")
+        title.setStyleSheet(
+            "font-size: 13px; font-weight: bold; color: #00bcd4;"
+            "padding: 2px 6px; letter-spacing: 1px;")
+        layout.addWidget(title)
+
+        row = QHBoxLayout()
+        for name, key, rng, wrapping in (
+                ("YAW", "yaw", (-180, 180), True),
+                ("PITCH", "pitch", (-90, 90), False),
+                ("ROLL", "roll", (-180, 180), True)):
+            gauge = QVBoxLayout()
+            dial = QDial()
+            dial.setRange(*rng)
+            dial.setWrapping(wrapping)
+            dial.setNotchesVisible(True)
+            dial.setEnabled(False)
+            dial.setFixedSize(96, 96)
+            value_label = QLabel("0.0°")
+            value_label.setAlignment(Qt.AlignCenter)
+            value_label.setStyleSheet(
+                "font-size: 21px; font-weight: bold; color: #ffffff;"
+                "font-family: monospace; background: #36404d;"
+                "border-radius: 6px; padding: 2px;")
+            name_label = QLabel(name)
+            name_label.setAlignment(Qt.AlignCenter)
+            name_label.setStyleSheet(
+                "font-size: 10px; color: #7f8c8d; font-weight: bold;"
+                "letter-spacing: 2px;")
+            gauge.addWidget(name_label)
+            gauge.addWidget(dial)
+            gauge.addWidget(value_label)
+            row.addLayout(gauge)
+            setattr(self, f"{key}_dial", dial)
+            setattr(self, f"{key}_value_label", value_label)
+
+        layout.addLayout(row)
+        widget.setMinimumHeight(150)
         return widget
 
     def _create_monitoring_widget(self):
@@ -452,7 +580,34 @@ class MainWindow(QMainWindow):
         self.yaw_dial.setValue(int(data['yaw_deg']))
         self.pitch_dial.setValue(int(data['pitch_deg']))
         self.roll_dial.setValue(int(data['roll_deg']))
-        
+
+        self.yaw_value_label.setText(f"{data['yaw_deg']:7.1f}°")
+        self.pitch_value_label.setText(f"{data['pitch_deg']:7.1f}°")
+        self.roll_value_label.setText(f"{data['roll_deg']:7.1f}°")
+
+        if hasattr(self, 'hud_overlay'):
+            self.hud_overlay.set_data(data['state'], data['yaw_deg'],
+                                      data['lat'], data['lon'],
+                                      data.get('dist_to_wp_m', 0.0))
+
+        mav_ok = bool(data.get('mavlink_ok', False))
+        self.chip_mav.setText("● MAV: ON " if mav_ok else "● MAV: OFF")
+        self.chip_mav.setStyleSheet(
+            "font-family: monospace; font-weight: bold; padding: 2px 10px;"
+            + ("color: #2ecc71;" if mav_ok else "color: #ff6b6b;"))
+        gps_fix = bool(data.get('gps_fix', False))
+        self.chip_gps.setText("GPS: FIX " if gps_fix else "GPS: NO-FIX")
+        self.chip_gps.setStyleSheet(
+            "font-family: monospace; font-weight: bold; padding: 2px 10px;"
+            + ("color: #2ecc71;" if gps_fix else "color: #f1c40f;"))
+        self.chip_speed.setText(f"SPD: {data.get('groundspeed', 0.0):4.1f} m/s")
+        now = time.time()
+        last_fps = getattr(self, '_last_fps_t', 0.0)
+        if last_fps > 0 and now - last_fps > 0:
+            self.chip_fps.setText(f"FPS: {1.0 / (now - last_fps):.0f}")
+        self._last_fps_t = now
+        self.chip_state.setText(f"STATE: {data['state']}")
+
         self.monitor_table.setItem(0, 0, QTableWidgetItem(data['state']))
         self.monitor_table.setItem(1, 0, QTableWidgetItem(f"{data['lat']:.7f}"))
         self.monitor_table.setItem(2, 0, QTableWidgetItem(f"{data['lon']:.7f}"))
@@ -531,6 +686,28 @@ if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
+    app.setStyleSheet("""
+        QSplitter::handle { background: #d7dde3; }
+        QPushButton {
+            background: #f7f9fb; border: 1px solid #c8d0d8;
+            border-radius: 4px; padding: 5px 10px;
+        }
+        QPushButton:hover { background: #eef3f7; }
+        QTableWidget {
+            gridline-color: #e1e6eb; background: #ffffff;
+            alternate-background-color: #f6f8fa;
+        }
+        QTableWidget::item { padding: 3px; }
+        QHeaderView::section {
+            background: #eef2f6; border: none;
+            border-bottom: 1px solid #d7dde3; padding: 4px;
+        }
+        QDial { background: transparent; }
+        QLineEdit, QDoubleSpinBox, QSpinBox {
+            background: #ffffff; border: 1px solid #c8d0d8;
+            border-radius: 3px; padding: 3px;
+        }
+    """)
     
     window = MainWindow()
     window.show()

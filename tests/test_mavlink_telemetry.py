@@ -14,18 +14,26 @@ from app.mavlink_telemetry import detect_serial_port
 
 class TestDetectSerialPort(unittest.TestCase):
 
-    def test_selalu_mengembalikan_string(self):
+    @staticmethod
+    def _have_any_serial_port():
+        # Mesin dev bisa tanpa port serial sama sekali (Pixhawk dicabut).
+        return bool(glob.glob("/dev/ttyACM*") or glob.glob("/dev/ttyUSB*"))
+
+    def test_return_none_atau_string(self):
+        # Tanpa port serial -> None sah (pemanggil fallback ke mock).
         port = detect_serial_port()
-        self.assertIsNotNone(port)
-        self.assertIsInstance(port, str)
+        self.assertTrue(port is None or isinstance(port, str),
+                        f"harus None atau str, dapat {port!r}")
 
     def test_preferred_dipakai_jika_ada(self):
-        # 'COM8' tidak ada di Linux -> harus jatuh ke port yang ada
+        # 'COM8' tidak ada di Linux -> harus jatuh ke port yang ada.
         port = detect_serial_port("COM8")
-        self.assertIsNotNone(port)
-        if glob.glob("/dev/ttyACM*"):
-            self.assertTrue(port.startswith("/dev/ttyACM"),
-                            f"harus pilih ACM, dapat {port}")
+        if self._have_any_serial_port():
+            self.assertTrue(port.startswith("/dev/ttyACM")
+                            or port.startswith("/dev/ttyUSB"),
+                            f"harus pilih port Linux, dapat {port}")
+        else:
+            self.assertIsNone(port)
 
     def test_preferred_linux_dihormati(self):
         if not glob.glob("/dev/ttyACM0"):

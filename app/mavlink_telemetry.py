@@ -33,6 +33,8 @@ def detect_serial_port(preferred=None):
 
     Prioritas: `preferred` (bila ada di sistem) -> /dev/ttyACM* (USB CDC,
     urut naik — Pixhawk biasanya ACM0) -> /dev/ttyUSB* (FTDI) -> COM* (Win).
+    Kalau tidak ada port yang eksis: Windows mengembalikan `preferred`
+    (driver membukanya saat koneksi), Linux mengembalikan None.
     """
     candidates = []
     if preferred:
@@ -41,9 +43,11 @@ def detect_serial_port(preferred=None):
     candidates += sorted(glob.glob("/dev/ttyUSB*"))
     candidates += [f"COM{n}" for n in range(3, 10)]
     for port in candidates:
-        if os.path.exists(port) or os.name == "nt":
+        if os.path.exists(port):
             return port
-    return preferred or None
+    if os.name == "nt" and preferred:
+        return preferred
+    return None
 
 
 class MavlinkTelemetry:

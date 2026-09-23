@@ -1,6 +1,7 @@
 from . import settings as cfg
 from . import geo
 from .camera import open_camera
+from .detection_validation import validate_buoy
 from ultralytics import YOLO
 from pymavlink import mavutil
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -992,7 +993,14 @@ class VisionOffboardNavigator:
         if model_to_use is None:
             self.last_detections = {}
             return {}
-        results = model_to_use(frame, verbose=False, imgsz=self.config.YOLO_INFERENCE_SIZE, half=self.config.YOLO_HALF_PRECISION, device=self.config.YOLO_DEVICE)
+        is_gate = model_to_use is self.gate_model
+        # Model gate rawan salah mendeteksi objek mirip bola (mis. wajah
+        # operator) sebagai buoy -> confidence-nya dinaikkan (config
+        # BUOY_CONF_THRESHOLD) + tiap deteksi buoy diverifikasi warna/bentuk.
+        conf = self.config.BUOY_CONF_THRESHOLD if is_gate else 0.25
+        results = model_to_use(frame, verbose=False, imgsz=self.config.YOLO_INFERENCE_SIZE,
+                               half=self.config.YOLO_HALF_PRECISION, device=self.config.YOLO_DEVICE,
+                               conf=conf)
         detections = {}
         for r in results:
             for box in r.boxes:
@@ -1002,6 +1010,18 @@ class VisionOffboardNavigator:
                 xyxy_tensor = box.xyxy
                 if xyxy_tensor is None or len(xyxy_tensor) == 0: continue
                 x1, y1, x2, y2 = map(int, xyxy_tensor[0])
+                if is_gate and cls in (self.config.RED_BALL_CLASS_ID,
+                                       self.config.GREEN_BALL_CLASS_ID):
+                    # Filter pasca-YOLO: warna + bentuk + area (lihat
+                    # app/detection_validation.py). Objek mirip bola tapi
+                    # bukan buoy (wajah operator dsb.) TIDAK masuk misi.
+                    if not validate_buoy(
+                            frame, cls, (x1, y1, x2, y2),
+                            min_area=self.config.MIN_BUOY_AREA_PX,
+                            min_color_fraction=self.config.BUOY_MIN_COLOR_FRACTION,
+                            min_saturation=self.config.BUOY_MIN_SATURATION,
+                            max_aspect_deviation=self.config.BUOY_MAX_ASPECT_DEVIATION):
+                        continue
                 if cls not in detections: detections[cls] = []
                 detections[cls].append({'cx':(x1+x2)//2, 'cy':(y1+y2)//2, 'box':(x1,y1,x2,y2), 'area':(x2-x1)*(y2-y1)})
         self.last_detections = detections

@@ -79,3 +79,56 @@ GUI `main.py` tetap Python dan berkomunikasi dengan core C/C++ lewat
 Redis (telemetri) + ZMQ/shared memory (frame). Detail tahapan di
 `core/README.md`. Setiap modul C punya unit test (`core/tests/`) dan
 diperbandingkan output-nya terhadap Python sebelum dipakai.
+
+## Kamera & Filter Deteksi Buoy (Tahap 3)
+
+### Negosiasi kamera otomatis (`app/camera.py`)
+
+- `negotiate_camera(index, target_fps, min_fps)` — cari mode (codec ×
+  resolusi × fps) dari kandidat `CAMERA_CANDIDATE_SIZES`
+  (1920×1080 → 320×240) dengan MJPG dulu, YUYV cadangan. Tiap kandidat
+  di-warm-up singkat lalu fps-nya DIUKUR NYATA (`_measure_fps`), bukan
+  hanya cek `CAP_PROP_FPS`.
+- `negotiate_best_camera(preferred)` — quick-score tiap index kamera
+  (`_probe_index_quality`, hanya backend native V4L2/DSHOW + `/dev/videoN`
+  cek supaya probe cepat), pilih index dengan luas piksel terbesar yang
+  tetap ≥ `CAMERA_MIN_ACCEPT_FPS`, lalu negosiasi detail hanya di index
+  itu. `CAMERA_INDEX` tetap dihormati sebagai preferensi (seri menang
+  preferen).
+- Dipakai kamera navigasi (simulator & navigator) via `open_camera(..., 
+  auto_highest=True)`; ukuran hasil negosiasi menimpa
+  `FRAME_WIDTH/HEIGHT` agar video sintetis & HUD konsisten.
+- Hasil aktual pada mesin dev: `1280×720 MJPG @ 30 fps` (index 1 yang
+  di-set di config cuma sanggup 320×240 — otomatis pindah ke index 0).
+
+### Video stabil ~30 fps (`app/simulator.py`)
+
+- `_YoloWorker` (QThread) menjalankan inferensi YOLO ASINKRON: loop video
+  menyerahkan frame lalu lanjut, hasil terbaru diambil lewat `latest()`.
+  Frame-skip (`YOLO_FRAME_SKIP`) hanya mengatur seberapa sering frame
+  dikirim ke worker, bukan menahan loop. Sambungan kamera 30 fps tetap
+  mengalir walau inferensi CPU ~30-600 ms.
+- Pacing `1/CAMERA_TARGET_FPS` + log `[SIM] FPS aktual` tiap 5 s.
+- `main.py` men-downscale frame di sisi numpy (INTER_AREA) sebelum QImage
+  agar main-thread GUI tidak terbebani QPixmap 1280×720 per frame.
+
+### Filter pasca-YOLO buoy (`app/detection_validation.py`)
+
+YOLO kadang mengira objek mirip bola (mis. wajah operator saat uji
+darat) sebagai `red_ball`/`green_ball`. `validate_buoy()` menolak
+false-positive dengan syarat fisik buoy:
+
+1. warna pekat: merah (hue 0..10 ∪ 170..179) / hijau (hue 35..85) pada
+   HSV, saturasi ≥ `BUOY_MIN_SATURATION`, value ≥ 40 (bukan hitam);
+2. bentuk bola: `|w/h - 1| ≤ BUOY_MAX_ASPECT_DEVIATION`;
+3. ukuran: area ≥ `MIN_BUOY_AREA_PX`.
+
+Plus `BUOY_CONF_THRESHOLD` (default 0.55) menaikkan ambang confidence
+model gate. Ambang semua bisa di-tuning lewat `config/tuning_params.json`
+(keyware masuk `TUNING_PARAM_KEYS`), tanpa row GUI baru.
+
+Wiring: `app/navigator.py::_detect_objects` (buoy yang gagal validasi
+tidak masuk `last_detections`), `app/simulator.py::_YoloWorker`
+(deteksi ditolak tidak digambar — pakai `draw_validated_boxes()` mengganti
+`results[0].plot()`), dan `scripts/test_deteksi.py` (menampilkan
+`*ditolak` per deteksi). Validasi unit: `tests/test_detection_validation.py`.

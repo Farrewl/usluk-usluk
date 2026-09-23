@@ -11,9 +11,12 @@ Satu-satunya sumber kebenaran parameter adalah `app/settings.py`
 | `BOX_MODEL_PATH` | `weights/box_hijau.pt` | Deteksi kotak hijau (misi foto) |
 | `BLUE_BOX_MODEL_PATH` | `weights/best_blue_dark.pt` | Deteksi kotak biru (versi gelap) |
 | `RED_DOCK_MODEL_PATH` | `weights/best_red_new.pt` | Deteksi kotak merah (docking) |
-| `CAMERA_INDEX` | `0` | Kamera navigasi (depan) |
+| `CAMERA_INDEX` | `0` | Kamera navigasi (depan) — preferensi; auto-negosiasi pilih index dengan resolusi tertinggi |
 | `WAYPOINT_PHOTO_CAMERA_INDEX` | `1` | Kamera bawah air untuk foto WP8 |
-| `FRAME_WIDTH / FRAME_HEIGHT` | `1280 × 720` | Resolusi capture kamera |
+| `FRAME_WIDTH / FRAME_HEIGHT` | `1280 × 720` | Resolusi *default* (ditimpa ukuran hasil negosiasi saat kamera dibuka `auto_highest=True`) |
+| `CAMERA_TARGET_FPS` | `30` | FPS yang diusahakan (negosiasi + pacing video) |
+| `CAMERA_MAX_AUTO_WIDTH / HEIGHT` | `1920 × 1080` | Batas ukuran yang boleh diminta saat probing |
+| `CAMERA_MIN_ACCEPT_FPS` | `25` | Mode dengan fps nyata di bawah ini ditolak negosiasi |
 
 ## Hardware / Telemetri
 
@@ -62,6 +65,10 @@ Satu-satunya sumber kebenaran parameter adalah `app/settings.py`
 | `GATE_WIDTH_METERS` | `1.0` | Lebar gate aktual (estimasi jarak) |
 | `MIN_BUOY_AREA_PX` | `80` | Luas minimal deteksi agar dianggap pelampung |
 | `GATE_AREA_SIMILARITY_RATIO` | `0.5` | Rasio kemiripan ukuran 2 buoy |
+| `BUOY_CONF_THRESHOLD` | `0.55` | Ambang confidence model gate (anti false-positive, mis. wajah) |
+| `BUOY_MIN_COLOR_FRACTION` | `0.12` | Fraksi piksel crop yang warnanya harus cocok (merah/hijau) |
+| `BUOY_MIN_SATURATION` | `0.55` | Saturasi HSV minimum agar warna dianggap pekat |
+| `BUOY_MAX_ASPECT_DEVIATION` | `0.35` | Batas `|w/h-1|` — bentuk harus mirip bola |
 
 ## Misi Foto Waypoint
 

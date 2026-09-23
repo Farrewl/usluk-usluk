@@ -63,6 +63,9 @@ TUNING_PARAM_KEYS = frozenset({
     # misi gate (buoy)
     "GATE_WIDTH_METERS", "VISION_ENABLED_LEGS", "MIN_BUOY_AREA_PX",
     "GATE_AREA_SIMILARITY_RATIO",
+    # filter warna/bentuk buoy (lihat app/detection_validation.py)
+    "BUOY_CONF_THRESHOLD", "BUOY_MIN_COLOR_FRACTION",
+    "BUOY_MIN_SATURATION", "BUOY_MAX_ASPECT_DEVIATION",
     # misi foto waypoint
     "STOP_AND_PHOTO_AT_WP", "WAYPOINT_PHOTO_STOP_DURATION_S",
     "DETECTION_CONFIRM_DURATION_S",
@@ -157,6 +160,13 @@ class Config:
         self.VISION_ENABLED_LEGS = saved.get('VISION_ENABLED_LEGS', [1, 3, 5])
         self.MIN_BUOY_AREA_PX = saved.get('MIN_BUOY_AREA_PX', 80)
         self.GATE_AREA_SIMILARITY_RATIO = saved.get('GATE_AREA_SIMILARITY_RATIO', 0.5)
+        # Filter false-positive buoy: warna + bentuk + confidence
+        # (lihat app/detection_validation.py). Naikkan BUOY_CONF_THRESHOLD
+        # bila YOLO masih mengira objek mirip bola (mis. wajah) sebagai buoy.
+        self.BUOY_CONF_THRESHOLD = saved.get('BUOY_CONF_THRESHOLD', 0.55)
+        self.BUOY_MIN_COLOR_FRACTION = saved.get('BUOY_MIN_COLOR_FRACTION', 0.12)
+        self.BUOY_MIN_SATURATION = saved.get('BUOY_MIN_SATURATION', 0.55)
+        self.BUOY_MAX_ASPECT_DEVIATION = saved.get('BUOY_MAX_ASPECT_DEVIATION', 0.35)
 
         # ---------- Misi foto waypoint ----------
         self.STOP_AND_PHOTO_AT_WP = saved.get('STOP_AND_PHOTO_AT_WP', [])

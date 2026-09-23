@@ -67,6 +67,12 @@ try:
 except ImportError:
     YOLO_AVAILABLE = False
 
+try:
+    from .detection_validation import validate_buoy, draw_validated_boxes
+    VALIDATION_AVAILABLE = True
+except ImportError:  # cv2/numpy tidak ada -> fallback ke plot() bawaan YOLO
+    VALIDATION_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # _YoloWorker — inferensi YOLO paralel (video loop tak pernah menunggu)
@@ -118,10 +124,32 @@ class _YoloWorker(QThread):
             try:
                 results = model(frame, verbose=False, conf=conf,
                                 imgsz=self.config.YOLO_INFERENCE_SIZE)
-                annotated = results[0].plot()
-                detected = len(results[0].boxes) > 0
+                keep = []
+                for b in results[0].boxes:
+                    cls = int(b.cls[0])
+                    xyxy = b.xyxy[0].tolist()
+                    if model is self._gate_model and self._gate_model is not None:
+                        if cls in (self.config.RED_BALL_CLASS_ID,
+                                   self.config.GREEN_BALL_CLASS_ID):
+                            # Filter pasca-YOLO: warna + bentuk + area.
+                            # Objek mirip bola tapi bukan buoy (mis. wajah
+                            # operator) tidak lolos -> tidak ditampilkan.
+                            if not VALIDATION_AVAILABLE or not validate_buoy(
+                                    frame, cls, xyxy,
+                                    min_area=self.config.MIN_BUOY_AREA_PX,
+                                    min_color_fraction=self.config.BUOY_MIN_COLOR_FRACTION,
+                                    min_saturation=self.config.BUOY_MIN_SATURATION,
+                                    max_aspect_deviation=self.config.BUOY_MAX_ASPECT_DEVIATION):
+                                continue
+                    keep.append((cls, float(b.conf[0]), xyxy))
+                if VALIDATION_AVAILABLE:
+                    annotated = draw_validated_boxes(frame, keep,
+                                                     results[0].names)
+                else:
+                    annotated = results[0].plot()
+                detected = len(keep) > 0
                 if model is self._gate_model and self._gate_model is not None:
-                    detected = len(results[0].boxes) >= 2  # gate butuh 2 buoy
+                    detected = len(keep) >= 2  # gate butuh 2 buoy
             except Exception as exc:  # model rusak / frame tak terduga
                 print(f"[YOLO-W] Inferensi gagal: {exc}")
                 detected, annotated = False, frame
@@ -233,7 +261,13 @@ class GroundSimNavigator:
         if model is None or not YOLO_AVAILABLE:
             return False, frame
         if run_now:
-            self._yolo_worker.submit(model, frame.copy(), 0.5)
+            conf = 0.5
+            if model is self.gate_model:
+                # Model gate rawan mendeteksi objek mirip bola (mis. wajah)
+                # sebagai buoy — confidence-nya dinaikkan lewat config
+                # (BUOY_CONF_THRESHOLD) + validasi warna/bentuk di worker.
+                conf = self.config.BUOY_CONF_THRESHOLD
+            self._yolo_worker.submit(model, frame.copy(), conf)
         result = self._yolo_worker.latest(model)
         if result is None:
             return self._last_detection.get(id(model), (False, frame))

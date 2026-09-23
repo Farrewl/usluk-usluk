@@ -6,7 +6,14 @@ from PyQt5.QtCore import QThread, pyqtSignal, QUrl, QTimer, Qt
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont
 from PyQt5.QtCore import QRect, QPoint
 from PyQt5.QtWebChannel import QWebChannel
-from PyQt5.QtCore import pyqtSlot, QObject
+from PyQt5.QtCore import pyqtSlot, QObject, QLibraryInfo
+
+# cv2 5.x mengotori env Qt saat import: menimpa QT_QPA_PLATFORM_PLUGIN_PATH ke plugin
+# Qt bawaan cv2 (versi inkompatibel dengan PyQt5) sehingga QApplication gagal dengan
+# "Could not load the Qt platform plugin xcb ... even though it was found".
+# Reset ke plugin milik PyQt5 dan kembalikan font ke default sistem.
+os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = QLibraryInfo.location(QLibraryInfo.PluginsPath)
+os.environ.pop("QT_QPA_FONTDIR", None)
 
 # Pilih backend: simulator darat (kamera asli) atau navigator asli (Pixhawk).
 # Cukup uncomment salah satu.

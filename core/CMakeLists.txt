@@ -2,10 +2,11 @@
 #
 # Modul berjalan: nav_math (C) — port app/geo.py; fuzzy (C) — port
 # app/fuzzy.py (Sugeno singleton gate & docking); state_machine (C) — port
-# app/state_machine.py (16 state misi + guard + sub-machine mundur).
-# Ketiganya tervalidasi identik terhadap Python lewat tests/test_core_nav_math.py,
-# test_core_fuzzy.py & test_core_state_machine.py.
-# Modul menyusul: mavlink_bridge.c, camera.cpp, vision_detector.cpp (C++).
+# app/state_machine.py (16 state misi); mavlink_bridge (C) — framing MAVLink
+# v1 + serial (byte-identik pymavlink). Semua tervalidasi identik terhadap
+# Python lewat tests/test_core_nav_math.py, test_core_fuzzy.py,
+# test_core_state_machine.py & test_core_mavlink_bridge.py.
+# Modul menyusul: camera.cpp, vision_detector.cpp (C++).
 # Aturan: add_library hanya menunjuk file yang sudah benar-benar ada.
 cmake_minimum_required(VERSION 3.16)
 project(asv_core C CXX)
@@ -23,6 +24,9 @@ target_include_directories(asv_fuzzy PUBLIC include)
 
 add_library(asv_state_machine STATIC src/state_machine.c)
 target_include_directories(asv_state_machine PUBLIC include)
+
+add_library(asv_mavlink_bridge STATIC src/mavlink_bridge.c)
+target_include_directories(asv_mavlink_bridge PUBLIC include)
 
 enable_testing()
 add_subdirectory(tests)

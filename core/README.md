@@ -13,7 +13,7 @@ core/
 │   ├── nav_math.c     # C: haversine, bearing, cross-track, normalize   ← dari app/geo.py
 │   ├── fuzzy.c        # C: controller Sugeno gate & docking (trapmf + rule) ← dari app/fuzzy.py
 │   ├── state_machine.c   # C: mesin state misi (±16 state) ← dari app/state_machine.py
-│   ├── mavlink_bridge.c  # C: libmavlink + serial (heartbeat, SET_ATTITUDE_TARGET)
+│   ├── mavlink_bridge.c  # C: framing MAVLink v1 + serial (heartbeat, SET_ATTITUDE_TARGET) ← pymavlink
 │   ├── camera.cpp     # C++: OpenCV capture + resize + ROI
 │   ├── vision_detector.cpp # C++: ONNX Runtime inference (4 model YOLO)
 │   └── main.cpp       # pipeline: thread telemetri + vision + kontrol
@@ -28,7 +28,7 @@ core/
 | `nav_math.c` | `app/geo.py` | selesai | `core/tests/test_nav_math.c` + `tests/test_core_nav_math.py` |
 | `fuzzy.c` | `app/fuzzy.py` | selesai | `core/tests/test_fuzzy.c` + `tests/test_core_fuzzy.py` |
 | `state_machine.c` | `app/state_machine.py` | selesai | `core/tests/test_state_machine.c` + `tests/test_core_state_machine.py` |
-| `mavlink_bridge.c` | `app/mavlink_telemetry.py` | opsional | — |
+| `mavlink_bridge.c` | pymavlink 2.4.49 (framing v1) | selesai | `core/tests/test_mavlink_bridge.c` + `tests/test_core_mavlink_bridge.py` |
 
 ## Aturan Konversi
 

@@ -10,3 +10,7 @@ add_test(NAME fuzzy COMMAND test_fuzzy)
 add_executable(test_state_machine test_state_machine.c)
 target_link_libraries(test_state_machine PRIVATE asv_state_machine)
 add_test(NAME state_machine COMMAND test_state_machine)
+
+add_executable(test_mavlink_bridge test_mavlink_bridge.c)
+target_link_libraries(test_mavlink_bridge PRIVATE asv_mavlink_bridge)
+add_test(NAME mavlink_bridge COMMAND test_mavlink_bridge)

@@ -68,7 +68,7 @@ visi pakai C++ (ONNX Runtime). GPU/UI tetap Python (PyQt5).
 | Logika (Python) | Target C/C++ | Bahasa |
 |---|---|---|
 | `app/geo.py` (haversine, bearing, cross-track, normalize) | `core/src/nav_math.c` | C |
-| `_set_attitude_target`, `_update_telemetry`, heartbeat (pymavlink) | `core/src/mavlink_bridge.c` (libmavlink C) | C |
+| `_set_attitude_target`, `_update_telemetry`, heartbeat (pymavlink) | `core/src/mavlink_bridge.c` (framing v1 + serial, byte-identik pymavlink) | C |
 | Fuzzy Sugeno gate & docking (kini `app/fuzzy.py` — skfuzzy>=0.5 gagal bikin singleton) | `core/src/fuzzy.c` | C |
 | State machine misi (`run()` navigator → kini referensi `app/state_machine.py`) | `core/src/state_machine.c` | C |
 | YOLO inferensi (ultralytics → ONNX) | `core/src/vision_detector.cpp` (ONNX Runtime) | C++ |

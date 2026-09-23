@@ -8,15 +8,14 @@ import numpy as np
 import sys, time, math, cv2, csv, redis, base64, threading, requests, random, subprocess, re
 import os, json
 
-try:
-    import skfuzzy as fuzz
-    from skfuzzy import control as ctrl
-    FUZZY_ENABLED = True
-    print("Berhasil mengimpor scikit-fuzzy.")
-except ImportError:
-    print("PERINGATAN: Gagal mengimpor scikit-fuzzy. Fuzzy logic akan DIMATIKAN.")
-    print("Silakan install dengan: pip install scikit-fuzzy")
-    FUZZY_ENABLED = False
+# Fuzzy Sugeno singleton (gain P dinamis) memakai app/fuzzy.py — implementasi
+# murni Python. scikit-fuzzy >= 0.5 tidak bisa bikin singleton output
+# (ValueError: "...must be equivalent in length to the universe variable"),
+# jadi NAH itu yang membuat fuzzy diam-diam mati. app/fuzzy.py menggantikannya
+# tanpa dependensi eksternal tambahan.
+from .fuzzy import gate_p_gain, docking_p_gain
+FUZZY_ENABLED = True
+print("Fuzzy Logic (app/fuzzy.py) SIAP — gate_p_gain & docking_p_gain.")
 
 
 WAYPOINTS = [] 
@@ -26,59 +25,11 @@ TUNING_FILE = cfg.TUNING_FILE
 
 class VisionOffboardNavigator:
 
-    def _create_gate_controller(self):
-        print("Membuat Gate_Controller (Fuzzy Sugeno)...")
-        jarak = ctrl.Antecedent(np.arange(0, 2.01, 0.1), 'Jarak')
-        error = ctrl.Antecedent(np.arange(0, 321, 1), 'Error')
-        p_gain = ctrl.Consequent(np.arange(0, 3.01, 0.1), 'P_GAIN')
-        jarak['DEKAT'] = fuzz.trapmf(jarak.universe, [0, 0, 0.2, 0.4])     
-        jarak['SEDANG'] = fuzz.trapmf(jarak.universe, [0.3, 0.5, 0.7, 0.8]) 
-        jarak['JAUH'] = fuzz.trapmf(jarak.universe, [0.7, 0.8, 1.0, 1.0])   
-        error['KECIL'] = fuzz.trapmf(error.universe, [0, 0, 20, 40])
-        error['SEDANG'] = fuzz.trapmf(error.universe, [30, 60, 100, 130])
-        error['BESAR'] = fuzz.trapmf(error.universe, [110, 150, 320, 320])
-        p_gain['RENDAH'] = 1.0  
-        p_gain['SEDANG'] = 1.9  
-        p_gain['TINGGI'] = 2.5  
-        rule1 = ctrl.Rule(jarak['DEKAT'] & error['KECIL'], p_gain['RENDAH'])
-        rule2 = ctrl.Rule(jarak['DEKAT'] & error['SEDANG'], p_gain['SEDANG']) 
-        rule3 = ctrl.Rule(jarak['DEKAT'] & error['BESAR'], p_gain['TINGGI']) 
-        rule4 = ctrl.Rule(jarak['SEDANG'] & error['KECIL'], p_gain['RENDAH']) 
-        rule5 = ctrl.Rule(jarak['SEDANG'] & error['SEDANG'], p_gain['SEDANG']) 
-        rule6 = ctrl.Rule(jarak['SEDANG'] & error['BESAR'], p_gain['TINGGI'])
-        rule7 = ctrl.Rule(jarak['JAUH'] & error['KECIL'], p_gain['SEDANG']) 
-        rule8 = ctrl.Rule(jarak['JAUH'] & error['SEDANG'], p_gain['TINGGI'])
-        rule9 = ctrl.Rule(jarak['JAUH'] & error['BESAR'], p_gain['TINGGI']) 
-        gate_ctrl_system = ctrl.ControlSystem([rule1, rule2, rule3, rule4, rule5, rule6, rule7, rule8, rule9])
-        gate_controller = ctrl.ControlSystemSimulation(gate_ctrl_system)
-        print("Gate_Controller (Fuzzy) berhasil dibuat.")
-        return gate_controller
-
-    def _create_docking_controller(self):
-        print("Membuat Docking_Controller (Fuzzy Sugeno)...")
-        jarak = ctrl.Antecedent(np.arange(0, 10.01, 0.1), 'Jarak')
-        error = ctrl.Antecedent(np.arange(0, 321, 1), 'Error')
-        p_gain = ctrl.Consequent(np.arange(0, 3.01, 0.1), 'P_GAIN')
-        jarak['DEKAT'] = fuzz.trapmf(jarak.universe, [0.05, 0.08, 0.12, 0.15])  
-        jarak['SEDANG'] = fuzz.trapmf(jarak.universe, [0.13, 0.18, 0.25, 0.35])  
-        jarak['JAUH'] = fuzz.trapmf(jarak.universe, [0.3, 0.4, 1.0, 1.0]) 
-        error['KECIL'] = fuzz.trapmf(error.universe, [0, 0, 15, 30])    
-        error['SEDANG'] = fuzz.trapmf(error.universe, [25, 50, 80, 100])
-        error['BESAR'] = fuzz.trapmf(error.universe, [90, 120, 320, 320])
-        p_gain['RENDAH'] = 0.5  
-        p_gain['SEDANG'] = 1.2  
-        p_gain['TINGGI'] = 1.9  
-        rule1 = ctrl.Rule(jarak['DEKAT'], p_gain['RENDAH']) 
-        rule2 = ctrl.Rule(jarak['SEDANG'] & error['KECIL'], p_gain['RENDAH'])
-        rule3 = ctrl.Rule(jarak['SEDANG'] & error['SEDANG'], p_gain['SEDANG'])
-        rule4 = ctrl.Rule(jarak['SEDANG'] & error['BESAR'], p_gain['TINGGI'])
-        rule5 = ctrl.Rule(jarak['JAUH'] & error['KECIL'], p_gain['SEDANG'])
-        rule6 = ctrl.Rule(jarak['JAUH'] & error['SEDANG'], p_gain['TINGGI'])
-        rule7 = ctrl.Rule(jarak['JAUH'] & error['BESAR'], p_gain['TINGGI'])
-        docking_ctrl_system = ctrl.ControlSystem([rule1, rule2, rule3, rule4, rule5, rule6, rule7])
-        docking_controller = ctrl.ControlSystemSimulation(docking_ctrl_system)
-        print("Docking_Controller (Fuzzy) berhasil dibuat.")
-        return docking_controller
+    # NOTE: Factory fuzzy skfuzzy (_create_gate_controller/_create_docking_controller)
+    # DIHAPUS — scikit-fuzzy >= 0.5 gagal membuat singleton output. Desain
+    # Sugeno yang sama (trapmf, AND=min, rata-rata tertimbang) sekarang ada di
+    # app/fuzzy.py (gate_p_gain/docking_p_gain) dengan referensi C 1:1 di
+    # core/src/fuzzy.c.
 
 
     def __init__(self, config):
@@ -107,17 +58,12 @@ class VisionOffboardNavigator:
         self.last_attitude_msg = None 
         self.current_groundspeed = 0.0
 
-        self.gate_controller = None
-        self.docking_controller = None
         self.last_used_p_gain = 0.0 
-        
+
+        # Fuzzy Sugeno (app/fuzzy.py): tidak butuh inisialisasi objek controller,
+        # cukup fungsi murni. Error hanya terjadi bila tabel tak konsisten.
         if FUZZY_ENABLED:
-            try:
-                self.gate_controller = self._create_gate_controller()
-                self.docking_controller = self._create_docking_controller()
-                print("Fuzzy Logic Controllers SIAP.")
-            except Exception as e:
-                print(f"FATAL: Gagal membuat Fuzzy Controllers: {e}")
+            print("Fuzzy Logic Controllers SIAP (app/fuzzy.py).")
         
         self.redis_client = None
         try:
@@ -329,7 +275,7 @@ class VisionOffboardNavigator:
             time.sleep(0.1)
             frame_kosong = np.zeros((self.processing_height, self.processing_width, 3), dtype=np.uint8)
             cv2.putText(frame_kosong, "Waiting for GPS 3D Fix...", (30, self.processing_height // 2), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-            data_packet = {"lat": 0.0, "lon": 0.0, "yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0, "state": "WAITING_GPS", "target_wp_idx": 0, "dist_to_wp_m": 0.0, "frame": frame_kosong}
+            data_packet = {"lat": 0.0, "lon": 0.0, "yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0, "state": "WAITING_GPS", "target_wp_idx": 0, "dist_to_wp_m": 0.0, "groundspeed": 0.0, "mavlink_ok": True, "gps_fix": False, "frame": frame_kosong}
             data_signal.emit(data_packet)
 
         if self.running and self.waypoints:
@@ -935,6 +881,11 @@ class VisionOffboardNavigator:
                     "state": self.current_state,
                     "target_wp_idx": self.current_waypoint_index,
                     "dist_to_wp_m": jarak_ke_wp,
+                    "groundspeed": self.current_groundspeed,
+                    "mavlink_ok": bool(self.master is not None
+                                       and self.master.port is not None),
+                    "gps_fix": bool(self.current_lat is not None
+                                    and self.current_lon is not None),
                     "frame": frame
                 }
                 data_signal.emit(data_packet)
@@ -1205,16 +1156,12 @@ class VisionOffboardNavigator:
         raw_correction_rad = math.atan2(error_m, distance_m)
         dynamic_p_gain = self.config.VISION_P_GAIN
         
-        if FUZZY_ENABLED and self.gate_controller is not None:
-            try:
-                input_distance = min(max(distance_m, 0.0), 2.0)
-                self.gate_controller.input['Jarak'] = input_distance
-                self.gate_controller.input['Error'] = abs(error_px) 
-                self.gate_controller.compute()
-                dynamic_p_gain = self.gate_controller.output['P_GAIN']
-            except Exception as e:
-                print(f"PERINGATAN: Gagal menghitung Fuzzy Gate. Menggunakan P-Gain statis. Error: {e}")
-                dynamic_p_gain = self.config.VISION_P_GAIN
+        if FUZZY_ENABLED:
+            # Sugeno singleton murni (app/fuzzy.py == core C). Input diklem
+            # ke semesta 0..2 m; error_px dipakai abs langsung (< 320 piksel
+            # karena offset dari pusat frame ±160 px).
+            dynamic_p_gain = gate_p_gain(min(max(distance_m, 0.0), 2.0),
+                                         abs(error_px))
         
         self.last_used_p_gain = dynamic_p_gain
         scaled_correction_rad = raw_correction_rad * dynamic_p_gain
@@ -1255,19 +1202,11 @@ class VisionOffboardNavigator:
         raw_correction_rad = math.atan2(error_m, distance_m)
         dynamic_p_gain = self.config.VISION_P_GAIN
         
-        if FUZZY_ENABLED and self.docking_controller is not None:
-            try:
-                input_distance = min(max(distance_m, 0.0), 10.0)
-                
-                self.docking_controller.input['Jarak'] = input_distance
-                self.docking_controller.input['Error'] = abs(error_px) 
-                self.docking_controller.compute()
-
-                dynamic_p_gain = self.docking_controller.output['P_GAIN']
-                
-            except Exception as e:
-                print(f"PERINGATAN: Gagal menghitung Fuzzy Docking. Menggunakan P-Gain statis. Error: {e}")
-                dynamic_p_gain = self.config.VISION_P_GAIN
+        if FUZZY_ENABLED:
+            # Sugeno singleton murni (app/fuzzy.py == core C). Input diklem
+            # ke semesta 0..10 m; error_px dipakai abs langsung.
+            dynamic_p_gain = docking_p_gain(min(max(distance_m, 0.0), 10.0),
+                                            abs(error_px))
         
         self.last_used_p_gain = dynamic_p_gain
 

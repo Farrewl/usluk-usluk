@@ -11,8 +11,8 @@ core/
 ├── include/           # header publik
 ├── src/
 │   ├── nav_math.c     # C: haversine, bearing, cross-track, normalize   ← dari app/geo.py
+│   ├── fuzzy.c        # C: controller Sugeno gate & docking (trapmf + rule) ← dari app/fuzzy.py
 │   ├── mavlink_bridge.c  # C: libmavlink + serial (heartbeat, SET_ATTITUDE_TARGET)
-│   ├── fuzzy.c        # C: controller Sugeno gate & docking (trapmf + rule)
 │   ├── state_machine.c   # C: mesin state misi (±16 state)
 │   ├── camera.cpp     # C++: OpenCV capture + resize + ROI
 │   ├── vision_detector.cpp # C++: ONNX Runtime inference (4 model YOLO)
@@ -20,6 +20,15 @@ core/
 ├── tests/             # unit test tiap modul (assert-output vs Python)
 └── CMakeLists.txt
 ```
+
+## Status Modul
+
+| Modul | Sumber Python | Status | Verifikasi |
+|---|---|---|---|
+| `nav_math.c` | `app/geo.py` | selesai | `core/tests/test_nav_math.c` + `tests/test_core_nav_math.py` |
+| `fuzzy.c` | `app/fuzzy.py` | selesai | `core/tests/test_fuzzy.c` + `tests/test_core_fuzzy.py` |
+| `state_machine.c` | `app/navigator.py` | menyusul | — |
+| `mavlink_bridge.c` | `app/mavlink_telemetry.py` | opsional | — |
 
 ## Aturan Konversi
 

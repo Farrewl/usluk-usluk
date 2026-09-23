@@ -1,8 +1,9 @@
 # core — CMake inti C/C++ ASV
 #
-# Modul berjalan: nav_math (C) — port app/geo.py, sudah tervalidasi
-# terhadap Python lewat tests/test_core_nav_math.py.
-# Modul menyusul: mavlink_bridge.c, fuzzy.c, state_machine.c (C),
+# Modul berjalan: nav_math (C) — port app/geo.py; fuzzy (C) — port
+# app/fuzzy.py (Sugeno singleton gate & docking). Keduanya tervalidasi
+# terhadap Python lewat tests/test_core_nav_math.py & test_core_fuzzy.py.
+# Modul menyusul: mavlink_bridge.c, state_machine.c (C),
 #                 camera.cpp, vision_detector.cpp (C++).
 # Aturan: add_library hanya menunjuk file yang sudah benar-benar ada.
 cmake_minimum_required(VERSION 3.16)
@@ -15,6 +16,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(asv_nav_math STATIC src/nav_math.c)
 target_include_directories(asv_nav_math PUBLIC include)
+
+add_library(asv_fuzzy STATIC src/fuzzy.c)
+target_include_directories(asv_fuzzy PUBLIC include)
 
 enable_testing()
 add_subdirectory(tests)

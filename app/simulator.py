@@ -25,6 +25,7 @@ import os
 import json
 import time
 import random
+import queue
 import threading
 
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -40,7 +41,7 @@ except ImportError:
     CAMERA_AVAILABLE = False
 
 try:
-    from .camera import open_camera, find_working_camera, make_fallback_frame
+    from .camera import open_camera, make_fallback_frame
     CAMERA_HELPER = True
 except ImportError:
     CAMERA_HELPER = False
@@ -68,6 +69,72 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# _YoloWorker — inferensi YOLO paralel (video loop tak pernah menunggu)
+# ---------------------------------------------------------------------------
+class _YoloWorker(QThread):
+    """Jalankan inferensi YOLO di thread terpisah.
+
+    Loop video menyerahkan frame ke worker lalu langsung melanjutkan
+    (tidak menunggu). Hasil terbaru per model diambil lewat `latest()`.
+    Dengan begitu, biarpun inferensi lambat di CPU, capture & tampilan
+    kamera tetap stabil di ~30 fps (frame-skip hanya mengatur seberapa
+    sering frame diserahkan ke worker).
+    """
+
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self._jobs = queue.Queue(maxsize=2)  # job lama dibuang, yang baru penting
+        self._latest = {}                    # id(model) -> (detected, annotated)
+        self._gate_model = None
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+
+    def bind_gate_model(self, model):
+        """Tandai model gate: hasilnya butuh >= 2 objek (2 buoy)."""
+        self._gate_model = model
+
+    def submit(self, model, frame, conf):
+        """Serahkan frame untuk di-infer. Antrean lama di-geser bila penuh."""
+        if model is None:
+            return
+        try:
+            self._jobs.get_nowait()
+        except queue.Empty:
+            pass
+        self._jobs.put_nowait((id(model), model, frame, conf))
+
+    def latest(self, model):
+        """Hasil terbaru untuk `model`; None bila belum pernah selesai."""
+        with self._lock:
+            return self._latest.get(id(model))
+
+    def run(self):
+        while not self._stop_event.is_set():
+            try:
+                mid, model, frame, conf = self._jobs.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                results = model(frame, verbose=False, conf=conf,
+                                imgsz=self.config.YOLO_INFERENCE_SIZE)
+                annotated = results[0].plot()
+                detected = len(results[0].boxes) > 0
+                if model is self._gate_model and self._gate_model is not None:
+                    detected = len(results[0].boxes) >= 2  # gate butuh 2 buoy
+            except Exception as exc:  # model rusak / frame tak terduga
+                print(f"[YOLO-W] Inferensi gagal: {exc}")
+                detected, annotated = False, frame
+            with self._lock:
+                self._latest[mid] = (detected, annotated)
+
+    def stop_and_wait(self):
+        """Hentikan loop worker dan tunggu sampai threadnya selesai."""
+        self._stop_event.set()
+        self.wait(3000)
+
+
+# ---------------------------------------------------------------------------
 # GroundSimNavigator — kamera asli + YOLO asli, GPS dimock
 # ---------------------------------------------------------------------------
 class GroundSimNavigator:
@@ -88,13 +155,21 @@ class GroundSimNavigator:
         self.current_groundspeed = 0.0
         self.dist_to_wp = 0.0
 
-        # --- KAMERA ASLI ---
+        # --- KAMERA ASLI (resolusi tertinggi + fps stabil, lihat camera.py) ---
         print(f"[SIM] Membuka Kamera Utama (Index {self.config.CAMERA_INDEX})...")
-        self.cap = (find_working_camera(self.config.CAMERA_INDEX,
-                                        width=self.config.FRAME_WIDTH,
-                                        height=self.config.FRAME_HEIGHT)
+        self.cap = (open_camera(self.config.CAMERA_INDEX,
+                                target_fps=self.config.CAMERA_TARGET_FPS,
+                                auto_highest=True)
                     if CAMERA_HELPER else None)
-        if self.cap is None:
+        if self.cap is not None:
+            # Ukuran hasil negosiasi menimpa default agar frame sintetis,
+            # ROI, dan tampilan video konsisten dengan kamera asli.
+            real_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            real_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            self.config.FRAME_WIDTH = real_w
+            self.config.FRAME_HEIGHT = real_h
+            print(f"[CAM] Mode aktif kamera utama: {real_w}x{real_h}.")
+        else:
             print("[SIM] Kamera utama TIDAK terbuka — pakai frame sintetis.")
 
         # --- MODEL YOLO ASLI ---
@@ -124,6 +199,11 @@ class GroundSimNavigator:
 
         self.state_timer = time.time()
         self.sim_step = 1
+        self._loop_start = time.time()
+        self._fps_window = time.time()
+        self._fps_count = 0
+        self._yolo_subcount = 0
+        self._last_detection = {}   # id(model) -> (detected, annotated)
 
     # ------------------- Geolokasi mock -------------------
     def _update_mock_position(self, target_lat, target_lon, speed_mps=1.5):
@@ -142,14 +222,23 @@ class GroundSimNavigator:
         return True
 
     # ------------------- Deteksi -------------------
-    def _run_yolo_detection(self, model, frame, conf_threshold=0.5):
+    def _run_yolo_detection(self, model, frame, run_now=True):
+        """Inferensi YOLO ASINKRON — loop video tidak pernah menunggu.
+
+        `run_now=True` menyerahkan frame terbaru ke `_YoloWorker`.
+        Hasil yang sudah siap dipakai untuk update status; saat belum ada
+        hasil baru, hasil terakhir model yang sama dipakai. Dengan ini
+        capture & tampilan kamera tetap ~30 fps walaupun inferensi lambat.
+        """
         if model is None or not YOLO_AVAILABLE:
             return False, frame
-        results = model(frame, verbose=False, conf=conf_threshold)
-        annotated = results[0].plot()
-        detected = len(results[0].boxes) > 0
-        if model == self.gate_model:
-            detected = len(results[0].boxes) >= 2  # gate butuh 2 buoy
+        if run_now:
+            self._yolo_worker.submit(model, frame.copy(), 0.5)
+        result = self._yolo_worker.latest(model)
+        if result is None:
+            return self._last_detection.get(id(model), (False, frame))
+        detected, annotated = result
+        self._last_detection[id(model)] = (detected, annotated)
         return detected, annotated
 
     # ------------------- Foto bawah air (WP 8) -------------------
@@ -187,11 +276,14 @@ class GroundSimNavigator:
         if cam_bawah:
             cam_bawah.release()
 
-        # hidupkan kembali kamera navigasi
-        self.cap = (find_working_camera(self.config.CAMERA_INDEX,
-                                        width=self.config.FRAME_WIDTH,
-                                        height=self.config.FRAME_HEIGHT)
+        # hidupkan kembali kamera navigasi (auto-negosiasi, sama seperti init)
+        self.cap = (open_camera(self.config.CAMERA_INDEX,
+                                target_fps=self.config.CAMERA_TARGET_FPS,
+                                auto_highest=True)
                     if CAMERA_HELPER else None)
+        if self.cap is not None:
+            self.config.FRAME_WIDTH = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.config.FRAME_HEIGHT = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     # ------------------- Redis / upload -------------------
     def _upload_snapshot_to_server(self, file_path, filename):
@@ -240,6 +332,12 @@ class GroundSimNavigator:
             print("[SIM] Pixhawk offline — roll/pitch/yaw dari mock.")
         self._last_mav_log = 0.0
 
+        # Worker YOLO asinkron: video loop jalan 30 fps terlepas dari
+        # kecepatan inferensi (deteksi tersedia di saatnya).
+        self._yolo_worker = _YoloWorker(self.config)
+        self._yolo_worker.bind_gate_model(self.gate_model)
+        self._yolo_worker.start()
+
         while self.running:
             # --- Baca frame kamera (None-safe bila kamera tidak ada) ---
             if self.cap is not None:
@@ -257,6 +355,11 @@ class GroundSimNavigator:
             is_detected = False
             processed_frame = frame
 
+            # Frame-skip: inferensi YOLO tidak tiap frame (bisa ratusan ms di
+            # CPU), agar capture & tampilan video tetap mengalir ~30 fps.
+            self._yolo_subcount += 1
+            _run_now = (self._yolo_subcount % (self.config.YOLO_FRAME_SKIP + 1)) == 0
+
             # Alur skenario darat: gate1 -> gate2 -> gate3 -> kotak hijau
             # -> kotak biru (foto bawah air) -> docking -> MISSION_COMPLETE
             if self.sim_step == 1:
@@ -268,7 +371,7 @@ class GroundSimNavigator:
             elif self.sim_step == 2:
                 self.current_state = "VISION_TRACK_1"
                 status_txt = "Scanning Buoy..."
-                is_detected, processed_frame = self._run_yolo_detection(self.gate_model, frame)
+                is_detected, processed_frame = self._run_yolo_detection(self.gate_model, frame, run_now=_run_now)
                 if is_detected:
                     status_txt = "GATE DETECTED!"
                     if elapsed > 2.0:
@@ -285,7 +388,7 @@ class GroundSimNavigator:
             elif self.sim_step == 4:
                 self.current_state = "VISION_TRACK_2"
                 status_txt = "Scanning Buoy..."
-                is_detected, processed_frame = self._run_yolo_detection(self.gate_model, frame)
+                is_detected, processed_frame = self._run_yolo_detection(self.gate_model, frame, run_now=_run_now)
                 if is_detected and elapsed > 2.0:
                     self.sim_step = 5
                     self.state_timer = time.time()
@@ -299,7 +402,7 @@ class GroundSimNavigator:
                     self.state_timer = time.time()
             elif self.sim_step == 6:
                 self.current_state = "VISION_TRACK_3"
-                is_detected, processed_frame = self._run_yolo_detection(self.gate_model, frame)
+                is_detected, processed_frame = self._run_yolo_detection(self.gate_model, frame, run_now=_run_now)
                 if is_detected and elapsed > 2.0:
                     self.sim_step = 7
                     self.state_timer = time.time()
@@ -308,7 +411,7 @@ class GroundSimNavigator:
             elif self.sim_step == 7:
                 self.current_state = "APPROACH_BOX_GREEN"
                 status_txt = "Looking for Green Box..."
-                is_detected, processed_frame = self._run_yolo_detection(self.box_model, frame)
+                is_detected, processed_frame = self._run_yolo_detection(self.box_model, frame, run_now=_run_now)
                 if is_detected:
                     status_txt = "GREEN BOX FOUND!"
                     if elapsed > 3.0:
@@ -325,7 +428,7 @@ class GroundSimNavigator:
                     self.state_timer = time.time()
             elif self.sim_step == 8:
                 self.current_state = "APPROACH_BLUE_BOX"
-                is_detected, processed_frame = self._run_yolo_detection(self.blue_box_model, frame)
+                is_detected, processed_frame = self._run_yolo_detection(self.blue_box_model, frame, run_now=_run_now)
                 if is_detected and elapsed > 2.0:
                     status_txt = "SWITCHING CAMERA..."
                     self._execute_smart_capture_procedure()
@@ -336,7 +439,7 @@ class GroundSimNavigator:
             elif self.sim_step == 9:
                 self.current_state = "DOCKING"
                 status_txt = "Scanning Dock..."
-                is_detected, processed_frame = self._run_yolo_detection(self.red_dock_model, frame)
+                is_detected, processed_frame = self._run_yolo_detection(self.red_dock_model, frame, run_now=_run_now)
                 if is_detected and elapsed > 5.0:
                     self.current_state = "MISSION_COMPLETE"
                     print("[SIM] MISI SELESAI!")
@@ -386,10 +489,28 @@ class GroundSimNavigator:
             if self.dist_to_wp < 3.0 and self.current_waypoint_index < len(self.waypoints) - 1:
                 if self.sim_step in (1, 3, 5):
                     self.current_waypoint_index += 1
-            time.sleep(0.05)
+
+            # Pacing ke target fps (default 30). Bila kerja frame lebih lama
+            # dari interval, tidak ada sleep tambahan (loop sesegera mungkin).
+            now = time.time()
+            self._fps_count += 1
+            if now - self._fps_window >= 5.0:
+                actual = self._fps_count / (now - self._fps_window)
+                print(f"[SIM] FPS aktual: {actual:.1f} "
+                      f"(target {self.config.CAMERA_TARGET_FPS})")
+                self._fps_count = 0
+                self._fps_window = now
+            target_interval = 1.0 / max(1, int(self.config.CAMERA_TARGET_FPS))
+            sleep_needed = target_interval - (now - self._loop_start)
+            if sleep_needed > 0:
+                time.sleep(sleep_needed)
+            self._loop_start = time.time()
 
     def stop(self):
         self.running = False
+        yolo_worker = getattr(self, "_yolo_worker", None)
+        if yolo_worker is not None:
+            yolo_worker.stop_and_wait()
         if getattr(self, 'mav', None):
             self.mav.close()
         if self.cap:

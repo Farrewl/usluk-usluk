@@ -572,17 +572,26 @@ class MainWindow(QMainWindow):
             )
         
         frame = data['frame']
-        h, w, ch = frame.shape
+        # Downscale di sisi numpy (INTER_AREA jauh lebih murah daripada
+        # Qt.SmoothTransformation per-frame) supaya 30 fps tidak membebani
+        # main-thread GUI. Kalau frame sudah muat di label, tanpa resize.
+        disp = frame
+        label_w = self.video_label.width()
+        label_h = self.video_label.height()
+        if (label_w > 1 and label_h > 1
+                and (frame.shape[1] > label_w or frame.shape[0] > label_h)):
+            scale = min(label_w / frame.shape[1], label_h / frame.shape[0])
+            if scale < 1.0:
+                disp = cv2.resize(frame,
+                                  (int(frame.shape[1] * scale),
+                                   int(frame.shape[0] * scale)),
+                                  interpolation=cv2.INTER_AREA)
+        h, w, ch = disp.shape
         if h > 0 and w > 0:
             bytes_per_line = ch * w
-            q_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
-            pixmap = QPixmap.fromImage(q_img)
-            
-            label_w = self.video_label.width()
-            label_h = self.video_label.height()
-            if label_w > 1 and label_h > 1:
-                scaled_pixmap = pixmap.scaled(label_w, label_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self.video_label.setPixmap(scaled_pixmap)
+            q_img = QImage(disp.data, w, h, bytes_per_line,
+                           QImage.Format_RGB888).rgbSwapped()
+            self.video_label.setPixmap(QPixmap.fromImage(q_img))
 
         self.yaw_dial.setValue(int(data['yaw_deg']))
         self.pitch_dial.setValue(int(data['pitch_deg']))

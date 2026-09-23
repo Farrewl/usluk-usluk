@@ -27,6 +27,15 @@ CAPTURES_DIR = os.path.join(DATA_DIR, "captures")
 WAYPOINT_PHOTO_DIR = os.path.join(DATA_DIR, "waypoint_captures")
 SESSION_VIDEO_DIR = os.path.join(DATA_DIR, "session_videos")
 
+# --- Negosiasi kamera (dipakai app/camera.py & kelas Config) ---
+# Resolusi "tertinggi" sebenarnya ditentukan kamera: permintaan di atas
+# kemampuan aslinya di-clamp sendiri oleh driver. CAMERA_MAX_AUTO_* hanya
+# membatasi ukuran yang boleh diminta saat probing.
+CAMERA_TARGET_FPS = 30
+CAMERA_MAX_AUTO_WIDTH = 1920
+CAMERA_MAX_AUTO_HEIGHT = 1080
+CAMERA_MIN_ACCEPT_FPS = 25
+
 
 def _load_saved_params():
     """Baca parameter tuning tersimpan (kalau ada)."""
@@ -105,8 +114,15 @@ class Config:
         self.RED_DOCK_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best_red_new.pt')  # docking box merah
         self.CAMERA_INDEX = 1                     # kamera navigasi (depan)
         self.WAYPOINT_PHOTO_CAMERA_INDEX = 1       # kamera bawah air (foto WP 8)
+        # Ukuran ini hanya *default* untuk frame sintetis (kamera mati).
+        # Saat kamera dibuka dengan auto_highest=True, FRAME_WIDTH/HEIGHT
+        # ditimpa oleh hasil negosiasi mode (lihat app/camera.py).
         self.FRAME_WIDTH = 1280
         self.FRAME_HEIGHT = 720
+        self.CAMERA_TARGET_FPS = CAMERA_TARGET_FPS      # fps yang diusahakan
+        self.CAMERA_MAX_AUTO_WIDTH = CAMERA_MAX_AUTO_WIDTH  # batas negosiasi resolusi
+        self.CAMERA_MAX_AUTO_HEIGHT = CAMERA_MAX_AUTO_HEIGHT
+        self.CAMERA_MIN_ACCEPT_FPS = CAMERA_MIN_ACCEPT_FPS  # mode di bawah ini ditolak
         self.ENABLE_SESSION_RECORDING = False
         self.SESSION_VIDEO_FPS = saved.get('SESSION_VIDEO_FPS', 10.0)
 

@@ -103,14 +103,20 @@ class VisionOffboardNavigator:
             self.blue_box_model = None
 
         print(f"Membuka kamera utama (Indeks {self.config.CAMERA_INDEX})...");
-        self.cap = open_camera(self.config.CAMERA_INDEX, self.config.FRAME_WIDTH,
-                               self.config.FRAME_HEIGHT)
+        self.cap = open_camera(self.config.CAMERA_INDEX,
+                               target_fps=self.config.CAMERA_TARGET_FPS,
+                               auto_highest=True)
         
         if self.cap is None: 
             raise IOError(f"FATAL: Tidak bisa membuka kamera utama di indeks {self.config.CAMERA_INDEX}.")
 
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.FRAME_WIDTH)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.FRAME_HEIGHT)
+        # Ukuran hasil negosiasi menimpa default (frame sintetis & tampilan
+        # video ikut konsisten dengan kamera asli).
+        real_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        real_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.config.FRAME_WIDTH = real_w
+        self.config.FRAME_HEIGHT = real_h
+        print(f"[CAM] Mode aktif kamera utama: {real_w}x{real_h}.")
         
         print("Kamera utama terbuka. Melakukan 'warm-up'...")
         start_warmup = time.time()
@@ -718,8 +724,9 @@ class VisionOffboardNavigator:
                             
                             # D. Nyalakan Lagi Kamera Navigasi
                             print("[WP 8] Restarting Nav Camera...")
-                            self.cap = open_camera(self.config.CAMERA_INDEX, self.config.FRAME_WIDTH,
-                               self.config.FRAME_HEIGHT)
+                            self.cap = open_camera(self.config.CAMERA_INDEX,
+                                                   target_fps=self.config.CAMERA_TARGET_FPS,
+                                                   auto_highest=True)
                             for _ in range(5): self.cap.read() 
 
                         print_status = f"PHOTO_BLUE (Snap!)"

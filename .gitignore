@@ -40,3 +40,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Build artifacts (lokal, beda tiap mesin)
+*.so
+core/build/

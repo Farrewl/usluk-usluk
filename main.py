@@ -132,7 +132,7 @@ class VideoPanel(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("ASV Live Dashboard (PyQt5 Version)")
+        self.setWindowTitle("Kendali Kapal Aterkia ASV — Live Dashboard")
         self.setGeometry(100, 100, 1600, 900)
         self.map_js_ready = False
         self.map_bridge = MapBridge()
@@ -176,13 +176,14 @@ class MainWindow(QMainWindow):
         bar.setStyleSheet(
             "QStatusBar { background: #26303b; color: #cfd8dc; }"
             "QStatusBar::item { border: none; }")
-        self.chip_mav = QLabel("● MAV: --")
+        self.chip_mav = QLabel("● Autopilot: --")
         self.chip_gps = QLabel("GPS: --")
-        self.chip_speed = QLabel("SPD: --")
+        self.chip_speed = QLabel("Kecepatan: --")
         self.chip_fps = QLabel("FPS: --")
-        self.chip_state = QLabel("STATE: --")
+        self.chip_state = QLabel("Kondisi: --")
+        self.chip_batt = QLabel("Baterai: --")
         for chip in (self.chip_mav, self.chip_gps, self.chip_speed,
-                     self.chip_fps, self.chip_state):
+                     self.chip_fps, self.chip_state, self.chip_batt):
             chip.setStyleSheet(
                 "font-family: monospace; font-weight: bold;"
                 "padding: 2px 10px; color: #cfd8dc;")
@@ -425,12 +426,23 @@ class MainWindow(QMainWindow):
         return widget
 
     def _create_monitoring_widget(self):
+        # Tabel status kapal — label berbahasa manusia + 3 baris baterai.
+        # ("--" = Pixhawk belum mengirim data; bukan error GUI.)
         self.monitor_table = QTableWidget()
-        self.monitor_table.setRowCount(5)
+        self.monitor_table.setRowCount(8)
         self.monitor_table.setColumnCount(1)
-        self.monitor_table.setVerticalHeaderLabels(["State", "Latitude", "Longitude", "Target WP", "Dist to WP (m)"])
+        self.monitor_table.setVerticalHeaderLabels([
+            "Kondisi kapal", "Lintang (lat)", "Bujur (lon)",
+            "Target WP", "Jarak ke WP (m)",
+            "Baterai (%)", "Tegangan (V)", "Arus (A)"])
         self.monitor_table.horizontalHeader().setVisible(False)
         self.monitor_table.horizontalHeader().setStretchLastSection(True)
+        # Kolom kiri (header vertikal) dilebarkan agar label terbaca penuh.
+        self.monitor_table.verticalHeader().setDefaultSectionSize(26)
+        try:
+            self.monitor_table.verticalHeader().setMinimumWidth(130)
+        except Exception:
+            pass
         return self.monitor_table
 
     def _add_tuning_list(self, label_text, config_key):
@@ -572,9 +584,7 @@ class MainWindow(QMainWindow):
             )
         
         frame = data['frame']
-        # Downscale di sisi numpy (INTER_AREA jauh lebih murah daripada
-        # Qt.SmoothTransformation per-frame) supaya 30 fps tidak membebani
-        # main-thread GUI. Kalau frame sudah muat di label, tanpa resize.
+        # Downscale numpy (INTER_AREA) biar GUI ringan.
         disp = frame
         label_w = self.video_label.width()
         label_h = self.video_label.height()
@@ -607,22 +617,49 @@ class MainWindow(QMainWindow):
                                       data.get('dist_to_wp_m', 0.0))
 
         mav_ok = bool(data.get('mavlink_ok', False))
-        self.chip_mav.setText("● MAV: ON " if mav_ok else "● MAV: OFF")
+        self.chip_mav.setText("● Autopilot: NYALA" if mav_ok else "● Autopilot: MATI")
         self.chip_mav.setStyleSheet(
             "font-family: monospace; font-weight: bold; padding: 2px 10px;"
             + ("color: #2ecc71;" if mav_ok else "color: #ff6b6b;"))
         gps_fix = bool(data.get('gps_fix', False))
-        self.chip_gps.setText("GPS: FIX " if gps_fix else "GPS: NO-FIX")
+        self.chip_gps.setText("GPS: TERKUNCI" if gps_fix else "GPS: MENCARI...")
         self.chip_gps.setStyleSheet(
             "font-family: monospace; font-weight: bold; padding: 2px 10px;"
             + ("color: #2ecc71;" if gps_fix else "color: #f1c40f;"))
-        self.chip_speed.setText(f"SPD: {data.get('groundspeed', 0.0):4.1f} m/s")
+        self.chip_speed.setText(f"Kecepatan: {data.get('groundspeed', 0.0):4.1f} m/s")
         now = time.time()
         last_fps = getattr(self, '_last_fps_t', 0.0)
         if last_fps > 0 and now - last_fps > 0:
             self.chip_fps.setText(f"FPS: {1.0 / (now - last_fps):.0f}")
         self._last_fps_t = now
-        self.chip_state.setText(f"STATE: {data['state']}")
+        self.chip_state.setText(f"Kondisi: {data['state']}")
+
+        # --- Baterai: hijau >= 50 %, kuning 20-50 %, merah < 20 %, abu = no data.
+        volt = data.get('voltage_v')
+        curr = data.get('current_a')
+        pct = data.get('battery_pct')
+        if pct is None and volt is not None:
+            try:
+                pct = max(0.0, min(100.0, (float(volt) - 12.8) / 4.0 * 100.0))
+            except (TypeError, ValueError):
+                pct = None
+        if pct is None:
+            self.chip_batt.setText("Baterai: --")
+            self.chip_batt.setStyleSheet(
+                "font-family: monospace; font-weight: bold;"
+                "padding: 2px 10px; color: #95a5a6;")
+            batt_txt, volt_txt, curr_txt = "--", "--", "--"
+        else:
+            volt_s = f"{volt:.1f} V" if volt is not None else "--"
+            self.chip_batt.setText(f"Baterai: {pct:.0f}% ({volt_s})")
+            color = ("#2ecc71" if pct >= 50 else
+                     "#f1c40f" if pct >= 20 else "#ff6b6b")
+            self.chip_batt.setStyleSheet(
+                "font-family: monospace; font-weight: bold;"
+                f"padding: 2px 10px; color: {color};")
+            batt_txt = f"{pct:.0f} %"
+            volt_txt = volt_s
+            curr_txt = f"{curr:.1f} A" if curr is not None else "--"
 
         self.monitor_table.setItem(0, 0, QTableWidgetItem(data['state']))
         self.monitor_table.setItem(1, 0, QTableWidgetItem(f"{data['lat']:.7f}"))
@@ -636,6 +673,9 @@ class MainWindow(QMainWindow):
         
         self.monitor_table.setItem(3, 0, QTableWidgetItem(target_idx_display_str))
         self.monitor_table.setItem(4, 0, QTableWidgetItem(f"{data['dist_to_wp_m']:.2f}"))
+        self.monitor_table.setItem(5, 0, QTableWidgetItem(batt_txt))
+        self.monitor_table.setItem(6, 0, QTableWidgetItem(volt_txt))
+        self.monitor_table.setItem(7, 0, QTableWidgetItem(curr_txt))
 
     def on_record_waypoint(self):
         if self.current_lat == 0.0 and self.current_lon == 0.0 and self.nav_thread.navigator.current_state != "NO_WAYPOINTS":

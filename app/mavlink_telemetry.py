@@ -70,6 +70,13 @@ class MavlinkTelemetry:
         self._attitude = {}            # {'roll','pitch','yaw'} rad
         self._pos = None               # (lat_deg, lon_deg) atau None (no GPS)
         self._groundspeed = 0.0
+        # Baterai dari SYS_STATUS / BATTERY_STATUS (None = belum ada data).
+        # voltage_v = tegangan pack (V), current_a = arus (A),
+        # battery_pct = sisa 0..100 (%), dihitung dari tegangan bila persen
+        # tidak dikirim firmware.
+        self._voltage_v = None
+        self._current_a = None
+        self._battery_pct = None
 
     # ------------------- koneksi -------------------
     def connect(self, timeout_s=8.0):
@@ -131,7 +138,8 @@ class MavlinkTelemetry:
                 pass  # request ditolak firmware -> abaikan
 
         # SET_MESSAGE_INTERVAL per pesan — lebih andal di PX4.
-        for name in ("ATTITUDE", "GLOBAL_POSITION_INT", "VFR_HUD"):
+        for name in ("ATTITUDE", "GLOBAL_POSITION_INT", "VFR_HUD",
+                     "SYS_STATUS", "BATTERY_STATUS"):
             self._set_message_interval(name, 100_000)  # 10 Hz = 100 ms
 
     def _set_message_interval(self, name, interval_us):
@@ -165,6 +173,33 @@ class MavlinkTelemetry:
                         self._pos = (msg.lat / 1e7, msg.lon / 1e7)
                 elif mtype == "VFR_HUD":
                     self._groundspeed = msg.groundspeed
+                elif mtype == "SYS_STATUS":
+                    # voltage_battery: millivolt (0/0xFFFF = tidak ada sensor).
+                    # current_battery: 10*mA (-1 = tidak ada sensor).
+                    # battery_remaining: persen 0..100 (-1 = tidak dikirim).
+                    vbatt = getattr(msg, "voltage_battery", 0) or 0
+                    if vbatt not in (0, 0xFFFF, 65535):
+                        self._voltage_v = vbatt / 1000.0
+                    curr = getattr(msg, "current_battery", -1)
+                    if curr is not None and curr >= 0:
+                        self._current_a = curr / 100.0
+                    rem = getattr(msg, "battery_remaining", -1)
+                    if rem is not None and 0 <= rem <= 100:
+                        self._battery_pct = float(rem)
+                elif mtype == "BATTERY_STATUS":
+                    # voltages[0] = tegangan cell-1 (mV); voltage pack =
+                    # jumlah semua cell yang valid (< 0xFFFF).
+                    volts = getattr(msg, "voltages", None) or []
+                    cells_mv = [v for v in volts
+                                if v not in (0, 0xFFFF, 65535)]
+                    if cells_mv:
+                        self._voltage_v = sum(cells_mv) / 1000.0
+                    curr = getattr(msg, "current_battery", -1)
+                    if curr is not None and curr >= 0:
+                        self._current_a = curr / 100.0
+                    rem = getattr(msg, "battery_remaining", -1)
+                    if rem is not None and 0 <= rem <= 100:
+                        self._battery_pct = float(rem)
                 elif mtype == "HEARTBEAT":
                     self.last_heartbeat_time = time.time()
                 msg = self.master.recv_match(blocking=False)
@@ -199,6 +234,39 @@ class MavlinkTelemetry:
     @property
     def groundspeed(self):
         return self._groundspeed
+
+    # ------------------- baterai -------------------
+    # Baterai LiPO 4S penuh = 16.8 V, kosong = ~12.8 V (3.2 V/cell).
+    # Baterai LiFePO4 4S penuh = 14.6 V, kosong = ~12.0 V (3.0 V/cell).
+    # Persen dihitung linear dari tegangan bila firmware tidak mengirim
+    # battery_remaining — cukup akurat untuk indikator GUI.
+    LIPO_4S_FULL_V = 16.8
+    LIPO_4S_EMPTY_V = 12.8
+
+    @property
+    def voltage_v(self):
+        """Tegangan pack (V) atau None bila belum ada data."""
+        return self._voltage_v
+
+    @property
+    def current_a(self):
+        """Arus pack (A) atau None bila firmware tidak mengirim."""
+        return self._current_a
+
+    @property
+    def battery_pct(self):
+        """Sisa baterai 0..100 (%) atau None bila belum ada data."""
+        if self._battery_pct is not None:
+            return self._battery_pct
+        if self._voltage_v is None:
+            return None
+        span = self.LIPO_4S_FULL_V - self.LIPO_4S_EMPTY_V
+        pct = (self._voltage_v - self.LIPO_4S_EMPTY_V) / span * 100.0
+        return max(0.0, min(100.0, pct))
+
+    @property
+    def has_battery(self):
+        return self._voltage_v is not None
 
     @property
     def heartbeat_age_s(self):

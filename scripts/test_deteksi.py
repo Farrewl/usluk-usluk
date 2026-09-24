@@ -33,7 +33,7 @@ sys.path.insert(0, ROOT)
 
 from ultralytics import YOLO  # noqa: E402
 
-from app.camera import open_camera  # noqa: E402
+from app.camera import open_camera, flip_frame_if_needed  # noqa: E402
 from app.detection_validation import (  # noqa: E402
     validate_buoy, draw_validated_boxes,
 )
@@ -55,8 +55,11 @@ def _print_box(prefix, r, cls, conf, xyxy, rejected=False):
           f"box={[round(v, 1) for v in xyxy]}{flag}")
 
 
-def _filter_boxes(frame, r, cfgobj, use_validation):
-    """Kembali (kept, total, ditolak). kept = list (cls, conf, xyxy)."""
+def _filter_boxes(frame, r, cfgobj, use_validation, debug=False):
+    """Kembali (kept, total, ditolak). kept = list (cls, conf, xyxy).
+
+    Saat `debug=True`, cetak alasan detail tiap buoy yang ditolak.
+    """
     boxes = r.boxes
     if boxes is None:
         return [], 0, 0
@@ -68,16 +71,32 @@ def _filter_boxes(frame, r, cfgobj, use_validation):
         total += 1
         if use_validation and cls in (cfgobj.RED_BALL_CLASS_ID,
                                       cfgobj.GREEN_BALL_CLASS_ID):
-            lolos = validate_buoy(
-                frame, cls, xyxy,
-                min_area=cfgobj.MIN_BUOY_AREA_PX,
-                min_color_fraction=cfgobj.BUOY_MIN_COLOR_FRACTION,
-                min_saturation=cfgobj.BUOY_MIN_SATURATION,
-                max_aspect_deviation=cfgobj.BUOY_MAX_ASPECT_DEVIATION)
-            if not lolos:
-                rejected += 1
-                _print_box(f"[{j}]", r, cls, conf, xyxy, rejected=True)
-                continue
+            if debug:
+                ok, reasons = validate_buoy(
+                    frame, cls, xyxy,
+                    min_area=cfgobj.MIN_BUOY_AREA_PX,
+                    min_color_fraction=cfgobj.BUOY_MIN_COLOR_FRACTION,
+                    min_saturation=cfgobj.BUOY_MIN_SATURATION,
+                    max_aspect_deviation=cfgobj.BUOY_MAX_ASPECT_DEVIATION,
+                    debug=True)
+                if not ok:
+                    rejected += 1
+                    print(f"  [{j}] *ditolak {r.names[cls]}({cls}) "
+                          f"conf={conf:.3f} box={[round(v,1) for v in xyxy]}")
+                    for reason in reasons:
+                        print(f"      -> {reason}")
+                    continue
+            else:
+                lolos = validate_buoy(
+                    frame, cls, xyxy,
+                    min_area=cfgobj.MIN_BUOY_AREA_PX,
+                    min_color_fraction=cfgobj.BUOY_MIN_COLOR_FRACTION,
+                    min_saturation=cfgobj.BUOY_MIN_SATURATION,
+                    max_aspect_deviation=cfgobj.BUOY_MAX_ASPECT_DEVIATION)
+                if not lolos:
+                    rejected += 1
+                    _print_box(f"[{j}]", r, cls, conf, xyxy, rejected=True)
+                    continue
         kept.append((cls, conf, xyxy))
         _print_box(f"[{j}]", r, cls, conf, xyxy)
     return kept, total, rejected
@@ -103,6 +122,10 @@ def main():
                     help="ambang confidence 0..1")
     ap.add_argument("--frames", type=int, default=1,
                     help="jumlah frame kamera (1 = cepat; lebih = stabilitas)")
+    ap.add_argument("--flip", type=int, default=0, choices=[0,1,2,3],
+                    help="orientasi kamera: 0 normal, 1 mirror kiri-kanan, 2 atas-bawah, 3 180°")
+    ap.add_argument("--debug", action="store_true",
+                    help="cetak alasan detail tiap buoy yang ditolak filter")
     args = ap.parse_args()
 
     if not os.path.exists(args.model):
@@ -155,13 +178,16 @@ def main():
             if not ok or frame is None:
                 print(f"[DET] Frame {i} gagal dibaca, berhenti.")
                 break
+            # Flip kamera jika diminta (mirror horizontal = 1)
+            if args.flip:
+                frame = flip_frame_if_needed(frame, args.flip)
             t0 = time.time()
             results = model(frame, imgsz=args.imgsz, conf=args.conf,
                             verbose=False)
             dt_ms = (time.time() - t0) * 1000.0
             r = results[0]
             kept, total, rejected = _filter_boxes(frame, r, cfgobj,
-                                                  use_validation)
+                                                  use_validation, debug=args.debug)
             total_det += total
             total_rej += rejected
             print(f"[DET] frame {i}: {total} objek "

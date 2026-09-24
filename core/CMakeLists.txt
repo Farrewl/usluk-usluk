@@ -28,5 +28,17 @@ target_include_directories(asv_state_machine PUBLIC include)
 add_library(asv_mavlink_bridge STATIC src/mavlink_bridge.c)
 target_include_directories(asv_mavlink_bridge PUBLIC include)
 
+add_library(asv_control_filters STATIC src/control_filters.c)
+target_include_directories(asv_control_filters PUBLIC include)
+
+add_library(asv_thruster_mixer STATIC src/thruster_mixer.c)
+target_include_directories(asv_thruster_mixer PUBLIC include)
+
+add_library(asv_ecu_link STATIC src/ecu_link.c)
+target_include_directories(asv_ecu_link PUBLIC include)
+
+add_library(asv_arbitrator STATIC src/arbitrator.c)
+target_include_directories(asv_arbitrator PUBLIC include)
+
 enable_testing()
 add_subdirectory(tests)

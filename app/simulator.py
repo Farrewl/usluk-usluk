@@ -41,7 +41,7 @@ except ImportError:
     CAMERA_AVAILABLE = False
 
 try:
-    from .camera import open_camera, make_fallback_frame
+    from .camera import open_camera, make_fallback_frame, flip_frame_if_needed
     CAMERA_HELPER = True
 except ImportError:
     CAMERA_HELPER = False
@@ -383,6 +383,10 @@ class GroundSimNavigator:
                                  dtype=np.uint8)
                 cv2.putText(frame, "CAMERA ERROR", (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
                             1, (0, 0, 255), 2)
+            else:
+                # Orientasi kamera (CAMERA_FLIP_MODE): default 0 = TIDAK
+                # dibalik — gambar persis output sensor (tidak reverse).
+                frame = flip_frame_if_needed(frame, self.config.CAMERA_FLIP_MODE)
 
             elapsed = time.time() - self.state_timer
             status_txt = "Transit"
@@ -507,7 +511,8 @@ class GroundSimNavigator:
                 roll_deg = 0.0
                 lat, lon = self.current_lat, self.current_lon
 
-            data_signal.emit({
+            # Simpan sementara agar bisa dimodifikasi sebelum emit.
+            _pkt = {
                 "lat": lat, "lon": lon,
                 "yaw_deg": yaw_deg,
                 "pitch_deg": pitch_deg, "roll_deg": roll_deg,
@@ -518,14 +523,23 @@ class GroundSimNavigator:
                 "mavlink_ok": bool(self.mav.connected) if self.mav else False,
                 "gps_fix": bool(self.mav.lat is not None) if use_real else True,
                 "frame": processed_frame,
-            })
+            }
+            # Baterai dari Pixhawk (SYS_STATUS/BATTERY_STATUS) bila terhubung.
+            if self.mav and self.mav.has_battery:
+                _pkt["voltage_v"] = self.mav.voltage_v
+                _pkt["current_a"] = self.mav.current_a
+                _pkt["battery_pct"] = self.mav.battery_pct
+            else:
+                _pkt["voltage_v"] = None
+                _pkt["current_a"] = None
+                _pkt["battery_pct"] = None
+            data_signal.emit(_pkt)
 
             if self.dist_to_wp < 3.0 and self.current_waypoint_index < len(self.waypoints) - 1:
                 if self.sim_step in (1, 3, 5):
                     self.current_waypoint_index += 1
 
-            # Pacing ke target fps (default 30). Bila kerja frame lebih lama
-            # dari interval, tidak ada sleep tambahan (loop sesegera mungkin).
+            # Pacing loop ke target fps.
             now = time.time()
             self._fps_count += 1
             if now - self._fps_window >= 5.0:
@@ -798,6 +812,7 @@ class MockSimNavigator:
                 "mavlink_ok": False,
                 "gps_fix": True,
                 "frame": frame,
+                "voltage_v": None, "current_a": None, "battery_pct": None,
             })
             time.sleep(1.0 / 20.0)
 

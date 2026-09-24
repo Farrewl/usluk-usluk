@@ -376,3 +376,26 @@ def make_fallback_frame(width, height, text="CAMERA ERROR"):
     cv2.putText(frame, text, (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
                 1, (0, 0, 255), 2)
     return frame
+
+
+# Kode cv2.flip: 1 = horizontal (mirror), 0 = vertikal, -1 = 180 derajat.
+_FLIP_MODE_TO_CV2_CODE = {
+    0: None,      # tidak diputar sama sekali (gambar sensor asli)
+    1: 1,         # mirror kiri-kanan
+    2: 0,         # atas-bawah
+    3: -1,        # 180 derajat
+}
+
+
+def flip_frame_if_needed(frame, flip_mode=0):
+    """Terapkan orientasi kamera sesuai CAMERA_FLIP_MODE.
+
+    `flip_mode` 0 (default) = gambar TIDAK dibalik — persis output sensor,
+    jadi "camera jangan reverse" terpenuhi tanpa mengubah apa pun. Mode 1-3
+    untuk operator yang memasang kamera dengan orientasi fisik tertentu.
+    Mode tidak dikenal diperlakukan sebagai 0 (aman).
+    """
+    code = _FLIP_MODE_TO_CV2_CODE.get(int(flip_mode))
+    if code is None:
+        return frame
+    return cv2.flip(frame, code)

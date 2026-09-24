@@ -31,10 +31,23 @@ SESSION_VIDEO_DIR = os.path.join(DATA_DIR, "session_videos")
 # Resolusi "tertinggi" sebenarnya ditentukan kamera: permintaan di atas
 # kemampuan aslinya di-clamp sendiri oleh driver. CAMERA_MAX_AUTO_* hanya
 # membatasi ukuran yang boleh diminta saat probing.
-CAMERA_TARGET_FPS = 30
+#
+# CAMERA_TARGET_FPS = 20: loop video & pacing menargetkan 20 fps stabil
+# (negosiasi tetap boleh memilih mode yang nyata-nya > 20, mis. 1280x720
+# MJPG ~30 fps — pacing loop yang menurunkannya ke 20, bukan kamera).
+CAMERA_TARGET_FPS = 20
 CAMERA_MAX_AUTO_WIDTH = 1920
 CAMERA_MAX_AUTO_HEIGHT = 1080
-CAMERA_MIN_ACCEPT_FPS = 25
+# Minimum fps yang MASIH diterima saat negosiasi mode. Diturunkan ke 15
+# supaya resolusi tinggi tetap lolos walau target pacing hanya 20.
+CAMERA_MIN_ACCEPT_FPS = 15
+
+# Orientasi frame kamera: 0 = normal, 1 = mirror kiri-kanan (flip
+# horizontal), 2 = atas-bawah (flip vertikal), 3 = 180 derajat. Nilai 0
+# berarti "tidak reverse" — gambar persis seperti keluar dari sensor.
+# Operator yang merasa feed tampak seperti selfie bisa set 1 di
+# config/tuning_params.json tanpa mengubah kode.
+CAMERA_FLIP_MODE = 0
 
 
 def _load_saved_params():
@@ -62,10 +75,16 @@ TUNING_PARAM_KEYS = frozenset({
     "ROI_TOP_CUTOFF_PERCENT",
     # misi gate (buoy)
     "GATE_WIDTH_METERS", "VISION_ENABLED_LEGS", "MIN_BUOY_AREA_PX",
-    "GATE_AREA_SIMILARITY_RATIO",
+    "GATE_AREA_SIMILARITY_RATIO", "GATE_VERTICAL_ALIGN_PX",
+    "GATE_PASS_DISTANCE_M", "GATE_LOST_TOLERANCE_FRAMES",
     # filter warna/bentuk buoy (lihat app/detection_validation.py)
     "BUOY_CONF_THRESHOLD", "BUOY_MIN_COLOR_FRACTION",
     "BUOY_MIN_SATURATION", "BUOY_MAX_ASPECT_DEVIATION",
+    "DETECTION_DEBUG",
+    # filter & kontroler galat (lihat app/filtering.py == core C)
+    "PID_KP", "PID_KI", "PID_KD", "PID_DEADBAND", "PID_OUTPUT_LIMIT",
+    "PID_INTEGRAL_LIMIT", "COMPLEMENTARY_ALPHA",
+    "EKF_PROCESS_NOISE", "EKF_MEAS_NOISE",
     # misi foto waypoint
     "STOP_AND_PHOTO_AT_WP", "WAYPOINT_PHOTO_STOP_DURATION_S",
     "DETECTION_CONFIRM_DURATION_S",
@@ -126,6 +145,7 @@ class Config:
         self.CAMERA_MAX_AUTO_WIDTH = CAMERA_MAX_AUTO_WIDTH  # batas negosiasi resolusi
         self.CAMERA_MAX_AUTO_HEIGHT = CAMERA_MAX_AUTO_HEIGHT
         self.CAMERA_MIN_ACCEPT_FPS = CAMERA_MIN_ACCEPT_FPS  # mode di bawah ini ditolak
+        self.CAMERA_FLIP_MODE = CAMERA_FLIP_MODE  # orientasi frame (0 = tidak reverse)
         self.ENABLE_SESSION_RECORDING = False
         self.SESSION_VIDEO_FPS = saved.get('SESSION_VIDEO_FPS', 10.0)
 
@@ -158,15 +178,42 @@ class Config:
         # ---------- Misi gate (buoy) ----------
         self.GATE_WIDTH_METERS = saved.get('GATE_WIDTH_METERS', 1.0)
         self.VISION_ENABLED_LEGS = saved.get('VISION_ENABLED_LEGS', [1, 3, 5])
-        self.MIN_BUOY_AREA_PX = saved.get('MIN_BUOY_AREA_PX', 80)
+        self.MIN_BUOY_AREA_PX = saved.get('MIN_BUOY_AREA_PX', 40)
         self.GATE_AREA_SIMILARITY_RATIO = saved.get('GATE_AREA_SIMILARITY_RATIO', 0.5)
+        # Maksimum selisih sumbu-Y (piksel) antara buoy merah & hijau agar
+        # keduanya dianggap satu "gate" sejajar di frame.
+        self.GATE_VERTICAL_ALIGN_PX = saved.get('GATE_VERTICAL_ALIGN_PX', 75)
+        # Ambang lolos/tenggelamnya target gate aktif: saat kapal melewati
+        # titik tengah buoy, target otomatis pindah ke berikutnya.
+        self.GATE_PASS_DISTANCE_M = saved.get('GATE_PASS_DISTANCE_M', 1.2)
+        self.GATE_LOST_TOLERANCE_FRAMES = saved.get('GATE_LOST_TOLERANCE_FRAMES', 5)
         # Filter false-positive buoy: warna + bentuk + confidence
-        # (lihat app/detection_validation.py). Naikkan BUOY_CONF_THRESHOLD
-        # bila YOLO masih mengira objek mirip bola (mis. wajah) sebagai buoy.
-        self.BUOY_CONF_THRESHOLD = saved.get('BUOY_CONF_THRESHOLD', 0.55)
-        self.BUOY_MIN_COLOR_FRACTION = saved.get('BUOY_MIN_COLOR_FRACTION', 0.12)
-        self.BUOY_MIN_SATURATION = saved.get('BUOY_MIN_SATURATION', 0.55)
-        self.BUOY_MAX_ASPECT_DEVIATION = saved.get('BUOY_MAX_ASPECT_DEVIATION', 0.35)
+        # (lihat app/detection_validation.py). Nilai longgar (0.35/0.05/0.35)
+        # supaya buoy ASLI tetap lolos walau lighting buruk; wajah operator
+        # tetap tertolak karena hue kulit bukan merah/hijau.
+        self.BUOY_CONF_THRESHOLD = saved.get('BUOY_CONF_THRESHOLD', 0.35)
+        self.BUOY_MIN_COLOR_FRACTION = saved.get('BUOY_MIN_COLOR_FRACTION', 0.05)
+        self.BUOY_MIN_SATURATION = saved.get('BUOY_MIN_SATURATION', 0.35)
+        self.BUOY_MAX_ASPECT_DEVIATION = saved.get('BUOY_MAX_ASPECT_DEVIATION', 0.5)
+
+        # Debug deteksi: cetak alasan buoy ditolak (maks 1x per detik) ke
+        # konsol — berguna untuk tuning live lewat scripts/test_deteksi.py.
+        self.DETECTION_DEBUG = saved.get('DETECTION_DEBUG', False)
+
+        # ---------- Filter & kontroler galat (app/filtering.py == core C) ----------
+        # PID + deadband pengganti gain-P murni untuk koreksi yaw gate/box.
+        self.PID_KP = saved.get('PID_KP', 1.0)
+        self.PID_KI = saved.get('PID_KI', 0.0)
+        self.PID_KD = saved.get('PID_KD', 0.0)
+        self.PID_DEADBAND = saved.get('PID_DEADBAND', 0.01)        # radian
+        self.PID_OUTPUT_LIMIT = saved.get('PID_OUTPUT_LIMIT', 0.6)  # radian
+        self.PID_INTEGRAL_LIMIT = saved.get('PID_INTEGRAL_LIMIT', 0.3)
+        # Complementary filter untuk memuluskan heading target (fusi
+        # heading terukur + laju yaw gyro). Alpha 1 = percaya gyro, 0 = terukur.
+        self.COMPLEMENTARY_ALPHA = saved.get('COMPLEMENTARY_ALPHA', 0.6)
+        # EKF heading: process (gyro) & measurement (heading visi/GPS) noise.
+        self.EKF_PROCESS_NOISE = saved.get('EKF_PROCESS_NOISE', 0.05)
+        self.EKF_MEAS_NOISE = saved.get('EKF_MEAS_NOISE', 0.10)
 
         # ---------- Misi foto waypoint ----------
         self.STOP_AND_PHOTO_AT_WP = saved.get('STOP_AND_PHOTO_AT_WP', [])

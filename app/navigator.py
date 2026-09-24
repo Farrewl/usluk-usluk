@@ -1,7 +1,12 @@
 from . import settings as cfg
 from . import geo
-from .camera import open_camera
+from .camera import open_camera, flip_frame_if_needed
 from .detection_validation import validate_buoy
+from .filtering import (
+    PidController, complementary_filter, HeadingEkf,
+    normalize_wrap, cross_track_error,
+)
+from .gate_sequencer import GateSequencer, collect_gate_pairs
 from ultralytics import YOLO
 from pymavlink import mavutil
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -60,6 +65,31 @@ class VisionOffboardNavigator:
         self.current_groundspeed = 0.0
 
         self.last_used_p_gain = 0.0 
+
+        # --- Filter & kontroler galat (app/filtering.py == core C) ---
+        # PID + deadband pengganti gain-P murni untuk koreksi yaw.
+        self.pid_gate = PidController(
+            kp=self.config.PID_KP, ki=self.config.PID_KI, kd=self.config.PID_KD,
+            deadband=self.config.PID_DEADBAND,
+            output_limit=self.config.PID_OUTPUT_LIMIT,
+            integral_limit=self.config.PID_INTEGRAL_LIMIT,
+        )
+        self.ekf_heading = HeadingEkf(
+            process_noise=self.config.EKF_PROCESS_NOISE,
+            meas_noise=self.config.EKF_MEAS_NOISE,
+        )
+        # State filter komplementer untuk heading target.
+        self.comp_angle_prev = 0.0
+        self._last_loop_time = time.time()
+
+        # --- Antrean target gate (titik tengah merah+hijau) ---
+        self.gate_seq = GateSequencer(
+            pass_distance_m=self.config.GATE_PASS_DISTANCE_M,
+            lost_tolerance_frames=self.config.GATE_LOST_TOLERANCE_FRAMES,
+            gate_width_m=self.config.GATE_WIDTH_METERS,
+            focal_length_px=self.config.FOCAL_LENGTH_PX,
+        )
+        self.gate_active_mid = None  # midpoint gate aktif (untuk visualisasi)
 
         # Fuzzy Sugeno (app/fuzzy.py): tidak butuh inisialisasi objek controller,
         # cukup fungsi murni. Error hanya terjadi bila tabel tak konsisten.
@@ -148,6 +178,9 @@ class VisionOffboardNavigator:
         self.processing_width = 640
         self.processing_height = 360
         self.image_center_x = self.processing_width / 2.0 
+        self.image_center_y = self.processing_height / 2.0 
+        # Leg terakhir yang disapu GateSequencer (reset target saat ganti leg).
+        self._gate_last_leg = -1 
         
         self.roi_top_y_cutoff = int(self.processing_height * self.config.ROI_TOP_CUTOFF_PERCENT)
         if self.roi_top_y_cutoff > 0:
@@ -283,6 +316,7 @@ class VisionOffboardNavigator:
             frame_kosong = np.zeros((self.processing_height, self.processing_width, 3), dtype=np.uint8)
             cv2.putText(frame_kosong, "Waiting for GPS 3D Fix...", (30, self.processing_height // 2), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
             data_packet = {"lat": 0.0, "lon": 0.0, "yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0, "state": "WAITING_GPS", "target_wp_idx": 0, "dist_to_wp_m": 0.0, "groundspeed": 0.0, "mavlink_ok": True, "gps_fix": False, "frame": frame_kosong}
+            data_packet.update(self._battery_fields())
             data_signal.emit(data_packet)
 
         if self.running and self.waypoints:
@@ -308,6 +342,10 @@ class VisionOffboardNavigator:
                     time.sleep(0.1)
                     frame_raw = frame.copy()
                 else:
+                    # Orientasi kamera (CAMERA_FLIP_MODE): default 0 = TIDAK
+                    # dibalik — gambar persis output sensor (tidak reverse).
+                    frame_high_res = flip_frame_if_needed(
+                        frame_high_res, self.config.CAMERA_FLIP_MODE)
                     frame = cv2.resize(frame_high_res, (self.processing_width, self.processing_height), interpolation=cv2.INTER_LINEAR)
                     frame_raw = frame.copy()
 
@@ -319,6 +357,7 @@ class VisionOffboardNavigator:
                     self._stream_offboard_command(0.0, self.current_yaw_rad or 0, "NO_TELEM (IDLE)")
                     self._set_state_and_publish("NO_TELEM")
                     data_packet = {"lat": 0.0, "lon": 0.0, "yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0, "state": self.current_state, "target_wp_idx": self.current_waypoint_index, "dist_to_wp_m": 0.0, "frame": frame}
+                    data_packet.update(self._battery_fields())
                     data_signal.emit(data_packet)
                     time.sleep(0.5)
                     continue
@@ -337,6 +376,7 @@ class VisionOffboardNavigator:
                         current_pitch_deg = math.degrees(self.last_attitude_msg.pitch)
                         current_roll_deg = math.degrees(self.last_attitude_msg.roll)
                     data_packet = {"lat": self.current_lat, "lon": self.current_lon, "yaw_deg": math.degrees(self.current_yaw_rad or 0.0), "pitch_deg": current_pitch_deg, "roll_deg": current_roll_deg, "state": self.current_state, "target_wp_idx": max(0, len(self.waypoints) - 1), "dist_to_wp_m": 0.0, "frame": frame}
+                    data_packet.update(self._battery_fields())
                     data_signal.emit(data_packet)
                     time.sleep(1.0 / self.config.OFFBOARD_STREAM_RATE_HZ)
                     continue
@@ -396,7 +436,11 @@ class VisionOffboardNavigator:
                             continue 
                         
                     detections = self._detect_objects(frame, self.gate_model, force_run=False)
-                    best_gate, gate_distance = self._find_best_gate(detections)
+                    # Pemilihan gate TIDAK lagi per-frame murni (_find_best_gate):
+                    # GateSequencer mengumpulkan semua pasangan, mengunci target
+                    # aktif & melompat cepat ke gate berikutnya saat yang aktif
+                    # dilewati -> kapal tidak "mikir kelamaan" di tengah gate.
+                    best_gate, gate_distance = self._track_gate(detections)
                     target_yaw_angle_rad, print_status = self._get_gate_nav_yaw(bearing_ke_wp, best_gate, gate_distance)
                 
                 elif self.current_state == "WAYPOINT_TRANSITION":
@@ -896,6 +940,7 @@ class VisionOffboardNavigator:
                                     and self.current_lon is not None),
                     "frame": frame
                 }
+                data_packet.update(self._battery_fields())
                 data_signal.emit(data_packet)
 
         finally:
@@ -948,10 +993,27 @@ class VisionOffboardNavigator:
             if is_on_track:
                 if best_gate:
                     raw_correction_rad = self._calculate_yaw_correction_gate(best_gate, gate_distance)
-                    alpha = self.config.VISION_SMOOTHING_ALPHA
-                    smooth_correction_rad = (alpha * raw_correction_rad) + (1.0 - alpha) * self.last_vision_correction_rad
-                    self.last_vision_correction_rad = smooth_correction_rad
-                    target_yaw_angle_rad = self._normalize_angle(self.current_yaw_rad + smooth_correction_rad)
+                    dt = self._control_dt()
+
+                    # EKF heading (app/filtering.py == core C): prediksi dengan
+                    # laju yaw (gyro pendek) lalu koreksi heading terukur —
+                    # heading estimasi lebih halus dari pengukuran mentah.
+                    gyro_rate = 0.0
+                    if getattr(self, '_last_yaw_meas', None) is not None:
+                        gyro_rate = self._normalize_angle(
+                            self.current_yaw_rad - self._last_yaw_meas) / dt
+                    self._last_yaw_meas = self.current_yaw_rad
+                    self.ekf_heading.predict(gyro_rate, dt)
+                    heading_est = self.ekf_heading.update(self.current_yaw_rad or 0.0)
+
+                    # Complementary filter: extrapolasi heading dari gyro lalu
+                    # fusi dengan (heading estimasi + koreksi visi) — halus &
+                    # tak hanyut.
+                    raw_target = self._normalize_angle(heading_est + raw_correction_rad)
+                    target_yaw_angle_rad = self._normalize_angle(complementary_filter(
+                        self.config.COMPLEMENTARY_ALPHA, self.comp_angle_prev,
+                        gyro_rate, dt, raw_target))
+                    self.comp_angle_prev = target_yaw_angle_rad
                     print_status = f"VISION (Dist: {gate_distance:.1f}m)"
                 else:
                     print_status = "WAYPOINT (On Track, No Gate)"
@@ -984,7 +1046,20 @@ class VisionOffboardNavigator:
                 case 'VFR_HUD':
                     self.current_groundspeed = msg.groundspeed
                 case 'SYS_STATUS':
-                    self.current_voltage = random.uniform(15.75, 15.8)
+                    # voltage_battery satuannya millivolt; 0 / 0xFFFF artinya
+                    # Pixhawk tidak punya sensor tegangan -> pertahankan nilai
+                    # terakhir, jangan diacak (data palsu menyesatkan operator).
+                    vbatt = getattr(msg, "voltage_battery", 0) or 0
+                    if vbatt not in (0, 0xFFFF, 65535):
+                        self.current_voltage = vbatt / 1000.0
+                    curr = getattr(msg, "current_battery", -1)
+                    if curr is not None and curr >= 0:
+                        self.current_current = curr / 100.0
+                    rem = getattr(msg, "battery_remaining", -1)
+                    if rem is not None and 0 <= rem <= 100:
+                        self.current_battery_pct = float(rem)
+                    else:
+                        self.current_battery_pct = None
             msg = self.master.recv_match(type=['ATTITUDE', 'GLOBAL_POSITION_INT', 'VFR_HUD', 'SYS_STATUS'], blocking=False)
 
     def _detect_objects(self, frame, model_to_use, force_run=False):
@@ -994,9 +1069,6 @@ class VisionOffboardNavigator:
             self.last_detections = {}
             return {}
         is_gate = model_to_use is self.gate_model
-        # Model gate rawan salah mendeteksi objek mirip bola (mis. wajah
-        # operator) sebagai buoy -> confidence-nya dinaikkan (config
-        # BUOY_CONF_THRESHOLD) + tiap deteksi buoy diverifikasi warna/bentuk.
         conf = self.config.BUOY_CONF_THRESHOLD if is_gate else 0.25
         results = model_to_use(frame, verbose=False, imgsz=self.config.YOLO_INFERENCE_SIZE,
                                half=self.config.YOLO_HALF_PRECISION, device=self.config.YOLO_DEVICE,
@@ -1012,16 +1084,31 @@ class VisionOffboardNavigator:
                 x1, y1, x2, y2 = map(int, xyxy_tensor[0])
                 if is_gate and cls in (self.config.RED_BALL_CLASS_ID,
                                        self.config.GREEN_BALL_CLASS_ID):
-                    # Filter pasca-YOLO: warna + bentuk + area (lihat
-                    # app/detection_validation.py). Objek mirip bola tapi
-                    # bukan buoy (wajah operator dsb.) TIDAK masuk misi.
-                    if not validate_buoy(
+                    # Debug: panggil validate_buoy(..., debug=True) & cetak
+                    # alasan tolak (throttle maks 1x/detik agar tidak spam).
+                    if self.config.DETECTION_DEBUG:
+                        ok, reasons = validate_buoy(
                             frame, cls, (x1, y1, x2, y2),
                             min_area=self.config.MIN_BUOY_AREA_PX,
                             min_color_fraction=self.config.BUOY_MIN_COLOR_FRACTION,
                             min_saturation=self.config.BUOY_MIN_SATURATION,
-                            max_aspect_deviation=self.config.BUOY_MAX_ASPECT_DEVIATION):
-                        continue
+                            max_aspect_deviation=self.config.BUOY_MAX_ASPECT_DEVIATION,
+                            debug=True)
+                        if not ok:
+                            now = time.time()
+                            if not hasattr(self, '_last_debug_print') or now - self._last_debug_print > 1.0:
+                                print(f"[DETECT DEBUG] buoy cls={cls} ditolak: {'; '.join(reasons)}")
+                                self._last_debug_print = now
+                        if not ok:
+                            continue
+                    else:
+                        if not validate_buoy(
+                                frame, cls, (x1, y1, x2, y2),
+                                min_area=self.config.MIN_BUOY_AREA_PX,
+                                min_color_fraction=self.config.BUOY_MIN_COLOR_FRACTION,
+                                min_saturation=self.config.BUOY_MIN_SATURATION,
+                                max_aspect_deviation=self.config.BUOY_MAX_ASPECT_DEVIATION):
+                            continue
                 if cls not in detections: detections[cls] = []
                 detections[cls].append({'cx':(x1+x2)//2, 'cy':(y1+y2)//2, 'box':(x1,y1,x2,y2), 'area':(x2-x1)*(y2-y1)})
         self.last_detections = detections
@@ -1058,8 +1145,8 @@ class VisionOffboardNavigator:
         raw_correction_rad = math.atan2(error_m, distance_m)
         self.last_used_p_gain = self.config.VISION_P_GAIN 
         
-        scaled_correction_rad = raw_correction_rad * self.config.VISION_P_GAIN
-        return scaled_correction_rad
+        # PID + deadband (pengganti raw * VISION_P_GAIN).
+        return self._apply_yaw_pid(raw_correction_rad, self.config.VISION_P_GAIN)
 
     def _take_photo(self, frame):
         if not self.config.SAVE_GREEN_BOX_PHOTO: return
@@ -1121,6 +1208,62 @@ class VisionOffboardNavigator:
             print(f"ERROR saat akses kamera foto: {e}")
             if cap and cap.isOpened(): cap.release()
 
+    def _control_dt(self):
+        """Selang waktu loop nyata (detik) untuk PID/filter.
+
+        dt diukur dari `self._last_loop_time` (di-set di __init__), bukan
+        tebakan — koreksi tetap benar walau loop berjalan 20 fps (fps turun
+        dari 30) atau tersendat oleh YOLO.
+        """
+        now = time.time()
+        dt = now - self._last_loop_time
+        self._last_loop_time = now
+        return max(dt, 1e-4)
+
+    def _track_gate(self, detections):
+        """Pilih target gate aktif lewat GateSequencer (titik tengah).
+
+        Menggantikan `_find_best_gate` per-frame: sequencer mengumpulkan
+        SEMUA pasangan, latch target aktif (tahan walau sempat hilang), dan
+        melompat cepat ke gate berikutnya saat yang aktif dilewati.
+
+        Return: (best_gate_pair, distance_m); (None, inf) bila tidak ada.
+        Midpoint aktif disimpan di `self.gate_active_mid` untuk visualisasi.
+        """
+        # Reset antrean setiap berganti leg (cara terbit memori antar gate).
+        if self._gate_last_leg != self.current_waypoint_index:
+            self.gate_seq.reset()
+            self._gate_last_leg = self.current_waypoint_index
+
+        red_balls = detections.get(self.config.RED_BALL_CLASS_ID, [])
+        green_balls = detections.get(self.config.GREEN_BALL_CLASS_ID, [])
+        min_area = self.config.MIN_BUOY_AREA_PX
+        red_balls = [b for b in red_balls if b['area'] >= min_area]
+        green_balls = [b for b in green_balls if b['area'] >= min_area]
+
+        if not red_balls or not green_balls:
+            pairs = []
+        else:
+            pairs = collect_gate_pairs(
+                red_balls, green_balls,
+                self.config.GATE_VERTICAL_ALIGN_PX,
+                self.config.GATE_AREA_SIMILARITY_RATIO)
+
+        mid_x, mid_y, dist, is_passed = self.gate_seq.update(
+            pairs, self.image_center_y)
+
+        if mid_x is None:
+            self.gate_active_mid = None
+            return None, float('inf')
+
+        self.gate_active_mid = (mid_x, mid_y)
+        pair = self.gate_seq.active_pair
+        if pair is None or is_passed:
+            # Target aktif sudah dilewati / tidak ada pasangan valid lagi —
+            # jangan koreksi arah; sequencer sudah menyiapkan gate berikutnya.
+            return None, float('inf')
+        return pair, dist
+
     def _find_best_gate(self, detections):
         red_balls = detections.get(self.config.RED_BALL_CLASS_ID, [])
         green_balls = detections.get(self.config.GREEN_BALL_CLASS_ID, [])
@@ -1133,7 +1276,7 @@ class VisionOffboardNavigator:
         FOCAL_LENGTH_PX = self.config.FOCAL_LENGTH_PX
         GATE_WIDTH_METERS = self.config.GATE_WIDTH_METERS
         AREA_SIMILARITY_RATIO_THRESHOLD = self.config.GATE_AREA_SIMILARITY_RATIO
-        vertical_alignment_threshold = 75 
+        vertical_alignment_threshold = self.config.GATE_VERTICAL_ALIGN_PX 
         plausible_pairs = [] 
 
         for r_ball in red_balls:
@@ -1165,6 +1308,17 @@ class VisionOffboardNavigator:
             return None, float('inf')
         return best_pair, min_estimated_distance
 
+    def _apply_yaw_pid(self, raw_correction_rad, dynamic_gain):
+        """PID + deadband untuk koreksi yaw (app/filtering.py == core C).
+
+        Pengganti pola lama `raw * gain`. Gain P tetap bisa dinamis
+        (fuzzy / VISION_P_GAIN) — di-set ulang tiap panggilan; term
+        integral & derivatif memakai dt loop nyata (`_control_dt`) supaya
+        perilaku tidak berubah saat fps turun (20 fps).
+        """
+        self.pid_gate.kp = dynamic_gain
+        return self.pid_gate.update(raw_correction_rad, self._control_dt())
+
     def _calculate_yaw_correction_gate(self, best_gate, distance_m):
         if not isinstance(best_gate, (list, tuple)) or len(best_gate) != 2: return 0.0
         r_ball, g_ball = best_gate
@@ -1191,8 +1345,8 @@ class VisionOffboardNavigator:
                                          abs(error_px))
         
         self.last_used_p_gain = dynamic_p_gain
-        scaled_correction_rad = raw_correction_rad * dynamic_p_gain
-        return scaled_correction_rad
+        # PID + deadband (bukan raw * gain): lihat _apply_yaw_pid.
+        return self._apply_yaw_pid(raw_correction_rad, dynamic_p_gain)
 
     def _calculate_yaw_correction_blue_box(self, best_box, distance_m):
         if not isinstance(best_box, dict) or 'cx' not in best_box: return 0.0
@@ -1209,9 +1363,8 @@ class VisionOffboardNavigator:
         
         raw_correction_rad = math.atan2(error_m, distance_m)
         self.last_used_p_gain = self.config.VISION_P_GAIN
-        scaled_correction_rad = raw_correction_rad * self.config.VISION_P_GAIN
-
-        return scaled_correction_rad
+        # PID + deadband (pengganti raw * VISION_P_GAIN).
+        return self._apply_yaw_pid(raw_correction_rad, self.config.VISION_P_GAIN)
 
     def _calculate_yaw_correction_red_box(self, best_box, distance_m):
         if not isinstance(best_box, dict) or 'cx' not in best_box: return 0.0
@@ -1237,8 +1390,8 @@ class VisionOffboardNavigator:
         
         self.last_used_p_gain = dynamic_p_gain
 
-        scaled_correction_rad = raw_correction_rad * dynamic_p_gain 
-        return scaled_correction_rad
+        # PID + deadband (pengganti raw * dynamic_p_gain) — dock merah.
+        return self._apply_yaw_pid(raw_correction_rad, dynamic_p_gain)
 
     def _visualize(self, frame, detections, best_gate, best_box, best_red_box, jarak_ke_wp, box_distance, red_box_distance, print_status="N/A"):
         cv2.putText(frame, f"STATE: {self.current_state}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
@@ -1281,9 +1434,16 @@ class VisionOffboardNavigator:
             for ball in green_balls: 
                 if ball['area'] >= min_area: cv2.rectangle(frame, ball['box'][0:2], ball['box'][2:], (0, 255, 0), 2)
             if best_gate:
-                midpoint_x = int((best_gate[0]['cx'] + best_gate[1]['cx']) / 2.0)
-                midpoint_y = int((best_gate[0]['cy'] + best_gate[1]['cy']) / 2.0)
+                if self.gate_active_mid is not None:
+                    midpoint_x = int(self.gate_active_mid[0])
+                    midpoint_y = int(self.gate_active_mid[1])
+                else:
+                    midpoint_x = int((best_gate[0]['cx'] + best_gate[1]['cx']) / 2.0)
+                    midpoint_y = int((best_gate[0]['cy'] + best_gate[1]['cy']) / 2.0)
+                cv2.line(frame, (midpoint_x, 0), (midpoint_x, self.processing_height), (255, 255, 0), 1)
                 cv2.circle(frame, (midpoint_x, midpoint_y), 7, (0, 255, 255), -1) 
+                cv2.putText(frame, "TENGAH", (midpoint_x + 10, max(12, midpoint_y - 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2) 
 
         elif self.current_state.startswith("APPROACH_BOX") or self.current_state == "RETREAT":
             for box in detections.get(self.config.GREEN_BOX_CLASS_ID, []): 
@@ -1462,6 +1622,19 @@ class VisionOffboardNavigator:
         z = cr * cp * sy - sr * sp * cy
         return [w, x, y, z]
 
+    def _battery_fields(self):
+        """Field baterai untuk paket GUI — None = belum ada data (GUI tulis '--').
+
+        LiPO 4S penuh 16.8 V / kosong ~12.8 V. Persen dihitung linear dari
+        tegangan bila firmware tidak mengirim battery_remaining.
+        """
+        volt = getattr(self, "current_voltage", None)
+        curr = getattr(self, "current_current", None)
+        pct = getattr(self, "current_battery_pct", None)
+        if pct is None and volt is not None:
+            pct = max(0.0, min(100.0, (volt - 12.8) / (16.8 - 12.8) * 100.0))
+        return {"voltage_v": volt, "current_a": curr, "battery_pct": pct}
+
     def _publish_telemetry(self):
         if self.current_lat is None or self.current_yaw_rad is None: return
         current_roll = 0.0; current_pitch = 0.0
@@ -1473,7 +1646,7 @@ class VisionOffboardNavigator:
                 "roll": current_roll, "pitch": current_pitch, "yaw": self.current_yaw_rad,
                 "lat": self.current_lat, "lon": self.current_lon,
                 "groundspeed": self.current_groundspeed, "heading": math.degrees(self.current_yaw_rad),
-                "voltage": self.current_voltage if hasattr(self, 'current_voltage') else random.uniform(14.6, 16),
+                "voltage": getattr(self, 'current_voltage', None),
                 "nuc_signal": self.current_nuc_signal_ms,
                 "target_wp_idx": self.current_waypoint_index,
                 "state": self.current_state

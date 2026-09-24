@@ -80,9 +80,10 @@ def color_fraction(frame, cls, xyxy, min_saturation):
 
 
 def validate_buoy(frame, cls, xyxy, min_area,
-                  min_color_fraction=0.12,
-                  min_saturation=0.55,
-                  max_aspect_deviation=0.35):
+                  min_color_fraction=0.05,
+                  min_saturation=0.35,
+                  max_aspect_deviation=0.50,
+                  debug=False):
     """Loloskan kotak deteksi hanya bila benar-benar mirip buoy.
 
     Kembalikan True bila SEMUA syarat terpenuhi:
@@ -91,19 +92,56 @@ def validate_buoy(frame, cls, xyxy, min_area,
       * fraksi warna yang cocok >= min_color_fraction.
     Class di luar 0/1 selalu ditolak (caller menentukan class mana yang
     menjalani validasi — fungsi ini sendiri aman dipanggil untuk apa pun).
+
+    Default batas sengaja LONGGAR (conf 0.35 / fraksi warna 0.05 / saturasi
+    0.35 / aspek 0.50) supaya buoy ASLI tetap lolos walau lighting buruk;
+    wajah operator tetap tertolak karena hue kulit adalah oranye/kuning,
+    bukan merah ATAU hijau.
+
+    saat `debug=True`, kembalikan (ok: bool, reasons: list[str]) dengan
+    nilai terukur tiap kriteria agar mudah dicetak di test-live
+    (scripts/test_deteksi.py --debug).
     """
     x1, y1, x2, y2 = [int(v) for v in xyxy]
     w = x2 - x1
     h = y2 - y1
+    reasons = []
+
+    area = w * h
     if w <= 2 or h <= 2:
+        if debug:
+            reasons.append(f"kotak terlalu kecil (w={w}, h={h} px) < 2 px")
+            return False, reasons
         return False
-    if w * h < int(min_area):
+    if area < int(min_area):
+        if debug:
+            reasons.append(f"area {area} px < MIN_BUOY_AREA_PX({min_area:.0f})")
+            return False, reasons
         return False
+
     aspect = w / h
     if abs(aspect - 1.0) > max_aspect_deviation:
+        if debug:
+            reasons.append(
+                f"aspek {aspect:.2f} menyimpang > {max_aspect_deviation:.2f} "
+                f"(bukan bentuk bola/bujur sangkar)")
+            return False, reasons
         return False
+
     frac = color_fraction(frame, cls, xyxy, min_saturation)
-    return frac >= min_color_fraction
+    if frac < min_color_fraction:
+        if debug:
+            reasons.append(
+                f"fraksi warna cocok {frac:.3f} < {min_color_fraction:.2f} "
+                f"(warna bukan {('hijau' if cls == 0 else 'merah')} pekat)")
+            return False, reasons
+        return False
+
+    if debug:
+        reasons.append(f"LOLOS (area {area} px, aspek {aspect:.2f}, "
+                       f"warna {frac:.3f})")
+        return True, reasons
+    return True
 
 
 def draw_validated_boxes(frame, kept, names):

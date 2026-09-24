@@ -1069,7 +1069,9 @@ class VisionOffboardNavigator:
             self.last_detections = {}
             return {}
         is_gate = model_to_use is self.gate_model
-        conf = self.config.BUOY_CONF_THRESHOLD if is_gate else 0.25
+        # Gate: gunakan conf rendah (0.25) agar box kecil (jauh) keluar dari model,
+        # lalu filter adaptif di validate_buoy.
+        conf = 0.25 if is_gate else 0.25
         results = model_to_use(frame, verbose=False, imgsz=self.config.YOLO_INFERENCE_SIZE,
                                half=self.config.YOLO_HALF_PRECISION, device=self.config.YOLO_DEVICE,
                                conf=conf)
@@ -1082,8 +1084,17 @@ class VisionOffboardNavigator:
                 xyxy_tensor = box.xyxy
                 if xyxy_tensor is None or len(xyxy_tensor) == 0: continue
                 x1, y1, x2, y2 = map(int, xyxy_tensor[0])
+                w = x2 - x1
+                h = y2 - y1
+                area = w * h
                 if is_gate and cls in (self.config.RED_BALL_CLASS_ID,
                                        self.config.GREEN_BALL_CLASS_ID):
+                    # Ambang conf adaptif: box kecil (jauh) pakai threshold longgar
+                    conf_thresh = (self.config.BUOY_CONF_SMALL_THRESHOLD
+                                   if area < self.config.BUOY_SMALL_AREA_PX
+                                   else self.config.BUOY_CONF_THRESHOLD)
+                    if float(box.conf[0]) < conf_thresh:
+                        continue
                     # Debug: panggil validate_buoy(..., debug=True) & cetak
                     # alasan tolak (throttle maks 1x/detik agar tidak spam).
                     if self.config.DETECTION_DEBUG:
@@ -1097,7 +1108,7 @@ class VisionOffboardNavigator:
                         if not ok:
                             now = time.time()
                             if not hasattr(self, '_last_debug_print') or now - self._last_debug_print > 1.0:
-                                print(f"[DETECT DEBUG] buoy cls={cls} ditolak: {'; '.join(reasons)}")
+                                print(f"[DETECT DEBUG] buoy cls={cls} area={area} ditolak: {'; '.join(reasons)}")
                                 self._last_debug_print = now
                         if not ok:
                             continue
@@ -1110,7 +1121,7 @@ class VisionOffboardNavigator:
                                 max_aspect_deviation=self.config.BUOY_MAX_ASPECT_DEVIATION):
                             continue
                 if cls not in detections: detections[cls] = []
-                detections[cls].append({'cx':(x1+x2)//2, 'cy':(y1+y2)//2, 'box':(x1,y1,x2,y2), 'area':(x2-x1)*(y2-y1)})
+                detections[cls].append({'cx':(x1+x2)//2, 'cy':(y1+y2)//2, 'box':(x1,y1,x2,y2), 'area':area})
         self.last_detections = detections
         return detections
 
@@ -1177,7 +1188,7 @@ class VisionOffboardNavigator:
                 print(f"ERROR: Gagal membuka kamera foto waypoint di indeks {cam_idx}.")
                 return
             
-            # === SETTINGAN OBAT KUAT ===
+            # == SETTINGAN OBAT KUAT ==
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1) # Force Brightness

@@ -87,15 +87,16 @@ def validate_buoy(frame, cls, xyxy, min_area,
     """Loloskan kotak deteksi hanya bila benar-benar mirip buoy.
 
     Kembalikan True bila SEMUA syarat terpenuhi:
-      * luas kotak >= min_area,
+      * luas kotak >= min_area (default 16 px² = 4×4, biarkan buoy jauh lolos),
       * |w/h - 1| <= max_aspect_deviation (bentuk mendekati bujur sangkar),
       * fraksi warna yang cocok >= min_color_fraction.
+        Untuk box kecil (< 80 px²) ambang warna dibagi 2 (statistik tidak stabil).
     Class di luar 0/1 selalu ditolak (caller menentukan class mana yang
     menjalani validasi — fungsi ini sendiri aman dipanggil untuk apa pun).
 
     Default batas sengaja LONGGAR (conf 0.35 / fraksi warna 0.05 / saturasi
-    0.35 / aspek 0.50) supaya buoy ASLI tetap lolos walau lighting buruk;
-    wajah operator tetap tertolak karena hue kulit adalah oranye/kuning,
+    0.35 / aspek 0.50 / area 16) supaya buoy ASLI tetap lolos walau lighting
+    buruk; wajah operator tetap tertolak karena hue kulit adalah oranye/kuning,
     bukan merah ATAU hijau.
 
     saat `debug=True`, kembalikan (ok: bool, reasons: list[str]) dengan
@@ -128,18 +129,23 @@ def validate_buoy(frame, cls, xyxy, min_area,
             return False, reasons
         return False
 
+    # Box kecil (jauh) → statistik warna tidak stabil → turunkan ambang 2×
+    is_small = area < 80
+    eff_color_frac = min_color_fraction * (0.5 if is_small else 1.0)
+
     frac = color_fraction(frame, cls, xyxy, min_saturation)
-    if frac < min_color_fraction:
+    if frac < eff_color_frac:
         if debug:
             reasons.append(
-                f"fraksi warna cocok {frac:.3f} < {min_color_fraction:.2f} "
-                f"(warna bukan {('hijau' if cls == 0 else 'merah')} pekat)")
+                f"fraksi warna cocok {frac:.3f} < {eff_color_frac:.3f} "
+                f"(warna bukan {('hijau' if cls == 0 else 'merah')} pekat)"
+                f"{' [box kecil]' if is_small else ''}")
             return False, reasons
         return False
 
     if debug:
         reasons.append(f"LOLOS (area {area} px, aspek {aspect:.2f}, "
-                       f"warna {frac:.3f})")
+                       f"warna {frac:.3f}{' [box kecil]' if is_small else ''})")
         return True, reasons
     return True
 

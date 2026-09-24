@@ -83,12 +83,15 @@ class GateSequencer:
 
     def __init__(self, pass_distance_m=1.2, lost_tolerance_frames=5,
                  gate_width_m=1.0, focal_length_px=400,
-                 midpoint_match_px=6.0):
+                 midpoint_match_px=6.0,
+                 track_match_px=30, track_boost=1.5):
         self.pass_distance_m = pass_distance_m
         self.lost_tolerance_frames = lost_tolerance_frames
         self.gate_width_m = gate_width_m
         self.focal_length_px = focal_length_px
         self.midpoint_match_px = midpoint_match_px
+        self.track_match_px = track_match_px
+        self.track_boost = track_boost
         self.reset()
 
     def reset(self):
@@ -98,6 +101,9 @@ class GateSequencer:
         self.active_pair = None
         self.lost_frames = 0
         self.is_passed = False
+        # Memori tracking buoy individual (tidak hanya pasangan):
+        # {cls: [(cx, cy, area, frames_since_seen), ...]}
+        self._buoy_memory = {0: [], 1: []}
 
     def _build_targets(self, pairs):
         """List target terurut jarak: [mid_x, mid_y, dist, pair]."""
@@ -147,6 +153,21 @@ class GateSequencer:
 
         self.lost_frames = 0
 
+        # --- Update tracking memory for individual buoys ---
+        # Extract individual buoys from pairs
+        seen_red = set()
+        seen_green = set()
+        for pair in pairs:
+            r_ball, g_ball = pair
+            seen_red.add((r_ball['cx'], r_ball['cy'], r_ball.get('area', 0)))
+            seen_green.add((g_ball['cx'], g_ball['cy'], g_ball.get('area', 0)))
+
+        self._update_buoy_memory(1, seen_red)  # red
+        self._update_buoy_memory(0, seen_green)  # green
+
+        # --- Rank targets: memory boost hanya pengaruh urutan, jarak asli tetap ---
+        ranked = self._rank_targets_from_memory(targets)
+
         match = self._find_match(targets)
         if match >= 0 and not self.is_passed:
             # Target aktif masih terlihat dan belum lewat -> latch tetap.
@@ -159,7 +180,9 @@ class GateSequencer:
 
         # Target aktif hilang ATAU sudah lewat: pilih target depan terdekat.
         # Target di belakang frame (mid_y > center) tidak pernah dipilih lagi.
-        for mid_x, mid_y, dist, pair in targets:
+        # Iterasi urutan ranked (boost), tapi kembalikan jarak ASLI.
+        for idx in ranked:
+            mid_x, mid_y, dist, pair = targets[idx]
             if dist < self.pass_distance_m or mid_y > image_center_y:
                 continue
             self.active_mid = (mid_x, mid_y)
@@ -172,7 +195,7 @@ class GateSequencer:
         # Kembalikan yang terdekat (yang justru baru dilewati) agar caller
         # tahu posisinya, tapi tandai passed sehingga tidak dipilih ulang.
         if targets:
-            mid_x, mid_y, dist, pair = targets[0]
+            mid_x, mid_y, dist, pair = targets[ranked[0]]
             self.active_mid = (mid_x, mid_y)
             self.active_dist = dist
             self.active_pair = pair
@@ -180,3 +203,61 @@ class GateSequencer:
             return mid_x, mid_y, dist, True
 
         return None, None, float('inf'), False
+
+    def _update_buoy_memory(self, cls, seen_positions):
+        """Perbarui memori posisi buoy per class.
+
+        `seen_positions`: set of (cx, cy, area) yg terlihat frame ini.
+        Entri lama di-increment frames_since_seen; yang tidak terlihat
+        > lost_tolerance_frames dihapus.
+        """
+        mem = self._buoy_memory.setdefault(cls, [])
+        # Decrement counter for existing (frame tidak terlihat)
+        for entry in mem:
+            entry[3] += 1
+        # Match yang terlihat: reset counter, update posisi (smooth ringan)
+        for cx, cy, area in seen_positions:
+            matched = False
+            for entry in mem:
+                px, py, _, _ = entry
+                if (cx - px) ** 2 + (cy - py) ** 2 <= self.track_match_px ** 2:
+                    entry[0] = int(0.7 * px + 0.3 * cx)
+                    entry[1] = int(0.7 * py + 0.3 * cy)
+                    entry[2] = area
+                    entry[3] = 0
+                    matched = True
+                    break
+            if not matched:
+                mem.append([cx, cy, area, 0])
+        # Hapus yang expired
+        mem[:] = [e for e in mem if e[3] < self.lost_tolerance_frames]
+
+    def _rank_targets_from_memory(self, targets):
+        """Urutan index target: yang cocok memori tracking didahulukan.
+
+        Return list index (bukan target baru) — jarak asli tidak diubah,
+        hanya urutan pemilihan. Buoy terlacak yang mengecil (jauh)
+        tetap diprioritaskan karena memorinya masih ada.
+        """
+        scored = []
+        for idx, (mid_x, mid_y, dist, pair) in enumerate(targets):
+            r_ball, g_ball = pair
+            boost = 1.0
+            for cls, ball in [(1, r_ball), (0, g_ball)]:
+                mem = self._buoy_memory.get(cls, [])
+                for px, py, _, _frames_ago in mem:
+                    if (ball['cx'] - px) ** 2 + (ball['cy'] - py) ** 2 <= self.track_match_px ** 2:
+                        boost = max(boost, self.track_boost)
+                        break
+            eff = dist / boost if boost > 1.0 else dist
+            scored.append((eff, idx))
+        scored.sort(key=lambda s: s[0])
+        return [idx for _, idx in scored]
+
+    def _boost_targets_from_memory(self, targets):
+        """Kompat lawas: kembalikan target terurut (jarak asli, bukan eff).
+
+        Dipakai test tracking — urutan = prioritas boost.
+        """
+        ranked = self._rank_targets_from_memory(targets)
+        return [targets[i] for i in ranked]

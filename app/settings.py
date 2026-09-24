@@ -35,12 +35,12 @@ SESSION_VIDEO_DIR = os.path.join(DATA_DIR, "session_videos")
 # CAMERA_TARGET_FPS = 20: loop video & pacing menargetkan 20 fps stabil
 # (negosiasi tetap boleh memilih mode yang nyata-nya > 20, mis. 1280x720
 # MJPG ~30 fps — pacing loop yang menurunkannya ke 20, bukan kamera).
-CAMERA_TARGET_FPS = 20
+CAMERA_TARGET_FPS = 23
 CAMERA_MAX_AUTO_WIDTH = 1920
 CAMERA_MAX_AUTO_HEIGHT = 1080
 # Minimum fps yang MASIH diterima saat negosiasi mode. Diturunkan ke 15
 # supaya resolusi tinggi tetap lolos walau target pacing hanya 20.
-CAMERA_MIN_ACCEPT_FPS = 15
+CAMERA_MIN_ACCEPT_FPS = 18
 
 # Orientasi frame kamera: 0 = normal, 1 = mirror kiri-kanan (flip
 # horizontal), 2 = atas-bawah (flip vertikal), 3 = 180 derajat. Nilai 0
@@ -80,6 +80,9 @@ TUNING_PARAM_KEYS = frozenset({
     # filter warna/bentuk buoy (lihat app/detection_validation.py)
     "BUOY_CONF_THRESHOLD", "BUOY_MIN_COLOR_FRACTION",
     "BUOY_MIN_SATURATION", "BUOY_MAX_ASPECT_DEVIATION",
+    # adaptif deteksi jauh
+    "BUOY_CONF_SMALL_THRESHOLD", "BUOY_SMALL_AREA_PX",
+    "BUOY_TRACK_MATCH_PX", "BUOY_TRACK_BOOST",
     "DETECTION_DEBUG",
     # filter & kontroler galat (lihat app/filtering.py == core C)
     "PID_KP", "PID_KI", "PID_KD", "PID_DEADBAND", "PID_OUTPUT_LIMIT",
@@ -178,7 +181,7 @@ class Config:
         # ---------- Misi gate (buoy) ----------
         self.GATE_WIDTH_METERS = saved.get('GATE_WIDTH_METERS', 1.0)
         self.VISION_ENABLED_LEGS = saved.get('VISION_ENABLED_LEGS', [1, 3, 5])
-        self.MIN_BUOY_AREA_PX = saved.get('MIN_BUOY_AREA_PX', 40)
+        self.MIN_BUOY_AREA_PX = saved.get('MIN_BUOY_AREA_PX', 16)
         self.GATE_AREA_SIMILARITY_RATIO = saved.get('GATE_AREA_SIMILARITY_RATIO', 0.5)
         # Maksimum selisih sumbu-Y (piksel) antara buoy merah & hijau agar
         # keduanya dianggap satu "gate" sejajar di frame.
@@ -195,6 +198,13 @@ class Config:
         self.BUOY_MIN_COLOR_FRACTION = saved.get('BUOY_MIN_COLOR_FRACTION', 0.05)
         self.BUOY_MIN_SATURATION = saved.get('BUOY_MIN_SATURATION', 0.35)
         self.BUOY_MAX_ASPECT_DEVIATION = saved.get('BUOY_MAX_ASPECT_DEVIATION', 0.5)
+        # Adaptif deteksi jauh: conf & area minimum lebih longgar untuk box kecil
+        self.BUOY_CONF_SMALL_THRESHOLD = saved.get('BUOY_CONF_SMALL_THRESHOLD', 0.20)
+        self.BUOY_SMALL_AREA_PX = saved.get('BUOY_SMALL_AREA_PX', 80)
+        # Tracking boost: buoy yang sudah terdeteksi tapi mengecil (menjauh)
+        # atau membesar (mendekat) di-latch beberapa frame.
+        self.BUOY_TRACK_MATCH_PX = saved.get('BUOY_TRACK_MATCH_PX', 30)
+        self.BUOY_TRACK_BOOST = saved.get('BUOY_TRACK_BOOST', 1.5)
 
         # Debug deteksi: cetak alasan buoy ditolak (maks 1x per detik) ke
         # konsol — berguna untuk tuning live lewat scripts/test_deteksi.py.

@@ -159,6 +159,57 @@ def test_sequencer_reset_on_leg_change():
     assert mid_x is None  # reset -> tidak ada target
 
 
+def test_sequencer_tracking_memory_boost():
+    """Buoy terlacak mengecil (jauh) tetap diprioritaskan via memory boost."""
+    seq = GateSequencer(pass_distance_m=1.0, lost_tolerance_frames=5,
+                        gate_width_m=1.0, focal_length_px=400,
+                        track_match_px=30, track_boost=1.5)
+    # Frame 1: gate besar (dekat) — isi memory
+    r = _ball(100, 100, 500)
+    g = _ball(200, 100, 500)
+    seq.update([(r, g)], 180)
+    assert len(seq._buoy_memory[0]) == 1  # green tracked
+    assert len(seq._buoy_memory[1]) == 1  # red tracked
+
+    # Frame 2: dua gate — satu dekat memory, satu baru jauh
+    # gate dekat memory: posisi shift kecil (105,102)
+    r2 = _ball(105, 102, 450)
+    g2 = _ball(205, 102, 450)
+    # gate baru jauh: posisi beda jauh
+    r3 = _ball(400, 100, 100)
+    g3 = _ball(450, 100, 100)
+    mid_x, mid_y, dist, passed = seq.update([(r2, g2), (r3, g3)], 180)
+    # Gate terlacak harus dipilih (boost menurunkan eff_dist)
+    assert (mid_x, mid_y) == (155, 102), f"got {(mid_x, mid_y)}"
+
+
+def test_sequencer_memory_expires():
+    """Memory expired setelah lost_tolerance_frames tanpa terlihat."""
+    seq = GateSequencer(pass_distance_m=1.0, lost_tolerance_frames=3,
+                        gate_width_m=1.0, focal_length_px=400)
+    r = _ball(100, 100, 500)
+    g = _ball(200, 100, 500)
+    seq.update([(r, g)], 180)
+    assert len(seq._buoy_memory[0]) == 1
+    # 3 frame kosong -> memory habis
+    seq.update([], 180)
+    seq.update([], 180)
+    seq.update([], 180)
+    mid_x, _, _, _ = seq.update([], 180)
+    assert mid_x is None
+
+
+def test_sequencer_reset_clears_memory():
+    """Reset hapus memory tracking juga."""
+    seq = GateSequencer(pass_distance_m=1.0, lost_tolerance_frames=5,
+                        gate_width_m=1.0, focal_length_px=400)
+    r = _ball(100, 100, 500)
+    g = _ball(200, 100, 500)
+    seq.update([(r, g)], 180)
+    seq.reset()
+    assert seq._buoy_memory == {0: [], 1: []}
+
+
 if __name__ == "__main__":
     import traceback
     tests = [
@@ -172,6 +223,9 @@ if __name__ == "__main__":
         test_sequencer_pass_gate_advance,
         test_sequencer_y_behind_center_passed,
         test_sequencer_reset_on_leg_change,
+        test_sequencer_tracking_memory_boost,
+        test_sequencer_memory_expires,
+        test_sequencer_reset_clears_memory,
     ]
     passed = 0
     for t in tests:

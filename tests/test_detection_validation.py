@@ -192,5 +192,29 @@ class TestDrawValidatedBoxes(unittest.TestCase):
                         "frame masukan tidak boleh termutasi")
 
 
+class TestAdaptifDeteksiJauh(unittest.TestCase):
+    """Buoy kecil (jauh) tetap lolos; wajah kecil tetap ditolak."""
+
+    def test_box_4x4_merah_lolos_dengan_area_16(self):
+        # 4x4=16 px >= min_area 16 -> lolos walau kecil.
+        fr = _solid_frame(RED)
+        self.assertTrue(validate_buoy(
+            fr, cls=1, xyxy=(300, 220, 304, 224), min_area=16))
+
+    def test_box_kecil_fraksi_warna_separuh(self):
+        # Lingkaran kecil: fraksi warna ~0.78 > 0.025 (0.05/2) -> lolos.
+        fr = _circle_frame(RED, radius=5)
+        ok, reasons = validate_buoy(
+            fr, cls=1, xyxy=_box_for_circle(radius=5), min_area=16,
+            min_color_fraction=0.05, debug=True)
+        self.assertTrue(ok, f"seharusnya lolos: {reasons}")
+
+    def test_wajah_kecil_tetap_ditolak(self):
+        # Warna kulit bukan merah -> tetap ditolak walau box kecil.
+        fr = _solid_frame(SKIN_BGR)
+        self.assertFalse(validate_buoy(
+            fr, cls=1, xyxy=(300, 220, 310, 230), min_area=16))
+
+
 if __name__ == "__main__":
     unittest.main()

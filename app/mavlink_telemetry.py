@@ -138,8 +138,9 @@ class MavlinkTelemetry:
                 pass  # request ditolak firmware -> abaikan
 
         # SET_MESSAGE_INTERVAL per pesan — lebih andal di PX4.
+        # RC_CHANNELS: posisi stick receiver (baca via Pixhawk RCIN).
         for name in ("ATTITUDE", "GLOBAL_POSITION_INT", "VFR_HUD",
-                     "SYS_STATUS", "BATTERY_STATUS"):
+                     "SYS_STATUS", "BATTERY_STATUS", "RC_CHANNELS"):
             self._set_message_interval(name, 100_000)  # 10 Hz = 100 ms
 
     def _set_message_interval(self, name, interval_us):

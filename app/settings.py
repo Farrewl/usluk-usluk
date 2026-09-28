@@ -43,11 +43,11 @@ CAMERA_MAX_AUTO_HEIGHT = 1080
 CAMERA_MIN_ACCEPT_FPS = 18
 
 # Orientasi frame kamera: 0 = normal, 1 = mirror kiri-kanan (flip
-# horizontal), 2 = atas-bawah (flip vertikal), 3 = 180 derajat. Nilai 0
-# berarti "tidak reverse" — gambar persis seperti keluar dari sensor.
-# Operator yang merasa feed tampak seperti selfie bisa set 1 di
-# config/tuning_params.json tanpa mengubah kode.
-CAMERA_FLIP_MODE = 0
+# horizontal), 2 = atas-bawah (flip vertikal), 3 = 180 derajat. Default 1
+# (mirror) karena umpan kamera navigasi terpasang terbalik — objek di kanan
+# kapal tampil di kiri GUI bila 0. Bisa diubah via GUI tuning /
+# config/tuning_params.json (key CAMERA_FLIP_MODE) tanpa mengubah kode.
+CAMERA_FLIP_MODE = 1
 
 
 def _load_saved_params():
@@ -77,6 +77,7 @@ TUNING_PARAM_KEYS = frozenset({
     "GATE_WIDTH_METERS", "VISION_ENABLED_LEGS", "MIN_BUOY_AREA_PX",
     "GATE_AREA_SIMILARITY_RATIO", "GATE_VERTICAL_ALIGN_PX",
     "GATE_PASS_DISTANCE_M", "GATE_LOST_TOLERANCE_FRAMES",
+    "CAMERA_FLIP_MODE",
     # filter warna/bentuk buoy (lihat app/detection_validation.py)
     "BUOY_CONF_THRESHOLD", "BUOY_MIN_COLOR_FRACTION",
     "BUOY_MIN_SATURATION", "BUOY_MAX_ASPECT_DEVIATION",
@@ -102,6 +103,11 @@ TUNING_PARAM_KEYS = frozenset({
     # misi docking (box merah)
     "RED_BOX_WIDTH_METERS", "RED_BOX_DOCK_DISTANCE_M", "DOCK_ALIGN_THRUST",
     "DOCK_HOLD_DURATION_S", "YAW_SEARCH_DOCK",
+    # kendali manual RC/gamepad (lihat core/src/manual_control.c)
+    "MANUAL_ENABLED", "MANUAL_MAX_SURGE", "MANUAL_MAX_YAW",
+    "MANUAL_DEADBAND", "MANUAL_EXPO", "MANUAL_RATE_LIMIT",
+    "RC_TIMEOUT_MS", "RC_CH_THROTTLE", "RC_CH_YAW", "RC_CH_MODE",
+    "RC_CH_DEADMAN", "MANUAL_LOST_HOLD_S",
     # YOLO
     "YOLO_FRAME_SKIP", "YOLO_INFERENCE_SIZE",
 })
@@ -148,7 +154,9 @@ class Config:
         self.CAMERA_MAX_AUTO_WIDTH = CAMERA_MAX_AUTO_WIDTH  # batas negosiasi resolusi
         self.CAMERA_MAX_AUTO_HEIGHT = CAMERA_MAX_AUTO_HEIGHT
         self.CAMERA_MIN_ACCEPT_FPS = CAMERA_MIN_ACCEPT_FPS  # mode di bawah ini ditolak
-        self.CAMERA_FLIP_MODE = CAMERA_FLIP_MODE  # orientasi frame (0 = tidak reverse)
+        # Flip dibaca dari tuning (disimpan GUI) dulu, fallback ke konstanta
+        # modul — tanpa ini perubahan via GUI tidak pernah dipakai.
+        self.CAMERA_FLIP_MODE = saved.get('CAMERA_FLIP_MODE', CAMERA_FLIP_MODE)
         self.ENABLE_SESSION_RECORDING = False
         self.SESSION_VIDEO_FPS = saved.get('SESSION_VIDEO_FPS', 10.0)
 
@@ -260,6 +268,23 @@ class Config:
         self.DOCK_ALIGN_THRUST = saved.get('DOCK_ALIGN_THRUST', 0.4)
         self.DOCK_HOLD_DURATION_S = saved.get('DOCK_HOLD_DURATION_S', 5.0)
         self.YAW_SEARCH_DOCK = saved.get('YAW_SEARCH_DOCK', 90)
+
+        # ---------- Kendali manual RC/gamepad (lihat core/src/manual_control.c) ----------
+        # MANUAL_MAX_* membatasi gas/belok manual (default 0.6/0.7 = aman).
+        # RC_CH_* = nomor channel (1-based) di RC_CHANNELS Pixhawk.
+        # Deadman: MANUAL hanya aktif selama CH_DEADMAN > 1500.
+        self.MANUAL_ENABLED = saved.get('MANUAL_ENABLED', True)
+        self.MANUAL_MAX_SURGE = saved.get('MANUAL_MAX_SURGE', 0.6)
+        self.MANUAL_MAX_YAW = saved.get('MANUAL_MAX_YAW', 0.7)
+        self.MANUAL_DEADBAND = saved.get('MANUAL_DEADBAND', 0.05)
+        self.MANUAL_EXPO = saved.get('MANUAL_EXPO', 0.3)
+        self.MANUAL_RATE_LIMIT = saved.get('MANUAL_RATE_LIMIT', 2.0)
+        self.RC_TIMEOUT_MS = saved.get('RC_TIMEOUT_MS', 500)
+        self.RC_CH_THROTTLE = saved.get('RC_CH_THROTTLE', 3)
+        self.RC_CH_YAW = saved.get('RC_CH_YAW', 4)
+        self.RC_CH_MODE = saved.get('RC_CH_MODE', 5)
+        self.RC_CH_DEADMAN = saved.get('RC_CH_DEADMAN', 7)
+        self.MANUAL_LOST_HOLD_S = saved.get('MANUAL_LOST_HOLD_S', 1.0)
 
         # ---------- YOLO & video ----------
         self.YOLO_FRAME_SKIP = saved.get('YOLO_FRAME_SKIP', 1)

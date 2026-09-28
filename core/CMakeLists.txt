@@ -40,5 +40,17 @@ target_include_directories(asv_ecu_link PUBLIC include)
 add_library(asv_arbitrator STATIC src/arbitrator.c)
 target_include_directories(asv_arbitrator PUBLIC include)
 
+add_library(asv_rc_decode STATIC src/rc_decode.c)
+target_include_directories(asv_rc_decode PUBLIC include)
+
+add_library(asv_manual_control STATIC src/manual_control.c)
+target_include_directories(asv_manual_control PUBLIC include)
+
+add_library(asv_mode_manager STATIC src/mode_manager.c)
+target_include_directories(asv_mode_manager PUBLIC include)
+
+add_library(asv_gamepad_input STATIC src/gamepad_input.cpp)
+target_include_directories(asv_gamepad_input PUBLIC include)
+
 enable_testing()
 add_subdirectory(tests)

@@ -370,7 +370,6 @@ def find_working_camera(preferred=None, max_index=4, width=None, height=None):
 
 
 def make_fallback_frame(width, height, text="CAMERA ERROR"):
-    """Frame sintetis bertuliskan peringatan, untuk saat kamera absent."""
     import numpy as np
     frame = np.zeros((int(height), int(width), 3), dtype=np.uint8)
     cv2.putText(frame, text, (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
@@ -378,23 +377,15 @@ def make_fallback_frame(width, height, text="CAMERA ERROR"):
     return frame
 
 
-# Kode cv2.flip: 1 = horizontal (mirror), 0 = vertikal, -1 = 180 derajat.
 _FLIP_MODE_TO_CV2_CODE = {
-    0: None,      # tidak diputar sama sekali (gambar sensor asli)
-    1: 1,         # mirror kiri-kanan
-    2: 0,         # atas-bawah
-    3: -1,        # 180 derajat
+    0: None,     
+    1: 1,        
+    2: 0,      
+    3: -1,       
 }
 
 
-def flip_frame_if_needed(frame, flip_mode=0):
-    """Terapkan orientasi kamera sesuai CAMERA_FLIP_MODE.
-
-    `flip_mode` 0 (default) = gambar TIDAK dibalik — persis output sensor,
-    jadi "camera jangan reverse" terpenuhi tanpa mengubah apa pun. Mode 1-3
-    untuk operator yang memasang kamera dengan orientasi fisik tertentu.
-    Mode tidak dikenal diperlakukan sebagai 0 (aman).
-    """
+def flip_frame_if_needed(frame, flip_mode=1):
     code = _FLIP_MODE_TO_CV2_CODE.get(int(flip_mode))
     if code is None:
         return frame

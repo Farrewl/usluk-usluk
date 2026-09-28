@@ -1,11 +1,8 @@
 from . import settings as cfg
-from . import geo
+from . import aterkia_core as core
+from .manual_link import ManualLink
 from .camera import open_camera, flip_frame_if_needed
 from .detection_validation import validate_buoy
-from .filtering import (
-    PidController, complementary_filter, HeadingEkf,
-    normalize_wrap, cross_track_error,
-)
 from .gate_sequencer import GateSequencer, collect_gate_pairs
 from ultralytics import YOLO
 from pymavlink import mavutil
@@ -14,14 +11,13 @@ import numpy as np
 import sys, time, math, cv2, csv, redis, base64, threading, requests, random, subprocess, re
 import os, json
 
-# Fuzzy Sugeno singleton (gain P dinamis) memakai app/fuzzy.py — implementasi
-# murni Python. scikit-fuzzy >= 0.5 tidak bisa bikin singleton output
-# (ValueError: "...must be equivalent in length to the universe variable"),
-# jadi NAH itu yang membuat fuzzy diam-diam mati. app/fuzzy.py menggantikannya
-# tanpa dependensi eksternal tambahan.
-from .fuzzy import gate_p_gain, docking_p_gain
+# Hitungan navigasi (PID/EKF/komplementer/geodesi/fuzzy) berjalan di C via
+# app/aterkia_core.py (core/libaterkia.so). Modul Python app/filtering.py,
+# app/geo.py & app/fuzzy.py dipertahankan HANYA sebagai referensi uji
+# (tests/test_*.py cross-check bit-per-bit) — jalur produksi di file ini
+# TIDAK mengimpornya langsung.
 FUZZY_ENABLED = True
-print("Fuzzy Logic (app/fuzzy.py) SIAP — gate_p_gain & docking_p_gain.")
+print("Fuzzy Logic (core C fuzzy_gate/docking_p_gain) SIAP via aterkia_core.")
 
 
 WAYPOINTS = [] 
@@ -33,9 +29,8 @@ class VisionOffboardNavigator:
 
     # NOTE: Factory fuzzy skfuzzy (_create_gate_controller/_create_docking_controller)
     # DIHAPUS — scikit-fuzzy >= 0.5 gagal membuat singleton output. Desain
-    # Sugeno yang sama (trapmf, AND=min, rata-rata tertimbang) sekarang ada di
-    # app/fuzzy.py (gate_p_gain/docking_p_gain) dengan referensi C 1:1 di
-    # core/src/fuzzy.c.
+    # Sugeno yang sama (trapmf, AND=min, rata-rata tertimbang) sekarang jalan
+    # di C (core/src/fuzzy.c) via app/aterkia_core (fuzzy_gate/docking_gain).
 
 
     def __init__(self, config):
@@ -66,21 +61,29 @@ class VisionOffboardNavigator:
 
         self.last_used_p_gain = 0.0 
 
-        # --- Filter & kontroler galat (app/filtering.py == core C) ---
+        # --- Filter & kontroler galat (hitung di C via aterkia_core) ---
         # PID + deadband pengganti gain-P murni untuk koreksi yaw.
-        self.pid_gate = PidController(
+        # app/filtering.py dipertahankan hanya sebagai referensi uji.
+        self.pid_gate = core.PidState(
             kp=self.config.PID_KP, ki=self.config.PID_KI, kd=self.config.PID_KD,
             deadband=self.config.PID_DEADBAND,
             output_limit=self.config.PID_OUTPUT_LIMIT,
             integral_limit=self.config.PID_INTEGRAL_LIMIT,
         )
-        self.ekf_heading = HeadingEkf(
+        self.ekf_heading = core.EkfState(
             process_noise=self.config.EKF_PROCESS_NOISE,
             meas_noise=self.config.EKF_MEAS_NOISE,
         )
         # State filter komplementer untuk heading target.
         self.comp_angle_prev = 0.0
         self._last_loop_time = time.time()
+        # Jembatan kendali manual RC/gamepad (hitung di C; kabel di
+        # app/manual_link.py). Dipasang ke master MAVLink setelah konek.
+        self.manual_link = ManualLink(config)
+        self.manual_gui_request = False  # tombol "Manual" GUI (backup darat)
+        self.manual_last = {"surge": 0.0, "yaw": 0.0, "active": False,
+                            "mode": 0, "mode_name": "AUTO", "rc_ok": False,
+                            "source": "AUTO"}
 
         # --- Antrean target gate (titik tengah merah+hijau) ---
         self.gate_seq = GateSequencer(
@@ -91,8 +94,8 @@ class VisionOffboardNavigator:
         )
         self.gate_active_mid = None  # midpoint gate aktif (untuk visualisasi)
 
-        # Fuzzy Sugeno (app/fuzzy.py): tidak butuh inisialisasi objek controller,
-        # cukup fungsi murni. Error hanya terjadi bila tabel tak konsisten.
+        # Fuzzy Sugeno (core C via aterkia_core): tidak butuh inisialisasi
+        # objek controller, cukup fungsi murni.
         if FUZZY_ENABLED:
             print("Fuzzy Logic Controllers SIAP (app/fuzzy.py).")
         
@@ -168,6 +171,9 @@ class VisionOffboardNavigator:
             self.master = mavutil.mavlink_connection(self.config.SERIAL_PORT, baud=self.config.BAUD_RATE, autoreconnect=True)
             self.master.wait_heartbeat()
             print("Heartbeat diterima.")
+            # Receiver RC dibaca Pixhawk via RCIN (hardware failsafe tetap
+            # hidup); NUC membaca RC_CHANNELS dari koneksi yang SAMA.
+            self.manual_link.attach_mav(self.master)
         except Exception as e:
             if self.cap and self.cap.isOpened(): self.cap.release()
             if self.wp_photo_cap and self.wp_photo_cap.isOpened(): self.wp_photo_cap.release()
@@ -342,8 +348,8 @@ class VisionOffboardNavigator:
                     time.sleep(0.1)
                     frame_raw = frame.copy()
                 else:
-                    # Orientasi kamera (CAMERA_FLIP_MODE): default 0 = TIDAK
-                    # dibalik — gambar persis output sensor (tidak reverse).
+                    # Orientasi kamera (CAMERA_FLIP_MODE, default 1 = mirror):
+                    # objek kanan kapal tampil kanan di GUI.
                     frame_high_res = flip_frame_if_needed(
                         frame_high_res, self.config.CAMERA_FLIP_MODE)
                     frame = cv2.resize(frame_high_res, (self.processing_width, self.processing_height), interpolation=cv2.INTER_LINEAR)
@@ -885,6 +891,35 @@ class VisionOffboardNavigator:
                     thrust = 0.0
                     print_status = "MISSION_COMPLETE"
 
+                # --- Arbitrasi KILL > MANUAL > AUTO (hitung di C) ---
+                # ManualLink membaca RC_CHANNELS Pixhawk (receiver -> RCIN)
+                # + gamepad USB, olah kurva stick & mode di C. Bila mode
+                # MANUAL: thrust = surge manual, yaw = yaw saat ini +
+                # offset proporsional stick (±0.8 rad ≈ ±45°).
+                try:
+                    dt_man = self._control_dt()
+                    self.manual_last = self.manual_link.update(
+                        dt=dt_man, kill=False,
+                        gui_manual=self.manual_gui_request)
+                except Exception:
+                    pass
+                man = getattr(self, "manual_last", {}) or {}
+                if man.get("mode_name") == "MANUAL" and man.get("active"):
+                    arb = core.arbitrate(False, True, float(man.get("surge", 0.0)),
+                                         float(man.get("yaw", 0.0)),
+                                         float(thrust), 0.0)
+                    thrust = float(arb["surge"])
+                    target_yaw_angle_rad = self._normalize_angle(
+                        (self.current_yaw_rad or 0.0)
+                        + float(arb["yaw"]) * 0.8)
+                    lateral_thrust = 0.0
+                    print_status = (f"MANUAL (surge {thrust:+.2f} "
+                                    f"yaw {float(man.get('yaw', 0.0)):+.2f})")
+                elif man.get("mode_name") == "KILL":
+                    thrust = 0.0
+                    lateral_thrust = 0.0
+                    print_status = "KILL (E-stop)"
+
                 self._stream_offboard_command(thrust, target_yaw_angle_rad, print_status, lateral_thrust=lateral_thrust)
                 
                 buoy_counts = self._visualize(
@@ -938,7 +973,18 @@ class VisionOffboardNavigator:
                                        and self.master.port is not None),
                     "gps_fix": bool(self.current_lat is not None
                                     and self.current_lon is not None),
-                    "frame": frame
+                    "frame": frame,
+                    # Kendali manual (RC/gamepad via C): GUI baca chip mode.
+                    "op_mode": (getattr(self, "manual_last", {}) or {}
+                                ).get("mode_name", "AUTO"),
+                    "manual_active": bool((getattr(self, "manual_last", {})
+                                           or {}).get("active", False)),
+                    "manual_surge": float((getattr(self, "manual_last", {})
+                                           or {}).get("surge", 0.0)),
+                    "manual_yaw": float((getattr(self, "manual_last", {})
+                                         or {}).get("yaw", 0.0)),
+                    "rc_ok": bool((getattr(self, "manual_last", {})
+                                   or {}).get("rc_ok", False)),
                 }
                 data_packet.update(self._battery_fields())
                 data_signal.emit(data_packet)
@@ -995,9 +1041,9 @@ class VisionOffboardNavigator:
                     raw_correction_rad = self._calculate_yaw_correction_gate(best_gate, gate_distance)
                     dt = self._control_dt()
 
-                    # EKF heading (app/filtering.py == core C): prediksi dengan
-                    # laju yaw (gyro pendek) lalu koreksi heading terukur —
-                    # heading estimasi lebih halus dari pengukuran mentah.
+                    # EKF heading (hitung di C): prediksi dengan laju yaw
+                    # (gyro pendek) lalu koreksi heading terukur — heading
+                    # estimasi lebih halus dari pengukuran mentah.
                     gyro_rate = 0.0
                     if getattr(self, '_last_yaw_meas', None) is not None:
                         gyro_rate = self._normalize_angle(
@@ -1006,11 +1052,11 @@ class VisionOffboardNavigator:
                     self.ekf_heading.predict(gyro_rate, dt)
                     heading_est = self.ekf_heading.update(self.current_yaw_rad or 0.0)
 
-                    # Complementary filter: extrapolasi heading dari gyro lalu
-                    # fusi dengan (heading estimasi + koreksi visi) — halus &
-                    # tak hanyut.
+                    # Complementary filter (hitung di C): extrapolasi heading
+                    # dari gyro lalu fusi dengan (heading estimasi + koreksi
+                    # visi) — halus & tak hanyut.
                     raw_target = self._normalize_angle(heading_est + raw_correction_rad)
-                    target_yaw_angle_rad = self._normalize_angle(complementary_filter(
+                    target_yaw_angle_rad = self._normalize_angle(core.complementary_filter(
                         self.config.COMPLEMENTARY_ALPHA, self.comp_angle_prev,
                         gyro_rate, dt, raw_target))
                     self.comp_angle_prev = target_yaw_angle_rad
@@ -1320,7 +1366,7 @@ class VisionOffboardNavigator:
         return best_pair, min_estimated_distance
 
     def _apply_yaw_pid(self, raw_correction_rad, dynamic_gain):
-        """PID + deadband untuk koreksi yaw (app/filtering.py == core C).
+        """PID + deadband untuk koreksi yaw (hitung di C via aterkia_core).
 
         Pengganti pola lama `raw * gain`. Gain P tetap bisa dinamis
         (fuzzy / VISION_P_GAIN) — di-set ulang tiap panggilan; term
@@ -1349,11 +1395,11 @@ class VisionOffboardNavigator:
         dynamic_p_gain = self.config.VISION_P_GAIN
         
         if FUZZY_ENABLED:
-            # Sugeno singleton murni (app/fuzzy.py == core C). Input diklem
+            # Sugeno singleton (hitung di C via aterkia_core). Input diklem
             # ke semesta 0..2 m; error_px dipakai abs langsung (< 320 piksel
             # karena offset dari pusat frame ±160 px).
-            dynamic_p_gain = gate_p_gain(min(max(distance_m, 0.0), 2.0),
-                                         abs(error_px))
+            dynamic_p_gain = core.fuzzy_gate_gain(min(max(distance_m, 0.0), 2.0),
+                                                  abs(error_px))
         
         self.last_used_p_gain = dynamic_p_gain
         # PID + deadband (bukan raw * gain): lihat _apply_yaw_pid.
@@ -1394,10 +1440,10 @@ class VisionOffboardNavigator:
         dynamic_p_gain = self.config.VISION_P_GAIN
         
         if FUZZY_ENABLED:
-            # Sugeno singleton murni (app/fuzzy.py == core C). Input diklem
+            # Sugeno singleton (hitung di C via aterkia_core). Input diklem
             # ke semesta 0..10 m; error_px dipakai abs langsung.
-            dynamic_p_gain = docking_p_gain(min(max(distance_m, 0.0), 10.0),
-                                            abs(error_px))
+            dynamic_p_gain = core.fuzzy_docking_gain(min(max(distance_m, 0.0), 10.0),
+                                                     abs(error_px))
         
         self.last_used_p_gain = dynamic_p_gain
 
@@ -1451,10 +1497,12 @@ class VisionOffboardNavigator:
                 else:
                     midpoint_x = int((best_gate[0]['cx'] + best_gate[1]['cx']) / 2.0)
                     midpoint_y = int((best_gate[0]['cy'] + best_gate[1]['cy']) / 2.0)
-                cv2.line(frame, (midpoint_x, 0), (midpoint_x, self.processing_height), (255, 255, 0), 1)
-                cv2.circle(frame, (midpoint_x, midpoint_y), 7, (0, 255, 255), -1) 
-                cv2.putText(frame, "TENGAH", (midpoint_x + 10, max(12, midpoint_y - 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2) 
+                # Jalur tengah gate DIPERKUAT (tanpa garis vertikal penuh —
+                # kamera tetap jernih): lingkaran isi + ring putih + label.
+                cv2.circle(frame, (midpoint_x, midpoint_y), 10, (0, 255, 255), -1)
+                cv2.circle(frame, (midpoint_x, midpoint_y), 13, (255, 255, 255), 2)
+                cv2.putText(frame, "TENGAH", (midpoint_x + 16, max(12, midpoint_y - 12)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
         elif self.current_state.startswith("APPROACH_BOX") or self.current_state == "RETREAT":
             for box in detections.get(self.config.GREEN_BOX_CLASS_ID, []): 
@@ -1608,16 +1656,17 @@ class VisionOffboardNavigator:
         print("Selesai.")
 
     def _normalize_angle(self, angle_rad):
-        """Bawa sudut ke [-pi, pi]. Implementasi terpusat di app.geo."""
-        return geo.normalize_angle(angle_rad)
+        """Bawa sudut ke [-pi, pi]. Hitung di C (nav_math) via aterkia_core."""
+        return core.nav_normalize_angle(angle_rad)
 
     def _get_distance_and_bearing(self, lat1, lon1, lat2, lon2):
-        """Jarak (m) & bearing (rad) antar koordinat — lihat app.geo."""
-        return geo.distance_bearing(lat1, lon1, lat2, lon2)
+        """Jarak (m) & bearing (rad) antar koordinat — hitung di C."""
+        return core.nav_distance_bearing(lat1, lon1, lat2, lon2)
 
     def _get_cross_track_distance(self, lat_p, lon_p, lat_wp1, lon_wp1, lat_wp2, lon_wp2):
-        """Simpangan titik P dari garis WP1->WP2 (m) — lihat app.geo."""
-        return geo.cross_track_distance(lat_p, lon_p, lat_wp1, lon_wp1, lat_wp2, lon_wp2)
+        """Simpangan titik P dari garis WP1->WP2 (m) — hitung di C."""
+        return core.nav_cross_track_distance(lat_p, lon_p, lat_wp1, lon_wp1,
+                                             lat_wp2, lon_wp2)
 
     def _yaw_to_quaternion(self, yaw_rad):
         # (Fungsi _yaw_to_quaternion tidak berubah)
@@ -1721,6 +1770,19 @@ class NavigatorThread(QThread):
             'YOLO_FRAME_SKIP': self.config.YOLO_FRAME_SKIP,
             'YOLO_INFERENCE_SIZE': self.config.YOLO_INFERENCE_SIZE,
             'SESSION_VIDEO_FPS': self.config.SESSION_VIDEO_FPS,
+            'CAMERA_FLIP_MODE': self.config.CAMERA_FLIP_MODE,
+            'MANUAL_ENABLED': self.config.MANUAL_ENABLED,
+            'MANUAL_MAX_SURGE': self.config.MANUAL_MAX_SURGE,
+            'MANUAL_MAX_YAW': self.config.MANUAL_MAX_YAW,
+            'MANUAL_DEADBAND': self.config.MANUAL_DEADBAND,
+            'MANUAL_EXPO': self.config.MANUAL_EXPO,
+            'MANUAL_RATE_LIMIT': self.config.MANUAL_RATE_LIMIT,
+            'RC_TIMEOUT_MS': self.config.RC_TIMEOUT_MS,
+            'RC_CH_THROTTLE': self.config.RC_CH_THROTTLE,
+            'RC_CH_YAW': self.config.RC_CH_YAW,
+            'RC_CH_MODE': self.config.RC_CH_MODE,
+            'RC_CH_DEADMAN': self.config.RC_CH_DEADMAN,
+            'MANUAL_LOST_HOLD_S': self.config.MANUAL_LOST_HOLD_S,
             'VISION_ENABLED_LEGS': self.config.VISION_ENABLED_LEGS,
             'PHOTO_BOX_LEGS': self.config.PHOTO_BOX_LEGS,
             'BLUE_BOX_PHOTO_LEGS': self.config.BLUE_BOX_PHOTO_LEGS,

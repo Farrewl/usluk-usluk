@@ -3,8 +3,8 @@ import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDial, QFormLayout, QTableWidget, QTableWidgetItem, QDoubleSpinBox, QSpinBox, QScrollArea, QSplitter, QFrame, QPushButton, QLineEdit)
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QThread, pyqtSignal, QUrl, QTimer, Qt
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont
-from PyQt5.QtCore import QRect, QPoint
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont
+from PyQt5.QtCore import QRect
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtCore import pyqtSlot, QObject, QLibraryInfo
 
@@ -47,8 +47,9 @@ class MapBridge(QObject):
         self.wpMoved.emit(index, lat, lon)
 
 class HudOverlay(QWidget):
-    """Overlay HUD di atas video: crosshair tengah, badge state (kiri-atas),
-    heading + koordinat (kanan-atas). Transparan & tidak menangkap mouse."""
+    """Overlay HUD di atas video: badge state (kiri-atas), heading +
+    koordinat (kanan-atas). Kamera dibiarkan JERNIH — tanpa crosshair/
+    lingkaran tengah. Transparan & tidak menangkap mouse."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -71,16 +72,6 @@ class HudOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        cx, cy = w // 2, h // 2
-
-        # --- crosshair tipis di tengah ---
-        pen = QPen(QColor(255, 255, 255, 70))
-        pen.setWidth(1)
-        painter.setPen(pen)
-        painter.drawLine(cx, 0, cx, h)
-        painter.drawLine(0, cy, w, cy)
-        radius = max(6, min(w, h) // 16)
-        painter.drawEllipse(QPoint(cx, cy), radius, radius)
 
         # --- badge state (kiri-atas) ---
         painter.setPen(Qt.NoPen)
@@ -148,12 +139,14 @@ class MainWindow(QMainWindow):
         monitoring_widget = self._create_monitoring_widget()
         tuning_widget = self._create_tuning_widget()
         recording_widget = self._create_recording_widget()
+        manual_widget = self._create_manual_widget()
         left_splitter = QSplitter(Qt.Vertical)
         left_splitter.addWidget(map_frame)
         left_splitter.addWidget(video_widget)
         left_splitter.setSizes([int(self.height() * 0.6), int(self.height() * 0.4)])
         right_splitter = QSplitter(Qt.Vertical)
         right_splitter.addWidget(tuning_widget)
+        right_splitter.addWidget(manual_widget)
         right_splitter.addWidget(monitoring_widget)
         right_splitter.addWidget(recording_widget) 
         right_splitter.addWidget(ahrs_widget)
@@ -181,9 +174,11 @@ class MainWindow(QMainWindow):
         self.chip_speed = QLabel("Kecepatan: --")
         self.chip_fps = QLabel("FPS: --")
         self.chip_state = QLabel("Kondisi: --")
+        self.chip_mode = QLabel("Mode: AUTO")
         self.chip_batt = QLabel("Baterai: --")
         for chip in (self.chip_mav, self.chip_gps, self.chip_speed,
-                     self.chip_fps, self.chip_state, self.chip_batt):
+                     self.chip_fps, self.chip_state, self.chip_mode,
+                     self.chip_batt):
             chip.setStyleSheet(
                 "font-family: monospace; font-weight: bold;"
                 "padding: 2px 10px; color: #cfd8dc;")
@@ -534,6 +529,21 @@ class MainWindow(QMainWindow):
         self.tune_yolo_frame_skip = self._add_tuning_row("YOLO_FRAME_SKIP:", "YOLO_FRAME_SKIP", 0, 10, 1, is_int=True)
         self.tune_yolo_inf_size = self._add_tuning_row("YOLO_INFERENCE_SIZE:", "YOLO_INFERENCE_SIZE", 320, 1280, 32, is_int=True)
         self.tune_session_video_fps = self._add_tuning_row("SESSION_VIDEO_FPS:", "SESSION_VIDEO_FPS", 1.0, 30.0, 1.0)
+        self.tune_flip = self._add_tuning_row("CAMERA_FLIP_MODE:", "CAMERA_FLIP_MODE", 0, 3, 1, is_int=True)
+
+        self._add_header("Kendali Manual (RC / Gamepad — hitung di C)")
+        self.tune_manual_enabled = self._add_tuning_row("MANUAL_ENABLED:", "MANUAL_ENABLED", 0, 1, 1, is_int=True)
+        self.tune_manual_max_surge = self._add_tuning_row("MANUAL_MAX_SURGE:", "MANUAL_MAX_SURGE", 0.0, 1.0, 0.05)
+        self.tune_manual_max_yaw = self._add_tuning_row("MANUAL_MAX_YAW:", "MANUAL_MAX_YAW", 0.0, 1.0, 0.05)
+        self.tune_manual_deadband = self._add_tuning_row("MANUAL_DEADBAND:", "MANUAL_DEADBAND", 0.0, 0.5, 0.01)
+        self.tune_manual_expo = self._add_tuning_row("MANUAL_EXPO:", "MANUAL_EXPO", 0.0, 1.0, 0.05)
+        self.tune_manual_rate = self._add_tuning_row("MANUAL_RATE_LIMIT:", "MANUAL_RATE_LIMIT", 0.0, 10.0, 0.1)
+        self.tune_rc_timeout = self._add_tuning_row("RC_TIMEOUT_MS:", "RC_TIMEOUT_MS", 100, 2000, 50, is_int=True)
+        self.tune_rc_ch_thr = self._add_tuning_row("RC_CH_THROTTLE:", "RC_CH_THROTTLE", 1, 16, 1, is_int=True)
+        self.tune_rc_ch_yaw = self._add_tuning_row("RC_CH_YAW:", "RC_CH_YAW", 1, 16, 1, is_int=True)
+        self.tune_rc_ch_mode = self._add_tuning_row("RC_CH_MODE:", "RC_CH_MODE", 1, 16, 1, is_int=True)
+        self.tune_rc_ch_dm = self._add_tuning_row("RC_CH_DEADMAN:", "RC_CH_DEADMAN", 1, 16, 1, is_int=True)
+        self.tune_manual_hold = self._add_tuning_row("MANUAL_LOST_HOLD_S:", "MANUAL_LOST_HOLD_S", 0.0, 5.0, 0.1)
 
         self._add_header("Trigger Misi (Waypoint Index)")
         self._add_tuning_list("VISION_ENABLED_LEGS (Gate):", "VISION_ENABLED_LEGS")
@@ -573,6 +583,118 @@ class MainWindow(QMainWindow):
         self.clear_wp_btn.clicked.connect(self.on_clear_waypoints)
         
         return widget
+
+    def _create_manual_widget(self):
+        """Panel kendali manual: mode, stick RC/gamepad, deadman, failsafe.
+
+        Hitungan (decode PWM, kurva stick, mode) jalan di C via ManualLink;
+        panel ini hanya tombol + bar status. Prioritas: KILL > MANUAL > AUTO.
+        """
+        from PyQt5.QtWidgets import QCheckBox, QComboBox, QProgressBar
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        title = QLabel("Kendali Manual (RC / Gamepad)")
+        title.setStyleSheet("font-size: 14px; font-weight: bold;")
+        layout.addWidget(title)
+
+        hint = QLabel("TX → RX → Pixhawk RCIN (failsafe HW) → RC_CHANNELS → NUC. "
+                      "MANUAL aktif hanya saat deadman ditahan. Gamepad USB = backup darat.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("font-style: italic; color: #555;")
+        layout.addWidget(hint)
+
+        self.manual_mode_label = QLabel("Mode: AUTO")
+        self.manual_mode_label.setStyleSheet(
+            "font-family: monospace; font-weight: bold; font-size: 15px;")
+        layout.addWidget(self.manual_mode_label)
+
+        row = QHBoxLayout()
+        self.manual_gui_check = QCheckBox("Minta MANUAL (GUI)")
+        self.manual_gui_check.setToolTip("Backup darat bila switch TX belum dikonfigurasi.")
+        self.manual_gui_check.stateChanged.connect(self.on_manual_gui_toggle)
+        self.manual_kill_btn = QPushButton("KILL")
+        self.manual_kill_btn.setToolTip("Hentikan thrust (ditahan operator).")
+        self.manual_kill_btn.setCheckable(True)
+        self.manual_kill_btn.clicked.connect(self.on_manual_kill_toggle)
+        row.addWidget(self.manual_gui_check)
+        row.addWidget(self.manual_kill_btn)
+        layout.addLayout(row)
+
+        gp_row = QHBoxLayout()
+        gp_row.addWidget(QLabel("Gamepad:"))
+        self.gamepad_combo = QComboBox()
+        self.gamepad_combo.setToolTip("Joystick USB /dev/input/js* (backup bila TX/RX mati).")
+        self.gamepad_refresh_btn = QPushButton("Scan")
+        self.gamepad_refresh_btn.clicked.connect(self.on_gamepad_scan)
+        gp_row.addWidget(self.gamepad_combo, 1)
+        gp_row.addWidget(self.gamepad_refresh_btn)
+        layout.addLayout(gp_row)
+        self.gamepad_combo.currentTextChanged.connect(self.on_gamepad_select)
+
+        self.bar_surge = QProgressBar()
+        self.bar_surge.setRange(-100, 100)
+        self.bar_surge.setFormat("Surge %v")
+        self.bar_yaw = QProgressBar()
+        self.bar_yaw.setRange(-100, 100)
+        self.bar_yaw.setFormat("Yaw %v")
+        layout.addWidget(self.bar_surge)
+        layout.addWidget(self.bar_yaw)
+
+        self.manual_status_label = QLabel("RC: -- | Deadman: LEPAS")
+        self.manual_status_label.setStyleSheet("font-family: monospace;")
+        layout.addWidget(self.manual_status_label)
+
+        self.on_gamepad_scan()
+        return widget
+
+    def on_manual_gui_toggle(self, state):
+        nav = getattr(self.nav_thread, "navigator", None)
+        if nav is not None and hasattr(nav, "manual_gui_request"):
+            nav.manual_gui_request = bool(state)
+        elif hasattr(self.nav_thread, "navigator"):
+            pass
+        # Simulator (GroundSimNavigator) memakai nama atribut yang sama.
+        try:
+            n2 = self.nav_thread.navigator
+            if hasattr(n2, "manual_gui_request"):
+                n2.manual_gui_request = bool(state)
+        except Exception:
+            pass
+
+    def on_manual_kill_toggle(self):
+        # KILL software: paksa thrust 0 dengan menahan MANUAL + surge 0.
+        # (E-stop hardware via STM32/Pixhawk tetap jalur utama.)
+        on = self.manual_kill_btn.isChecked()
+        self.manual_kill_btn.setText("KILL AKTIF" if on else "KILL")
+        try:
+            n = self.nav_thread.navigator
+            if hasattr(n, "manual_gui_request"):
+                n.manual_gui_request = bool(on)
+        except Exception:
+            pass
+
+    def on_gamepad_scan(self):
+        try:
+            from app.manual_link import ManualLink
+            devs = ManualLink.list_gamepads()
+        except Exception:
+            devs = []
+        self.gamepad_combo.blockSignals(True)
+        self.gamepad_combo.clear()
+        self.gamepad_combo.addItem("(mati)")
+        for d in devs:
+            self.gamepad_combo.addItem(d)
+        self.gamepad_combo.blockSignals(False)
+
+    def on_gamepad_select(self, text):
+        try:
+            n = self.nav_thread.navigator
+            link = getattr(n, "manual_link", None)
+            if link is not None and hasattr(link, "set_gamepad"):
+                link.set_gamepad("" if text == "(mati)" else text)
+        except Exception:
+            pass
 
     def update_ui(self, data):
         self.current_lat = data['lat']
@@ -633,6 +755,29 @@ class MainWindow(QMainWindow):
             self.chip_fps.setText(f"FPS: {1.0 / (now - last_fps):.0f}")
         self._last_fps_t = now
         self.chip_state.setText(f"Kondisi: {data['state']}")
+
+        # --- Mode kendali (KILL > MANUAL > AUTO): hijau AUTO, oranye MANUAL/HOLD, merah KILL.
+        op_mode = str(data.get('op_mode', 'AUTO'))
+        man_on = bool(data.get('manual_active', False))
+        m_surge = float(data.get('manual_surge', 0.0) or 0.0)
+        m_yaw = float(data.get('manual_yaw', 0.0) or 0.0)
+        rc_ok = bool(data.get('rc_ok', False))
+        self.chip_mode.setText(f"Mode: {op_mode}" + (" *" if man_on else ""))
+        self.chip_mode.setStyleSheet(
+            "font-family: monospace; font-weight: bold; padding: 2px 10px;"
+            + ("color: #ff6b6b;" if op_mode == "KILL"
+               else "color: #f39c12;" if op_mode in ("MANUAL", "HOLD")
+               else "color: #2ecc71;"))
+        try:
+            self.manual_mode_label.setText(
+                f"Mode: {op_mode}" + (" (STICK AKTIF)" if man_on else ""))
+            self.bar_surge.setValue(int(max(-1.0, min(1.0, m_surge)) * 100))
+            self.bar_yaw.setValue(int(max(-1.0, min(1.0, m_yaw)) * 100))
+            self.manual_status_label.setText(
+                f"RC: {'OK' if rc_ok else 'PUTUS'} | Stick: "
+                f"{m_surge:+.2f}/{m_yaw:+.2f}")
+        except Exception:
+            pass
 
         # --- Baterai: hijau >= 50 %, kuning 20-50 %, merah < 20 %, abu = no data.
         volt = data.get('voltage_v')

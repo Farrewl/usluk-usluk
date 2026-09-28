@@ -30,8 +30,9 @@ import threading
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from . import geo
 from . import settings as cfg
+from . import aterkia_core as core
+from .manual_link import ManualLink
 
 try:
     import numpy as np
@@ -54,12 +55,10 @@ try:
 except ImportError:
     REDIS_AVAILABLE = False
 
-try:
-    import skfuzzy as fuzz
-    from skfuzzy import control as ctrl
-    FUZZY_ENABLED = True
-except ImportError:
-    FUZZY_ENABLED = False
+# skfuzzy TIDAK dipakai di jalur produksi (fuzzy jalan di C via aterkia_core).
+# Blok import dipertahankan agar mesin lama tanpa C tetap bisa jalan dengan
+# gain statis — nilai FUZZY di bawah tidak dibaca lagi.
+FUZZY_ENABLED = False
 
 try:
     from ultralytics import YOLO
@@ -228,21 +227,31 @@ class GroundSimNavigator:
         self.state_timer = time.time()
         self.sim_step = 1
         self._loop_start = time.time()
-        self._fps_window = time.time()
-        self._fps_count = 0
         self._yolo_subcount = 0
         self._last_detection = {}   # id(model) -> (detected, annotated)
+        # Jembatan manual RC/gamepad (hitung di C) — dipasang ke master
+        # MAVLink setelah konek; GUI bisa minta manual via flag ini.
+        self.manual_link = ManualLink(config)
+        self.manual_gui_request = False
+        self.manual_last = {"surge": 0.0, "yaw": 0.0, "active": False,
+                            "mode": 0, "mode_name": "AUTO", "rc_ok": False,
+                            "source": "AUTO"}
+        self._last_loop_t = time.time()
 
     # ------------------- Geolokasi mock -------------------
     def _update_mock_position(self, target_lat, target_lon, speed_mps=1.5):
-        """Geser posisi mock mendekati target; True jika sudah tiba (<2 m)."""
-        dist, bearing = geo.distance_bearing(self.current_lat, self.current_lon,
-                                             target_lat, target_lon)
+        """Geser posisi mock mendekati target; True jika sudah tiba (<2 m).
+
+        Geodesi dihitung di C (nav_math via aterkia_core); app/geo.py hanya
+        referensi uji.
+        """
+        dist, bearing = core.nav_distance_bearing(
+            self.current_lat, self.current_lon, target_lat, target_lon)
         self.dist_to_wp = dist
         self.current_yaw_rad = bearing
         if dist > 2.0:
             delta = speed_mps * 0.1
-            self.current_lat, self.current_lon = geo.destination(
+            self.current_lat, self.current_lon = core.nav_destination(
                 self.current_lat, self.current_lon, delta, bearing)
             self.current_groundspeed = speed_mps
             return False
@@ -362,6 +371,12 @@ class GroundSimNavigator:
             print("[SIM] pymavlink belum terpasang — attitude dari mock.")
         elif self.mav.connect(timeout_s=5.0):
             print("[SIM] Telemetri MAVLink AKTIF — roll/pitch/yaw dari Pixhawk.")
+            # Receiver RC dibaca Pixhawk via RCIN; NUC membaca RC_CHANNELS
+            # dari koneksi master yang SAMA (hardware failsafe tetap hidup).
+            try:
+                self.manual_link.attach_mav(self.mav.master)
+            except Exception:
+                pass
         else:
             print("[SIM] Pixhawk offline — roll/pitch/yaw dari mock.")
         self._last_mav_log = 0.0
@@ -384,8 +399,8 @@ class GroundSimNavigator:
                 cv2.putText(frame, "CAMERA ERROR", (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
                             1, (0, 0, 255), 2)
             else:
-                # Orientasi kamera (CAMERA_FLIP_MODE): default 0 = TIDAK
-                # dibalik — gambar persis output sensor (tidak reverse).
+                # Orientasi kamera (CAMERA_FLIP_MODE, default 1 = mirror):
+                # objek kanan kapal tampil kanan di GUI.
                 frame = flip_frame_if_needed(frame, self.config.CAMERA_FLIP_MODE)
 
             elapsed = time.time() - self.state_timer
@@ -511,6 +526,26 @@ class GroundSimNavigator:
                 roll_deg = 0.0
                 lat, lon = self.current_lat, self.current_lon
 
+            # Kendali manual (hitung di C): KILL > MANUAL > AUTO. Di mode
+            # MANUAL, state_txt ditimpa agar operator tahu siapa memegang
+            # kapal; field op_mode/manual_* dibaca chip + panel GUI.
+            try:
+                now_man = time.time()
+                dt_man = max(1e-4, now_man - self._last_loop_t)
+                self._last_loop_t = now_man
+                self.manual_last = self.manual_link.update(
+                    dt=dt_man, kill=False,
+                    gui_manual=self.manual_gui_request)
+            except Exception:
+                pass
+            man = getattr(self, "manual_last", {}) or {}
+            op_mode = man.get("mode_name", "AUTO")
+            if op_mode == "MANUAL" and man.get("active"):
+                status_txt = (f"MANUAL (surge {float(man.get('surge', 0.0)):+.2f} "
+                              f"yaw {float(man.get('yaw', 0.0)):+.2f})")
+            elif op_mode == "KILL":
+                status_txt = "KILL (E-stop)"
+
             # Simpan sementara agar bisa dimodifikasi sebelum emit.
             _pkt = {
                 "lat": lat, "lon": lon,
@@ -523,6 +558,11 @@ class GroundSimNavigator:
                 "mavlink_ok": bool(self.mav.connected) if self.mav else False,
                 "gps_fix": bool(self.mav.lat is not None) if use_real else True,
                 "frame": processed_frame,
+                "op_mode": op_mode,
+                "manual_active": bool(man.get("active", False)),
+                "manual_surge": float(man.get("surge", 0.0)),
+                "manual_yaw": float(man.get("yaw", 0.0)),
+                "rc_ok": bool(man.get("rc_ok", False)),
             }
             # Baterai dari Pixhawk (SYS_STATUS/BATTERY_STATUS) bila terhubung.
             if self.mav and self.mav.has_battery:
@@ -539,15 +579,9 @@ class GroundSimNavigator:
                 if self.sim_step in (1, 3, 5):
                     self.current_waypoint_index += 1
 
-            # Pacing loop ke target fps.
+            # Pacing loop ke target fps (tanpa printf tiap detik —
+            # FPS hanya tampil di chip GUI main.py, bukan terminal).
             now = time.time()
-            self._fps_count += 1
-            if now - self._fps_window >= 5.0:
-                actual = self._fps_count / (now - self._fps_window)
-                print(f"[SIM] FPS aktual: {actual:.1f} "
-                      f"(target {self.config.CAMERA_TARGET_FPS})")
-                self._fps_count = 0
-                self._fps_window = now
             target_interval = 1.0 / max(1, int(self.config.CAMERA_TARGET_FPS))
             sleep_needed = target_interval - (now - self._loop_start)
             if sleep_needed > 0:
@@ -636,23 +670,10 @@ class MockSimNavigator:
                 pass
 
     def _create_fuzzy_controller(self):
-        if not FUZZY_ENABLED:
-            return None
-        jarak = ctrl.Antecedent(np.arange(0, 10.01, 0.1), 'Jarak')
-        error = ctrl.Antecedent(np.arange(0, 321, 1), 'Error')
-        p_gain = ctrl.Consequent(np.arange(0, 3.01, 0.1), 'P_GAIN')
-        jarak['DEKAT'] = fuzz.trapmf(jarak.universe, [0, 0, 0.5, 1.0])
-        jarak['JAUH'] = fuzz.trapmf(jarak.universe, [0.5, 1.0, 10, 10])
-        error['KECIL'] = fuzz.trapmf(error.universe, [0, 0, 50, 100])
-        error['BESAR'] = fuzz.trapmf(error.universe, [50, 100, 320, 320])
-        p_gain['RENDAH'] = fuzz.trimf(p_gain.universe, [0, 0.5, 1.0])
-        p_gain['TINGGI'] = fuzz.trimf(p_gain.universe, [1.5, 2.0, 3.0])
-        rules = [
-            ctrl.Rule(jarak['DEKAT'], p_gain['RENDAH']),
-            ctrl.Rule(jarak['JAUH'] & error['KECIL'], p_gain['RENDAH']),
-            ctrl.Rule(jarak['JAUH'] & error['BESAR'], p_gain['TINGGI']),
-        ]
-        return ctrl.ControlSystemSimulation(ctrl.ControlSystem(rules))
+        # DIHAPUS dari jalur produksi: fuzzy Sugeno jalan di C
+        # (core/src/fuzzy.c via aterkia_core.fuzzy_docking_gain).
+        # Stub dipertahankan agar atribut lama tidak AttributeError.
+        return None
 
     def _generate_mock_vision(self, elapsed):
         """Objek tiruan yang 'menjauh' ke tengah frame seiring waktu (simulasi align)."""
@@ -668,8 +689,11 @@ class MockSimNavigator:
                 'dist': dist}
 
     def _calculate_correction(self, mock_obj):
-        """Koreksi yaw (rad) dari selisih pixel objek vs pusat frame, dengan
-        gain statis (VISION_P_GAIN) atau gain fuzzy bila tersedia."""
+        """Koreksi yaw (rad) dari selisih pixel objek vs pusat frame.
+
+        Gain P dinamis dihitung di C (fuzzy docking via aterkia_core);
+        skfuzzy tidak dipakai di jalur produksi (hanya referensi lama).
+        """
         if not mock_obj:
             return 0.0
         error_px = mock_obj['cx'] - self.image_center_x
@@ -680,15 +704,13 @@ class MockSimNavigator:
             return 0.0
         raw_rad = math.atan2(error_m, dist_m)
 
-        gain = self.config.VISION_P_GAIN
-        if FUZZY_ENABLED and self.fuzzy_ctrl:
-            try:
-                self.fuzzy_ctrl.input['Jarak'] = min(dist_m, 10.0)
-                self.fuzzy_ctrl.input['Error'] = abs(error_px)
-                self.fuzzy_ctrl.compute()
-                gain = self.fuzzy_ctrl.output['P_GAIN']
-            except Exception:
-                pass
+        try:
+            gain = core.fuzzy_docking_gain(min(max(dist_m, 0.0), 10.0),
+                                           abs(error_px))
+            if gain <= 0.0:
+                gain = self.config.VISION_P_GAIN
+        except Exception:
+            gain = self.config.VISION_P_GAIN
         self.last_used_p_gain = gain
         return raw_rad * gain
 
@@ -722,8 +744,8 @@ class MockSimNavigator:
 
             if self.current_waypoint_index < len(self.waypoints):
                 wp = self.waypoints[self.current_waypoint_index]
-                jarak_wp, bear_wp = geo.distance_bearing(self.current_lat, self.current_lon,
-                                                         wp['lat'], wp['lon'])
+                jarak_wp, bear_wp = core.nav_distance_bearing(
+                    self.current_lat, self.current_lon, wp['lat'], wp['lon'])
 
             # ----- state machine sederhana -----
             if self.current_state == "WAYPOINT_NAV":
@@ -758,7 +780,8 @@ class MockSimNavigator:
                 move = True
                 self.mock_box = self._generate_mock_vision(elapsed)
                 correction_rad = self._calculate_correction(self.mock_box)
-                target_yaw = geo.normalize_angle(self.current_yaw_rad + correction_rad)
+                target_yaw = core.nav_normalize_angle(
+                    self.current_yaw_rad + correction_rad)
                 if self.mock_box['dist'] < 1.0:
                     if "BLUE" in self.current_state:
                         self._set_state("TAKE_BLUE_BOX_PHOTO")
@@ -783,9 +806,9 @@ class MockSimNavigator:
 
             # ----- fisika sederhana -----
             if move:
-                diff = geo.normalize_angle(target_yaw - self.current_yaw_rad)
+                diff = core.nav_normalize_angle(target_yaw - self.current_yaw_rad)
                 self.current_yaw_rad += diff * dt * 2.0
-                self.current_lat, self.current_lon = geo.destination(
+                self.current_lat, self.current_lon = core.nav_destination(
                     self.current_lat, self.current_lon, 5.0 * dt, self.current_yaw_rad)
 
             # ----- render frame tiruan -----

@@ -33,6 +33,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from . import settings as cfg
 from . import aterkia_core as core
 from .manual_link import ManualLink
+from .camera import pace_to_fps
 
 try:
     import numpy as np
@@ -386,6 +387,7 @@ class GroundSimNavigator:
         self._yolo_worker = _YoloWorker(self.config)
         self._yolo_worker.bind_gate_model(self.gate_model)
         self._yolo_worker.start()
+        deadline = time.monotonic()
 
         while self.running:
             # --- Baca frame kamera (None-safe bila kamera tidak ada) ---
@@ -579,14 +581,12 @@ class GroundSimNavigator:
                 if self.sim_step in (1, 3, 5):
                     self.current_waypoint_index += 1
 
-            # Pacing loop ke target fps (tanpa printf tiap detik —
+            # Pacing 25 Hz monotonic (tanpa printf tiap detik —
             # FPS hanya tampil di chip GUI main.py, bukan terminal).
-            now = time.time()
-            target_interval = 1.0 / max(1, int(self.config.CAMERA_TARGET_FPS))
-            sleep_needed = target_interval - (now - self._loop_start)
-            if sleep_needed > 0:
-                time.sleep(sleep_needed)
-            self._loop_start = time.time()
+            # Frame kamera lambat (mis. 10 fps) tidak menurunkan display:
+            # cap.read() blocking memberi frame terakhir, pacing tetap 25.
+            deadline = pace_to_fps(deadline)
+            self._last_loop_t = time.time()
 
     def stop(self):
         self.running = False
@@ -731,6 +731,7 @@ class MockSimNavigator:
 
         print("--- [SIM] MOCK SIMULATOR (tanpa kamera) START ---")
         self.running = True
+        deadline = time.monotonic()
         while self.running:
             dt = time.time() - self.last_loop_time
             self.last_loop_time = time.time()
@@ -837,7 +838,7 @@ class MockSimNavigator:
                 "frame": frame,
                 "voltage_v": None, "current_a": None, "battery_pct": None,
             })
-            time.sleep(1.0 / 20.0)
+            deadline = pace_to_fps(deadline)
 
     def stop(self):
         self.running = False

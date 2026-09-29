@@ -1,55 +1,58 @@
-import sys, os, math, time, folium, csv, cv2, json
-import numpy as np
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDial, QFormLayout, QTableWidget, QTableWidgetItem, QDoubleSpinBox, QSpinBox, QScrollArea, QSplitter, QFrame, QPushButton, QLineEdit)
-from PyQt5.QtWebEngineWidgets import QWebEngineView
-from PyQt5.QtCore import QThread, pyqtSignal, QUrl, QTimer, Qt
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont
-from PyQt5.QtCore import QRect
-from PyQt5.QtWebChannel import QWebChannel
-from PyQt5.QtCore import pyqtSlot, QObject, QLibraryInfo
+"""main.py — Dashboard modern ASV (sidebar + video + tab, tema gelap).
 
-# cv2 5.x mengotori env Qt saat import: menimpa QT_QPA_PLATFORM_PLUGIN_PATH ke plugin
-# Qt bawaan cv2 (versi inkompatibel dengan PyQt5) sehingga QApplication gagal dengan
-# "Could not load the Qt platform plugin xcb ... even though it was found".
-# Reset ke plugin milik PyQt5 dan kembalikan font ke default sistem.
-os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = QLibraryInfo.location(QLibraryInfo.PluginsPath)
+Layout gaya OpenCode: sidebar kiri (info kritis + KILL), tengah
+(video besar + peta ringan), kanan bertab (Misi/Manual), status bar
+4 chip. Tuning pindah ke dialog Settings (lazy-load).
+
+Throttle agar ringan: video tiap paket (25 Hz), teks telemetri 5 Hz,
+peta 1 Hz, chip FPS 1 Hz. Tanpa setStyleSheet per-frame (cache warna).
+"""
+import sys
+import os
+import csv
+import time
+
+import cv2
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                             QHBoxLayout, QLabel, QSplitter, QFrame,
+                             QPushButton, QTabWidget, QProgressBar, QCheckBox,
+                             QComboBox)
+from PyQt5.QtCore import QTimer, Qt, QLibraryInfo, QRect
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont
+
+# cv2 5.x mengotori env Qt saat import: reset ke plugin milik PyQt5.
+os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = QLibraryInfo.location(
+    QLibraryInfo.PluginsPath)
 os.environ.pop("QT_QPA_FONTDIR", None)
 
-# Pilih backend: simulator darat (kamera asli) atau navigator asli (Pixhawk).
-# Cukup uncomment salah satu.
 from app.simulator import NavigatorThread
 # from app.navigator import NavigatorThread
+from app.slim_map import SlimMapWidget
+from app.settings_dialog import SettingsDialog
+from app import gui_theme as theme
 
-# Path konfigurasi standar (lihat app/settings.py)
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(ROOT_DIR, "config")
 WAYPOINT_FILE = os.path.join(CFG_PATH, "plan.csv")
 TMP_MAP_FILE = os.path.join(ROOT_DIR, "data", "temp_map.html")
 os.makedirs(os.path.dirname(TMP_MAP_FILE), exist_ok=True)
 
-WAYPOINTS = [] 
+WAYPOINTS = []
 try:
     with open(WAYPOINT_FILE, mode='r', newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
-            clean_row = {key.strip(): value for key, value in row.items() if key is not None}
-            if not clean_row or not clean_row.get('lat') or not clean_row.get('lon'):
+            clean = {k.strip(): v for k, v in row.items() if k is not None}
+            if not clean or not clean.get('lat') or not clean.get('lon'):
                 continue
-            WAYPOINTS.append({'lat': float(clean_row['lat']), 'lon': float(clean_row['lon'])})
+            WAYPOINTS.append({'lat': float(clean['lat']),
+                              'lon': float(clean['lon'])})
 except Exception as e:
     print(f"Warning: Could not load {WAYPOINT_FILE}. {e}")
 
-class MapBridge(QObject):
-    wpMoved = pyqtSignal(int, float, float)
-    @pyqtSlot(int, float, float)
-    def update_waypoint_pos(self, index, lat, lon):
-        print(f"[MapBridge] Waypoint #{index+1} moved to: {lat}, {lon}")
-        self.wpMoved.emit(index, lat, lon)
 
 class HudOverlay(QWidget):
-    """Overlay HUD di atas video: badge state (kiri-atas), heading +
-    koordinat (kanan-atas). Kamera dibiarkan JERNIH — tanpa crosshair/
-    lingkaran tengah. Transparan & tidak menangkap mouse."""
+    """2 pil HUD di atas video: state (kiri) + yaw/koordinat (kanan)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -71,26 +74,24 @@ class HudOverlay(QWidget):
     def paintEvent(self, _event):  # noqa: N802 - API Qt
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height()
-
-        # --- badge state (kiri-atas) ---
+        w = self.width()
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(0, 0, 0, 150))
-        painter.drawRoundedRect(8, 8, 220, 30, 6, 6)
-        accent = QColor(0, 255, 170) if self._state.startswith(
-            ("GATE", "DOCK", "PHOTO", "RETREAT")) else QColor(255, 255, 255)
+        painter.drawRoundedRect(8, 8, 220, 30, 8, 8)
+        accent = (QColor(0, 212, 170) if self._state.startswith(
+            ("GATE", "DOCK", "PHOTO", "RETREAT", "VISION", "MANUAL"))
+            else QColor(255, 255, 255))
         font = QFont("monospace")
         font.setBold(True)
         font.setPointSize(11)
         painter.setFont(font)
         painter.setPen(accent)
         painter.drawText(QRect(16, 12, 204, 22),
-                         Qt.AlignLeft | Qt.AlignVCenter, f"STATE: {self._state}")
+                         Qt.AlignLeft | Qt.AlignVCenter,
+                         f"STATE: {self._state}")
         painter.setPen(Qt.NoPen)
-
-        # --- heading + koordinat (kanan-atas) ---
         painter.setBrush(QColor(0, 0, 0, 150))
-        painter.drawRoundedRect(w - 272, 8, 264, 46, 6, 6)
+        painter.drawRoundedRect(w - 272, 8, 264, 46, 8, 8)
         info = (f"H {self._yaw:5.1f}°   d {self._dist:5.1f} m\n"
                 f"{self._lat:.6f}, {self._lon:.6f}")
         painter.setFont(QFont("monospace", 10))
@@ -101,7 +102,7 @@ class HudOverlay(QWidget):
 
 
 class VideoPanel(QWidget):
-    """Panel video: label video + HUD overlay yang ikut meresize."""
+    """Panel video + HUD overlay yang ikut meresize."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -109,7 +110,8 @@ class VideoPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self.video_label = QLabel("Waiting for video feed...")
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setStyleSheet("background-color: #000; color: #FFF;")
+        self.video_label.setStyleSheet(
+            "background-color: #000; color: #FFF; border-radius: 14px;")
         layout.addWidget(self.video_label)
         self.hud = HudOverlay(self)
         self.hud.setGeometry(0, 0, self.width(), self.height())
@@ -120,553 +122,368 @@ class VideoPanel(QWidget):
         self.hud.raise_()
         super().resizeEvent(event)
 
+
+def _card(title):
+    """Bingkai kartu glass + judul kecil; return (frame, layout)."""
+    frame = QFrame()
+    frame.setProperty("class", "card")
+    frame.setStyleSheet(
+        "QFrame { background: rgba(255,255,255,0.06);"
+        " border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; }")
+    layout = QVBoxLayout(frame)
+    head = QLabel(title.upper())
+    head.setProperty("class", "card-title")
+    head.setStyleSheet(
+        "font-size: 11px; font-weight: bold; letter-spacing: 2px;"
+        " color: #8b949e; background: transparent;")
+    layout.addWidget(head)
+    return frame, layout
+
+
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Kendali Kapal Aterkia ASV — Live Dashboard")
-        self.setGeometry(100, 100, 1600, 900)
-        self.map_js_ready = False
-        self.map_bridge = MapBridge()
-        self.map_bridge.wpMoved.connect(self.on_waypoint_dragged)
-        self.map_channel = QWebChannel()
-        self.map_channel.registerObject("bridge", self.map_bridge)
+        self.setWindowTitle("Aterkia ASV — Dashboard")
+        self.setGeometry(100, 100, 1500, 880)
         self.current_lat = 0.0
         self.current_lon = 0.0
-        self.nav_thread = NavigatorThread(WAYPOINTS, self) 
-        map_frame = self._create_map_frame()
-        video_widget = self._create_video_widget()
-        ahrs_widget = self._create_ahrs_widget()
-        monitoring_widget = self._create_monitoring_widget()
-        tuning_widget = self._create_tuning_widget()
-        recording_widget = self._create_recording_widget()
-        manual_widget = self._create_manual_widget()
-        left_splitter = QSplitter(Qt.Vertical)
-        left_splitter.addWidget(map_frame)
-        left_splitter.addWidget(video_widget)
-        left_splitter.setSizes([int(self.height() * 0.6), int(self.height() * 0.4)])
-        right_splitter = QSplitter(Qt.Vertical)
-        right_splitter.addWidget(tuning_widget)
-        right_splitter.addWidget(manual_widget)
-        right_splitter.addWidget(monitoring_widget)
-        right_splitter.addWidget(recording_widget) 
-        right_splitter.addWidget(ahrs_widget)
-        right_splitter.setSizes([int(self.height() * 0.4), int(self.height() * 0.25), int(self.height() * 0.15), int(self.height() * 0.2)])
-        main_splitter = QSplitter(Qt.Horizontal)
-        main_splitter.addWidget(left_splitter)
-        main_splitter.addWidget(right_splitter)
-        main_splitter.setSizes([int(self.width() * 0.7), int(self.width() * 0.3)])
-        self.setCentralWidget(main_splitter)
+        # Cache anti-lag: setText/setStyleSheet hanya saat berubah.
+        self._chip_cache = {}
+        self._last_text_t = 0.0
+        self._last_map_t = 0.0
+        self._fps_count = 0
+        self._fps_t0 = time.monotonic()
+        self._fps_val = 0.0
+        self._settings_dlg = None
+
+        self.nav_thread = NavigatorThread(WAYPOINTS, self)
+        sidebar = self._build_sidebar()
+        center = self._build_center()
+        right = self._build_right_tabs()
+
+        main_split = QSplitter(Qt.Horizontal)
+        main_split.addWidget(sidebar)
+        main_split.addWidget(center)
+        main_split.addWidget(right)
+        main_split.setSizes([260, 830, 410])
+        self.setCentralWidget(main_split)
+
         self.nav_thread.newData.connect(self.update_ui)
         self._setup_status_bar()
+        self._refresh_map_waypoints()
         self.nav_thread.start()
 
-        print("Window created. Loading map widget in 0.5 seconds...")
-        QTimer.singleShot(500, self.initialize_map_widget)
+    # ------------------- bangun layout -------------------
 
-    def _setup_status_bar(self):
-        """Baris status bawah: chip telemetri live (MAV, GPS, speed, FPS, state)."""
-        bar = self.statusBar()
-        bar.setStyleSheet(
-            "QStatusBar { background: #26303b; color: #cfd8dc; }"
-            "QStatusBar::item { border: none; }")
-        self.chip_mav = QLabel("● Autopilot: --")
-        self.chip_gps = QLabel("GPS: --")
-        self.chip_speed = QLabel("Kecepatan: --")
-        self.chip_fps = QLabel("FPS: --")
-        self.chip_state = QLabel("Kondisi: --")
-        self.chip_mode = QLabel("Mode: AUTO")
-        self.chip_batt = QLabel("Baterai: --")
-        for chip in (self.chip_mav, self.chip_gps, self.chip_speed,
-                     self.chip_fps, self.chip_state, self.chip_mode,
-                     self.chip_batt):
-            chip.setStyleSheet(
-                "font-family: monospace; font-weight: bold;"
-                "padding: 2px 10px; color: #cfd8dc;")
-            bar.addPermanentWidget(chip)
+    def _build_sidebar(self):
+        side = QWidget()
+        side.setFixedWidth(260)
+        layout = QVBoxLayout(side)
 
-    def _create_map_frame(self):
-        self.map_frame = QFrame()
-        layout = QVBoxLayout(self.map_frame)
-        layout.setContentsMargins(0,0,0,0)
-        
-        self.map_loading_label = QLabel("Loading map...")
-        self.map_loading_label.setAlignment(Qt.AlignCenter)
-        self.map_loading_label.setStyleSheet("font-size: 16px; color: #888;")
-        layout.addWidget(self.map_loading_label)
-        
-        return self.map_frame
+        f, l = _card("Mode")
+        self.side_mode = QLabel("AUTO")
+        self.side_mode.setStyleSheet(
+            "font-family: monospace; font-weight: bold; font-size: 26px;"
+            f" color: {theme.COLOR_OK}; background: transparent;")
+        l.addWidget(self.side_mode)
+        self.side_rc = QLabel("RC: --")
+        self.side_rc.setStyleSheet(
+            "font-family: monospace; color: #8b949e; background: transparent;")
+        l.addWidget(self.side_rc)
+        layout.addWidget(f)
 
-    def initialize_map_widget(self):
-        try:
-            print("Initializing QWebEngineView...")
-            
-            if hasattr(self, 'map_view'):
-                self.map_view.deleteLater()
-            
-            self.map_loading_label.show()
-            self.map_view = QWebEngineView()
-            self.map_view.page().setWebChannel(self.map_channel)
-            self.map_frame.layout().addWidget(self.map_view)
-            self._generate_folium_map()
-            
-            abs_path = os.path.abspath(TMP_MAP_FILE)
-            self.map_view.setUrl(QUrl.fromLocalFile(abs_path))
-            self.map_view.loadFinished.connect(self._on_map_loaded)
-            
-            self.map_loading_label.hide()
-            print("Map widget loaded successfully.")
-            
-        except Exception as e:
-            print(f"FATAL: Failed to initialize QWebEngineView: {e}")
-            self.map_loading_label.setText(f"Error: Failed to load map.\n{e}")
-            self.map_loading_label.setStyleSheet("color: red; font-size: 16px;")
-            self.map_loading_label.show()
+        f, l = _card("State")
+        self.side_state = QLabel("--")
+        self.side_state.setStyleSheet(
+            "font-family: monospace; font-weight: bold; font-size: 16px;"
+            " background: transparent;")
+        l.addWidget(self.side_state)
+        self.side_yaw = QLabel("H -- | d --")
+        self.side_yaw.setStyleSheet(
+            "font-family: monospace; color: #8b949e; background: transparent;")
+        l.addWidget(self.side_yaw)
+        layout.addWidget(f)
 
-    def _generate_folium_map(self):
-        VISION_ENABLED_LEGS = self.nav_thread.config.VISION_ENABLED_LEGS
-        
-        current_wps = self.nav_thread.navigator.waypoints
-        
-        if not current_wps:
-            avg_lat, avg_lon = -6.9834, 110.4098
-            print("Generating empty map at default location.")
-        else:
-            avg_lat = sum(wp['lat'] for wp in current_wps) / len(current_wps)
-            avg_lon = sum(wp['lon'] for wp in current_wps) / len(current_wps)
-            
-        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=18, tiles="OpenStreetMap")
-          
-        if len(current_wps) > 1:
-            for i in range(1, len(current_wps)): 
-                wp_prev = current_wps[i-1]
-                wp_curr = current_wps[i]
-                
-                locs = [(wp_prev['lat'], wp_prev['lon']), (wp_curr['lat'], wp_curr['lon'])]
-                
-                is_vision_leg = i in VISION_ENABLED_LEGS 
-                
-                if is_vision_leg:
-                    folium.PolyLine(locations=locs, color='green', weight=4, opacity=0.8, popup=f"Leg (Menuju WP #{i}) (VISION ON)").add_to(m)
-                else:
-                    folium.PolyLine(locations=locs, color='gray', weight=3, opacity=0.8, dash_array='5, 10', popup=f"Leg (Menuju WP #{i}) (TRANSIT)").add_to(m)
-            
-        m.save(TMP_MAP_FILE)
-        print(f"Generated {TMP_MAP_FILE} with vision legs")
+        f, l = _card("Waypoint")
+        self.side_wp = QLabel("WP -- / --")
+        self.side_wp.setStyleSheet(
+            "font-family: monospace; font-size: 15px; background: transparent;")
+        l.addWidget(self.side_wp)
+        self.side_dist = QLabel("-- m")
+        self.side_dist.setStyleSheet(
+            "font-family: monospace; font-size: 22px; font-weight: bold;"
+            " background: transparent;")
+        l.addWidget(self.side_dist)
+        layout.addWidget(f)
 
-    def _on_map_loaded(self):
-        start_lat = -6.9834
-        start_lon = 110.4098
-        
-        if self.nav_thread.navigator.waypoints:
-            start_lat = self.nav_thread.navigator.waypoints[0]['lat']
-            start_lon = self.nav_thread.navigator.waypoints[0]['lon']
-        
-        current_wps_json = json.dumps(self.nav_thread.navigator.waypoints)
-        
-        js_code = f"""
-        (function() {{
-            var map = null;
-            for (var key in window) {{
-                if (window[key] instanceof L.Map) {{
-                    map = window[key];
-                    break;
-                }}
-            }}
+        f, l = _card("Baterai")
+        self.side_batt = QLabel("--")
+        self.side_batt.setStyleSheet(
+            "font-family: monospace; font-size: 22px; font-weight: bold;"
+            " background: transparent;")
+        l.addWidget(self.side_batt)
+        self.side_volt = QLabel("-- V | -- A")
+        self.side_volt.setStyleSheet(
+            "font-family: monospace; color: #8b949e; background: transparent;")
+        l.addWidget(self.side_volt)
+        layout.addWidget(f)
 
-            if (!map) {{
-                console.error("Leaflet Map instance not found!");
-                return;
-            }}
+        self.kill_btn = QPushButton("⏹ KILL")
+        self.kill_btn.setObjectName("killBtn")
+        self.kill_btn.setCheckable(True)
+        self.kill_btn.clicked.connect(self.on_manual_kill_toggle)
+        layout.addWidget(self.kill_btn)
 
-            if (typeof QWebChannel !== "undefined") {{
-                new QWebChannel(qt.webChannelTransport, function(channel) {{
-                    window.pyBridge = channel.objects.bridge;
-                    console.log("Bridge connected!");
-                    initDraggableMarkers({current_wps_json});
-                }});
-            }} else {{
-                console.error("QWebChannel not loaded!");
-            }}
+        self.settings_btn = QPushButton("⚙ Settings")
+        self.settings_btn.clicked.connect(self.open_settings)
+        layout.addWidget(self.settings_btn)
+        layout.addStretch(1)
+        return side
 
-            window.markers = [];
+    def _build_center(self):
+        center = QWidget()
+        layout = QVBoxLayout(center)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-            function initDraggableMarkers(waypoints) {{
-                // Hapus marker lama jika ada untuk mencegah duplikasi
-                if (window.markers) {{
-                    window.markers.forEach(m => map.removeLayer(m));
-                }}
-                window.markers = [];
-
-                waypoints.forEach(function(wp, index) {{
-                    // Membuat Marker yang DRAGGABLE
-                    var marker = L.marker([wp.lat, wp.lon], {{
-                        draggable: true,
-                        title: "WP #" + (index + 1)
-                    }}).addTo(map); // Pastikan ditambahkan ke 'map' yang sudah ditemukan
-
-                    marker.bindPopup("<b>Waypoint #" + (index + 1) + "</b><br>Drag to move");
-
-                    // Event saat selesai geser -> Kirim ke Python
-                    marker.on('dragend', function(e) {{
-                        var newPos = e.target.getLatLng();
-                        console.log("WP Dragged:", index, newPos.lat, newPos.lng);
-                        window.pyBridge.update_waypoint_pos(index, newPos.lat, newPos.lng);
-                    }});
-
-                    window.markers.push(marker);
-                }});
-            }}
-
-            var vehicleIcon = L.divIcon({{
-                html: '<div style="font-size: 22px; color: #ff0000; text-align: center; line-height: 24px;">&#9650;</div>',
-                className: 'vehicle-icon',
-                iconSize: [24, 24],
-                iconAnchor: [12, 12]
-            }});
-
-            window.vehicleMarker = L.marker([{start_lat}, {start_lon}], {{
-                icon: vehicleIcon,
-                rotationAngle: 0,
-                rotationOrigin: 'center center'
-            }}).addTo(map);
-
-            window.updateVehiclePosition = function(lat, lon, yaw_deg) {{
-                if(window.vehicleMarker){{
-                    var newLatLng = L.latLng(lat, lon);
-                    window.vehicleMarker.setLatLng(newLatLng);
-                    var iconDiv = window.vehicleMarker.getElement();
-                    if(iconDiv) {{
-                        var arrowDiv = iconDiv.querySelector('div');
-                        if(arrowDiv) {{
-                            arrowDiv.style.transform = 'rotate(' + yaw_deg + 'deg)';
-                        }}
-                    }}
-                }}
-            }};
-
-        }})();
-        """
-
-        qwebchannel_js = "qrc:///qtwebchannel/qwebchannel.js"
-
-        loader_js = f"""
-        var script = document.createElement('script');
-        script.src = "{qwebchannel_js}";
-        script.onload = function() {{
-            {js_code}
-        }};
-        document.head.appendChild(script);
-        """
-        
-        if hasattr(self, 'map_view'):
-            self.map_view.page().runJavaScript(loader_js)
-        
-        self.map_js_ready = True
-        print("Map JavaScript is ready.")
-
-    def on_waypoint_dragged(self, index, new_lat, new_lon):
-        if index < len(self.nav_thread.navigator.waypoints):
-            self.nav_thread.navigator.waypoints[index]['lat'] = new_lat
-            self.nav_thread.navigator.waypoints[index]['lon'] = new_lon
-            print(f"[GUI] Updated WP #{index+1} in memory.")
-
-    def _create_video_widget(self):
-        self.video_panel = VideoPanel()
-        self.video_label = self.video_panel.video_label
-        self.hud_overlay = self.video_panel.hud
-        return self.video_panel
-
-    def _create_ahrs_widget(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
-        title = QLabel("ATTITUDE (IMU)")
-        title.setStyleSheet(
-            "font-size: 13px; font-weight: bold; color: #00bcd4;"
-            "padding: 2px 6px; letter-spacing: 1px;")
-        layout.addWidget(title)
-
-        row = QHBoxLayout()
-        for name, key, rng, wrapping in (
-                ("YAW", "yaw", (-180, 180), True),
-                ("PITCH", "pitch", (-90, 90), False),
-                ("ROLL", "roll", (-180, 180), True)):
-            gauge = QVBoxLayout()
-            dial = QDial()
-            dial.setRange(*rng)
-            dial.setWrapping(wrapping)
-            dial.setNotchesVisible(True)
-            dial.setEnabled(False)
-            dial.setFixedSize(96, 96)
-            value_label = QLabel("0.0°")
-            value_label.setAlignment(Qt.AlignCenter)
-            value_label.setStyleSheet(
-                "font-size: 21px; font-weight: bold; color: #ffffff;"
-                "font-family: monospace; background: #36404d;"
-                "border-radius: 6px; padding: 2px;")
-            name_label = QLabel(name)
-            name_label.setAlignment(Qt.AlignCenter)
-            name_label.setStyleSheet(
-                "font-size: 10px; color: #7f8c8d; font-weight: bold;"
-                "letter-spacing: 2px;")
-            gauge.addWidget(name_label)
-            gauge.addWidget(dial)
-            gauge.addWidget(value_label)
-            row.addLayout(gauge)
-            setattr(self, f"{key}_dial", dial)
-            setattr(self, f"{key}_value_label", value_label)
-
-        layout.addLayout(row)
-        widget.setMinimumHeight(150)
-        return widget
-
-    def _create_monitoring_widget(self):
-        # Tabel status kapal — label berbahasa manusia + 3 baris baterai.
-        # ("--" = Pixhawk belum mengirim data; bukan error GUI.)
-        self.monitor_table = QTableWidget()
-        self.monitor_table.setRowCount(8)
-        self.monitor_table.setColumnCount(1)
-        self.monitor_table.setVerticalHeaderLabels([
-            "Kondisi kapal", "Lintang (lat)", "Bujur (lon)",
-            "Target WP", "Jarak ke WP (m)",
-            "Baterai (%)", "Tegangan (V)", "Arus (A)"])
-        self.monitor_table.horizontalHeader().setVisible(False)
-        self.monitor_table.horizontalHeader().setStretchLastSection(True)
-        # Kolom kiri (header vertikal) dilebarkan agar label terbaca penuh.
-        self.monitor_table.verticalHeader().setDefaultSectionSize(26)
-        try:
-            self.monitor_table.verticalHeader().setMinimumWidth(130)
-        except Exception:
-            pass
-        return self.monitor_table
-
-    def _add_tuning_list(self, label_text, config_key):
-        widget = QLineEdit()
-        widget.setPlaceholderText("Contoh: 1, 3, 5")
-        current_list = getattr(self.nav_thread.config, config_key, [])
-        if isinstance(current_list, list): widget.setText(", ".join(map(str, current_list)))
-
-        def save_list():
-            text = widget.text()
-            try:
-                new_list = [int(x.strip()) for x in text.split(',') if x.strip().isdigit()]
-                print(f"[GUI] Updating list {config_key} -> {new_list}")
-                self.nav_thread.update_config_param(config_key, new_list)
-                widget.setText(", ".join(map(str, new_list)))
-            except Exception as e:
-                print(f"Error parsing list: {e}")
-
-        widget.editingFinished.connect(save_list)
-        self.tuning_layout.addRow(label_text, widget)
-        return widget
-
-    def _add_tuning_row(self, label_text, config_key, min_val, max_val, step, is_int=False):
-        widget = QSpinBox() if is_int else QDoubleSpinBox()
-        widget.setRange(min_val, max_val)
-        widget.setSingleStep(step)
-        current_val = getattr(self.nav_thread.config, config_key, 0)
-        widget.setValue(current_val)
-        widget.valueChanged.connect(lambda v, k=config_key: self.nav_thread.update_config_param(k, v))
-        self.tuning_layout.addRow(label_text, widget)
-        return widget
-
-    def _add_header(self, text):
-        label = QLabel(text)
-        label.setStyleSheet("font-size: 14px; font-weight: bold; margin-top: 10px;")
-        self.tuning_layout.addRow(label)
-
-    def _create_tuning_widget(self):
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        widget = QWidget()
-
-        self.tuning_layout = QFormLayout(widget)
-        self.tuning_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-
-        self._add_header("Navigasi Umum & GPS")
-        self.tune_acceptance_radius = self._add_tuning_row("ACCEPTANCE_RADIUS_M:", "ACCEPTANCE_RADIUS_M", 0.5, 10.0, 0.1)
-        self.tune_thrust = self._add_tuning_row("THRUST_VALUE (Transit):", "THRUST_VALUE", 0.0, 1.0, 0.05)
-        self.tune_transition_duration = self._add_tuning_row("TRANSITION_DURATION_S:", "TRANSITION_DURATION_S", 0.0, 5.0, 0.1)
-        self.tune_geofence_width = self._add_tuning_row("GEOFENCE_WIDTH_METERS:", "GEOFENCE_WIDTH_METERS", 0.5, 10.0, 0.1)
-
-        self._add_header("Parameter Vision (Global)")
-        self.tune_focalpx = self._add_tuning_row("FOCAL_LENGTH_PX:", "FOCAL_LENGTH_PX", 100, 2000, 10, is_int=True)
-        self.tune_p_gain = self._add_tuning_row("VISION_P_GAIN:", "VISION_P_GAIN", 0.0, 10.0, 0.1)
-        self.tune_smoothing_alpha = self._add_tuning_row("VISION_SMOOTHING_ALPHA:", "VISION_SMOOTHING_ALPHA", 0.0, 1.0, 0.05)
-        self.tune_roi_cutoff = self._add_tuning_row("ROI_TOP_CUTOFF_PERCENT:", "ROI_TOP_CUTOFF_PERCENT", 0.0, 1.0, 0.05)
-
-        self._add_header("Misi Gate (Buoy)")
-        self.tune_gate_width = self._add_tuning_row("GATE_WIDTH_METERS:", "GATE_WIDTH_METERS", 0.5, 5.0, 0.1)
-        self.tune_min_buoy_area = self._add_tuning_row("MIN_BUOY_AREA_PX:", "MIN_BUOY_AREA_PX", 0, 5000, 10, is_int=True)
-        self.tune_gate_area_ratio = self._add_tuning_row("GATE_AREA_SIMILARITY_RATIO:", "GATE_AREA_SIMILARITY_RATIO", 0.0, 1.0, 0.05)
-
-        self._add_header("Misi Foto Box Hijau")
-        self.tune_search_thrust = self._add_tuning_row("SEARCH_THRUST:", "SEARCH_THRUST", 0.0, 1.0, 0.05)
-        self.tune_align_thrust = self._add_tuning_row("ALIGN_THRUST:", "ALIGN_THRUST", 0.0, 1.0, 0.05)
-        self.tune_retreat_thrust = self._add_tuning_row("RETREAT_THRUST:", "RETREAT_THRUST", -1.0, 0.0, 0.05)
-        self.tune_retreat_dur = self._add_tuning_row("RETREAT_DURATION_S:", "RETREAT_DURATION_S", 0.0, 10.0, 0.1)
-        self.tune_box_width = self._add_tuning_row("BOX_WIDTH_METERS:", "BOX_WIDTH_METERS", 0.1, 2.0, 0.05)
-        self.tune_box_approach_dist = self._add_tuning_row("APPROACH_DISTANCE_M:", "BOX_APPROACH_DISTANCE_M", 0.5, 5.0, 0.1)
-        self.tune_yaw_search_box = self._add_tuning_row("YAW_SEARCH_BOX:", "YAW_SEARCH_BOX", -180, 180, 5, is_int=True)
-        self.tune_box_lat_thrust = self._add_tuning_row("LATERAL_THRUST:", "BOX_SEARCH_LATERAL_THRUST", -1.0, 1.0, 0.05)
-
-        self._add_header("Misi Foto Box Biru")
-        self.tune_blue_box_search_thrust = self._add_tuning_row("SEARCH_THRUST:", "BLUE_BOX_SEARCH_THRUST", 0.0, 1.0, 0.05)
-        self.tune_blue_box_align_thrust = self._add_tuning_row("ALIGN_THRUST:", "BLUE_BOX_ALIGN_THRUST", 0.0, 1.0, 0.05)
-        self.tune_blue_box_width = self._add_tuning_row("BOX_WIDTH_METERS:", "BLUE_BOX_WIDTH_METERS", 0.1, 2.0, 0.05)
-        self.tune_blue_box_approach_dist = self._add_tuning_row("APPROACH_DISTANCE_M:", "BLUE_BOX_APPROACH_DISTANCE_M", 0.5, 5.0, 0.1)
-        self.tune_blue_box_lat_offset = self._add_tuning_row("LATERAL_OFFSET_M:", "BLUE_BOX_LATERAL_OFFSET_M", -5.0, 5.0, 0.1)
-        self.tune_blue_box_yaw_search = self._add_tuning_row("YAW_SEARCH:", "BLUE_BOX_YAW_SEARCH", -180, 180, 5, is_int=True)
-
-        self._add_header("Misi Docking (Box Merah)")
-        self.tune_dock_align_thrust = self._add_tuning_row("ALIGN_THRUST:", "DOCK_ALIGN_THRUST", 0.0, 1.0, 0.05)
-        self.tune_dock_hold_dur = self._add_tuning_row("HOLD_DURATION_S:", "DOCK_HOLD_DURATION_S", 0.0, 20.0, 0.5)
-        self.tune_red_box_width = self._add_tuning_row("BOX_WIDTH_METERS:", "RED_BOX_WIDTH_METERS", 0.1, 2.0, 0.05)
-        self.tune_red_box_dock_dist = self._add_tuning_row("DOCK_DISTANCE_M:", "RED_BOX_DOCK_DISTANCE_M", 0.1, 5.0, 0.1)
-        self.tune_yaw_search_dock = self._add_tuning_row("YAW_SEARCH:", "YAW_SEARCH_DOCK", -180, 180, 5, is_int=True)
-
-        self._add_header("YOLO & System")
-        self.tune_yolo_frame_skip = self._add_tuning_row("YOLO_FRAME_SKIP:", "YOLO_FRAME_SKIP", 0, 10, 1, is_int=True)
-        self.tune_yolo_inf_size = self._add_tuning_row("YOLO_INFERENCE_SIZE:", "YOLO_INFERENCE_SIZE", 320, 1280, 32, is_int=True)
-        self.tune_session_video_fps = self._add_tuning_row("SESSION_VIDEO_FPS:", "SESSION_VIDEO_FPS", 1.0, 30.0, 1.0)
-        self.tune_flip = self._add_tuning_row("CAMERA_FLIP_MODE:", "CAMERA_FLIP_MODE", 0, 3, 1, is_int=True)
-
-        self._add_header("Kendali Manual (RC / Gamepad — hitung di C)")
-        self.tune_manual_enabled = self._add_tuning_row("MANUAL_ENABLED:", "MANUAL_ENABLED", 0, 1, 1, is_int=True)
-        self.tune_manual_max_surge = self._add_tuning_row("MANUAL_MAX_SURGE:", "MANUAL_MAX_SURGE", 0.0, 1.0, 0.05)
-        self.tune_manual_max_yaw = self._add_tuning_row("MANUAL_MAX_YAW:", "MANUAL_MAX_YAW", 0.0, 1.0, 0.05)
-        self.tune_manual_deadband = self._add_tuning_row("MANUAL_DEADBAND:", "MANUAL_DEADBAND", 0.0, 0.5, 0.01)
-        self.tune_manual_expo = self._add_tuning_row("MANUAL_EXPO:", "MANUAL_EXPO", 0.0, 1.0, 0.05)
-        self.tune_manual_rate = self._add_tuning_row("MANUAL_RATE_LIMIT:", "MANUAL_RATE_LIMIT", 0.0, 10.0, 0.1)
-        self.tune_rc_timeout = self._add_tuning_row("RC_TIMEOUT_MS:", "RC_TIMEOUT_MS", 100, 2000, 50, is_int=True)
-        self.tune_rc_ch_thr = self._add_tuning_row("RC_CH_THROTTLE:", "RC_CH_THROTTLE", 1, 16, 1, is_int=True)
-        self.tune_rc_ch_yaw = self._add_tuning_row("RC_CH_YAW:", "RC_CH_YAW", 1, 16, 1, is_int=True)
-        self.tune_rc_ch_mode = self._add_tuning_row("RC_CH_MODE:", "RC_CH_MODE", 1, 16, 1, is_int=True)
-        self.tune_rc_ch_dm = self._add_tuning_row("RC_CH_DEADMAN:", "RC_CH_DEADMAN", 1, 16, 1, is_int=True)
-        self.tune_manual_hold = self._add_tuning_row("MANUAL_LOST_HOLD_S:", "MANUAL_LOST_HOLD_S", 0.0, 5.0, 0.1)
-
-        self._add_header("Trigger Misi (Waypoint Index)")
-        self._add_tuning_list("VISION_ENABLED_LEGS (Gate):", "VISION_ENABLED_LEGS")
-        self._add_tuning_list("PHOTO_BOX_LEGS (Hijau):", "PHOTO_BOX_LEGS")
-        self._add_tuning_list("BLUE_BOX_PHOTO_LEGS (Biru):", "BLUE_BOX_PHOTO_LEGS")
-        self._add_tuning_list("STOP_AND_PHOTO_AT_WP:", "STOP_AND_PHOTO_AT_WP")
-
-        scroll_area.setWidget(widget)
-        return scroll_area
-
-    def _create_recording_widget(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        
-        title = QLabel("Waypoint Recorder")
-        title.setStyleSheet("font-size: 14px; font-weight: bold;")
-        layout.addWidget(title)
-        
-        button_layout = QHBoxLayout()
-        
-        self.record_wp_btn = QPushButton("Record Position")
-        self.save_wp_btn = QPushButton("Save & Reload")
-        self.clear_wp_btn = QPushButton("Clear New")
-        
-        button_layout.addWidget(self.record_wp_btn)
-        button_layout.addWidget(self.save_wp_btn)
-        button_layout.addWidget(self.clear_wp_btn)
-        
-        layout.addLayout(button_layout)
-        
-        self.wp_status_label = QLabel("Ready to record.")
-        self.wp_status_label.setStyleSheet("font-style: italic;")
-        layout.addWidget(self.wp_status_label)
-        
+        # Toolbar peta: recorder kompak + follow.
+        toolbar = QHBoxLayout()
+        self.record_wp_btn = QPushButton("+ WP")
+        self.record_wp_btn.setProperty("class", "toolBtn")
+        self.save_wp_btn = QPushButton("Save")
+        self.save_wp_btn.setProperty("class", "toolBtn")
+        self.clear_wp_btn = QPushButton("Clear")
+        self.clear_wp_btn.setProperty("class", "toolBtn")
+        self.follow_btn = QPushButton("Follow: ON")
+        self.follow_btn.setProperty("class", "toolBtn")
+        self.follow_btn.setCheckable(True)
+        self.follow_btn.setChecked(True)
+        for b in (self.record_wp_btn, self.save_wp_btn, self.clear_wp_btn,
+                  self.follow_btn):
+            b.setStyleSheet("padding: 4px 10px; font-size: 12px;"
+                            " border-radius: 8px;")
         self.record_wp_btn.clicked.connect(self.on_record_waypoint)
         self.save_wp_btn.clicked.connect(self.on_save_waypoints)
         self.clear_wp_btn.clicked.connect(self.on_clear_waypoints)
-        
-        return widget
+        self.follow_btn.clicked.connect(self.on_follow_toggle)
+        toolbar.addWidget(self.record_wp_btn)
+        toolbar.addWidget(self.save_wp_btn)
+        toolbar.addWidget(self.clear_wp_btn)
+        toolbar.addStretch(1)
+        self.wp_status_label = QLabel("")
+        self.wp_status_label.setStyleSheet(
+            "font-style: italic; color: #8b949e; background: transparent;")
+        toolbar.addWidget(self.wp_status_label)
+        toolbar.addWidget(self.follow_btn)
+        layout.addLayout(toolbar)
 
-    def _create_manual_widget(self):
-        """Panel kendali manual: mode, stick RC/gamepad, deadman, failsafe.
+        split = QSplitter(Qt.Vertical)
+        self.slim_map = SlimMapWidget()
+        self.slim_map.wpMoved.connect(self.on_waypoint_dragged)
+        self.video_panel = VideoPanel()
+        self.video_label = self.video_panel.video_label
+        self.hud_overlay = self.video_panel.hud
+        split.addWidget(self.video_panel)
+        split.addWidget(self.slim_map)
+        split.setSizes([560, 300])
+        layout.addWidget(split, 1)
+        return center
 
-        Hitungan (decode PWM, kurva stick, mode) jalan di C via ManualLink;
-        panel ini hanya tombol + bar status. Prioritas: KILL > MANUAL > AUTO.
-        """
-        from PyQt5.QtWidgets import QCheckBox, QComboBox, QProgressBar
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+    def _build_right_tabs(self):
+        tabs = QTabWidget()
+        tabs.setFixedWidth(410)
 
-        title = QLabel("Kendali Manual (RC / Gamepad)")
-        title.setStyleSheet("font-size: 14px; font-weight: bold;")
-        layout.addWidget(title)
+        # --- tab Misi: telemetri kompak ---
+        misi = QWidget()
+        ml = QVBoxLayout(misi)
+        f, l = _card("Posisi")
+        self.misi_pos = QLabel("--")
+        self.misi_pos.setStyleSheet(
+            "font-family: monospace; font-size: 13px; background: transparent;")
+        l.addWidget(self.misi_pos)
+        ml.addWidget(f)
+        f, l = _card("Attitude")
+        self.misi_att = QLabel("Y --  P --  R --")
+        self.misi_att.setStyleSheet(
+            "font-family: monospace; font-size: 15px; background: transparent;")
+        l.addWidget(self.misi_att)
+        self.misi_speed = QLabel("-- m/s")
+        self.misi_speed.setStyleSheet(
+            "font-family: monospace; color: #8b949e; background: transparent;")
+        l.addWidget(self.misi_speed)
+        ml.addWidget(f)
+        f, l = _card("Link")
+        self.misi_link = QLabel("Autopilot: -- | GPS: --")
+        self.misi_link.setStyleSheet(
+            "font-family: monospace; font-size: 13px; background: transparent;")
+        l.addWidget(self.misi_link)
+        ml.addWidget(f)
+        ml.addStretch(1)
+        tabs.addTab(misi, "Misi")
 
-        hint = QLabel("TX → RX → Pixhawk RCIN (failsafe HW) → RC_CHANNELS → NUC. "
-                      "MANUAL aktif hanya saat deadman ditahan. Gamepad USB = backup darat.")
+        # --- tab Manual ---
+        man = QWidget()
+        l = QVBoxLayout(man)
+        f, fl = _card("Kendali Manual")
+        hint = QLabel("MANUAL aktif hanya saat deadman ditahan.\n"
+                      "Prioritas: KILL > MANUAL > AUTO.")
         hint.setWordWrap(True)
-        hint.setStyleSheet("font-style: italic; color: #555;")
-        layout.addWidget(hint)
-
+        hint.setStyleSheet(
+            "font-style: italic; color: #8b949e; background: transparent;")
+        fl.addWidget(hint)
         self.manual_mode_label = QLabel("Mode: AUTO")
         self.manual_mode_label.setStyleSheet(
-            "font-family: monospace; font-weight: bold; font-size: 15px;")
-        layout.addWidget(self.manual_mode_label)
-
+            "font-family: monospace; font-weight: bold; font-size: 15px;"
+            " background: transparent;")
+        fl.addWidget(self.manual_mode_label)
         row = QHBoxLayout()
         self.manual_gui_check = QCheckBox("Minta MANUAL (GUI)")
-        self.manual_gui_check.setToolTip("Backup darat bila switch TX belum dikonfigurasi.")
         self.manual_gui_check.stateChanged.connect(self.on_manual_gui_toggle)
-        self.manual_kill_btn = QPushButton("KILL")
-        self.manual_kill_btn.setToolTip("Hentikan thrust (ditahan operator).")
-        self.manual_kill_btn.setCheckable(True)
-        self.manual_kill_btn.clicked.connect(self.on_manual_kill_toggle)
         row.addWidget(self.manual_gui_check)
-        row.addWidget(self.manual_kill_btn)
-        layout.addLayout(row)
-
+        fl.addLayout(row)
         gp_row = QHBoxLayout()
         gp_row.addWidget(QLabel("Gamepad:"))
         self.gamepad_combo = QComboBox()
-        self.gamepad_combo.setToolTip("Joystick USB /dev/input/js* (backup bila TX/RX mati).")
         self.gamepad_refresh_btn = QPushButton("Scan")
+        self.gamepad_refresh_btn.setProperty("class", "toolBtn")
         self.gamepad_refresh_btn.clicked.connect(self.on_gamepad_scan)
         gp_row.addWidget(self.gamepad_combo, 1)
         gp_row.addWidget(self.gamepad_refresh_btn)
-        layout.addLayout(gp_row)
+        fl.addLayout(gp_row)
         self.gamepad_combo.currentTextChanged.connect(self.on_gamepad_select)
-
         self.bar_surge = QProgressBar()
         self.bar_surge.setRange(-100, 100)
         self.bar_surge.setFormat("Surge %v")
         self.bar_yaw = QProgressBar()
         self.bar_yaw.setRange(-100, 100)
         self.bar_yaw.setFormat("Yaw %v")
-        layout.addWidget(self.bar_surge)
-        layout.addWidget(self.bar_yaw)
-
-        self.manual_status_label = QLabel("RC: -- | Deadman: LEPAS")
+        fl.addWidget(self.bar_surge)
+        fl.addWidget(self.bar_yaw)
+        self.manual_status_label = QLabel("RC: -- | Stick: +0.00/+0.00")
         self.manual_status_label.setStyleSheet("font-family: monospace;")
-        layout.addWidget(self.manual_status_label)
+        fl.addWidget(self.manual_status_label)
+        l.addWidget(f)
+        l.addStretch(1)
+        tabs.addTab(man, "Manual")
 
         self.on_gamepad_scan()
-        return widget
+        return tabs
+
+    def _setup_status_bar(self):
+        """4 chip saja: link, mode, baterai, FPS."""
+        bar = self.statusBar()
+        self.chip_link = QLabel("● --")
+        self.chip_mode = QLabel("AUTO")
+        self.chip_batt = QLabel("--")
+        self.chip_fps = QLabel("FPS --/25")
+        for chip in (self.chip_link, self.chip_mode,
+                     self.chip_batt, self.chip_fps):
+            chip.setStyleSheet(
+                "font-family: monospace; font-weight: bold;"
+                "padding: 2px 10px; color: #8b949e; background: transparent;")
+            bar.addPermanentWidget(chip)
+
+    # ------------------- helper anti-lag -------------------
+
+    def _set_chip(self, widget, key, text, color):
+        """setText + warna hanya saat berubah (hindari recalc style Qt)."""
+        old = self._chip_cache.get(key)
+        if old == (text, color):
+            return
+        self._chip_cache[key] = (text, color)
+        if widget.text() != text:
+            widget.setText(text)
+        widget.setStyleSheet(
+            "font-family: monospace; font-weight: bold; padding: 2px 10px;"
+            f" color: {color}; background: transparent;")
+
+    # ------------------- peta -------------------
+
+    def _refresh_map_waypoints(self):
+        try:
+            wps = self.nav_thread.navigator.waypoints
+            self.slim_map.set_waypoints(wps)
+            legs = getattr(self.nav_thread.config,
+                            "VISION_ENABLED_LEGS", [])
+            self.slim_map.set_vision_legs(legs)
+        except Exception:
+            pass
+
+    def on_waypoint_dragged(self, index, new_lat, new_lon):
+        try:
+            if index < len(self.nav_thread.navigator.waypoints):
+                self.nav_thread.navigator.waypoints[index]['lat'] = new_lat
+                self.nav_thread.navigator.waypoints[index]['lon'] = new_lon
+                print(f"[GUI] Updated WP #{index+1} in memory.")
+        except Exception:
+            pass
+
+    def on_follow_toggle(self):
+        on = self.follow_btn.isChecked()
+        self.follow_btn.setText(f"Follow: {'ON' if on else 'OFF'}")
+        self.slim_map.set_follow(on)
+
+    # ------------------- recorder -------------------
+
+    def on_record_waypoint(self):
+        try:
+            nav = self.nav_thread.navigator
+            if (self.current_lat == 0.0 and self.current_lon == 0.0
+                    and getattr(nav, "current_state", "") != "NO_WAYPOINTS"):
+                self.wp_status_label.setText("No position yet.")
+                return
+            nav.waypoints.append({'lat': self.current_lat,
+                                  'lon': self.current_lon})
+            n = len(nav.waypoints)
+            self.wp_status_label.setText(f"WP #{n} added.")
+            self._refresh_map_waypoints()
+        except Exception as e:
+            self.wp_status_label.setText(f"Error: {e}")
+
+    def on_save_waypoints(self):
+        import csv as _csv
+        try:
+            wps = self.nav_thread.navigator.waypoints
+            with open(WAYPOINT_FILE, mode='w', newline='',
+                      encoding='utf-8') as f:
+                w = _csv.DictWriter(f, fieldnames=['lat', 'lon'])
+                w.writeheader()
+                w.writerows(wps)
+            self.wp_status_label.setText(f"Saved {len(wps)} WPs.")
+            self.nav_thread.update_waypoints(wps)
+            self._refresh_map_waypoints()
+        except Exception as e:
+            self.wp_status_label.setText(f"Error saving: {e}")
+
+    def on_clear_waypoints(self):
+        try:
+            self.nav_thread.navigator.waypoints = []
+            self.wp_status_label.setText("Cleared (in memory).")
+            self._refresh_map_waypoints()
+        except Exception:
+            pass
+
+    # ------------------- settings -------------------
+
+    def open_settings(self):
+        if self._settings_dlg is None:
+            self._settings_dlg = SettingsDialog(self.nav_thread, self)
+        self._settings_dlg.show()
+        self._settings_dlg.raise_()
+        self._settings_dlg.activateWindow()
+
+    # ------------------- manual -------------------
 
     def on_manual_gui_toggle(self, state):
-        nav = getattr(self.nav_thread, "navigator", None)
-        if nav is not None and hasattr(nav, "manual_gui_request"):
-            nav.manual_gui_request = bool(state)
-        elif hasattr(self.nav_thread, "navigator"):
-            pass
-        # Simulator (GroundSimNavigator) memakai nama atribut yang sama.
         try:
-            n2 = self.nav_thread.navigator
-            if hasattr(n2, "manual_gui_request"):
-                n2.manual_gui_request = bool(state)
+            n = self.nav_thread.navigator
+            if hasattr(n, "manual_gui_request"):
+                n.manual_gui_request = bool(state)
         except Exception:
             pass
 
     def on_manual_kill_toggle(self):
-        # KILL software: paksa thrust 0 dengan menahan MANUAL + surge 0.
-        # (E-stop hardware via STM32/Pixhawk tetap jalur utama.)
-        on = self.manual_kill_btn.isChecked()
-        self.manual_kill_btn.setText("KILL AKTIF" if on else "KILL")
+        on = self.kill_btn.isChecked()
+        self.kill_btn.setText("⏹ KILL AKTIF" if on else "⏹ KILL")
         try:
             n = self.nav_thread.navigator
             if hasattr(n, "manual_gui_request"):
@@ -696,90 +513,109 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    # ------------------- update UI (throttled) -------------------
+
     def update_ui(self, data):
         self.current_lat = data['lat']
         self.current_lon = data['lon']
-        
-        if hasattr(self, 'map_view') and self.map_js_ready:
-            self.map_view.page().runJavaScript(
-                f"updateVehiclePosition({data['lat']}, {data['lon']}, {data['yaw_deg']});"
-            )
-        
+
+        # --- video: tiap paket (25 Hz) ---
         frame = data['frame']
-        # Downscale numpy (INTER_AREA) biar GUI ringan.
         disp = frame
-        label_w = self.video_label.width()
-        label_h = self.video_label.height()
-        if (label_w > 1 and label_h > 1
-                and (frame.shape[1] > label_w or frame.shape[0] > label_h)):
-            scale = min(label_w / frame.shape[1], label_h / frame.shape[0])
-            if scale < 1.0:
-                disp = cv2.resize(frame,
-                                  (int(frame.shape[1] * scale),
-                                   int(frame.shape[0] * scale)),
-                                  interpolation=cv2.INTER_AREA)
-        h, w, ch = disp.shape
-        if h > 0 and w > 0:
-            bytes_per_line = ch * w
-            q_img = QImage(disp.data, w, h, bytes_per_line,
-                           QImage.Format_RGB888).rgbSwapped()
-            self.video_label.setPixmap(QPixmap.fromImage(q_img))
+        try:
+            lw = self.video_label.width()
+            lh = self.video_label.height()
+            if (lw > 1 and lh > 1
+                    and (frame.shape[1] > lw or frame.shape[0] > lh)):
+                scale = min(lw / frame.shape[1], lh / frame.shape[0])
+                if scale < 1.0:
+                    disp = cv2.resize(
+                        frame, (int(frame.shape[1] * scale),
+                                int(frame.shape[0] * scale)),
+                        interpolation=cv2.INTER_AREA)
+            h, w, ch = disp.shape
+            if h > 0 and w > 0:
+                q_img = QImage(disp.data, w, h, ch * w,
+                               QImage.Format_RGB888).rgbSwapped()
+                self.video_label.setPixmap(QPixmap.fromImage(q_img))
+        except Exception:
+            pass
 
-        self.yaw_dial.setValue(int(data['yaw_deg']))
-        self.pitch_dial.setValue(int(data['pitch_deg']))
-        self.roll_dial.setValue(int(data['roll_deg']))
+        # --- FPS ukur 1 Hz ---
+        self._fps_count += 1
+        now_m = time.monotonic()
+        if now_m - self._fps_t0 >= 1.0:
+            self._fps_val = self._fps_count / (now_m - self._fps_t0)
+            self._fps_count = 0
+            self._fps_t0 = now_m
+            fps_c = (theme.COLOR_OK if self._fps_val >= 20
+                     else theme.COLOR_WARN if self._fps_val >= 10
+                     else theme.COLOR_BAD)
+            self._set_chip(self.chip_fps, "fps",
+                           f"FPS {self._fps_val:.0f}/25", fps_c)
 
-        self.yaw_value_label.setText(f"{data['yaw_deg']:7.1f}°")
-        self.pitch_value_label.setText(f"{data['pitch_deg']:7.1f}°")
-        self.roll_value_label.setText(f"{data['roll_deg']:7.1f}°")
-
-        if hasattr(self, 'hud_overlay'):
-            self.hud_overlay.set_data(data['state'], data['yaw_deg'],
-                                      data['lat'], data['lon'],
-                                      data.get('dist_to_wp_m', 0.0))
-
-        mav_ok = bool(data.get('mavlink_ok', False))
-        self.chip_mav.setText("● Autopilot: NYALA" if mav_ok else "● Autopilot: MATI")
-        self.chip_mav.setStyleSheet(
-            "font-family: monospace; font-weight: bold; padding: 2px 10px;"
-            + ("color: #2ecc71;" if mav_ok else "color: #ff6b6b;"))
-        gps_fix = bool(data.get('gps_fix', False))
-        self.chip_gps.setText("GPS: TERKUNCI" if gps_fix else "GPS: MENCARI...")
-        self.chip_gps.setStyleSheet(
-            "font-family: monospace; font-weight: bold; padding: 2px 10px;"
-            + ("color: #2ecc71;" if gps_fix else "color: #f1c40f;"))
-        self.chip_speed.setText(f"Kecepatan: {data.get('groundspeed', 0.0):4.1f} m/s")
         now = time.time()
-        last_fps = getattr(self, '_last_fps_t', 0.0)
-        if last_fps > 0 and now - last_fps > 0:
-            self.chip_fps.setText(f"FPS: {1.0 / (now - last_fps):.0f}")
-        self._last_fps_t = now
-        self.chip_state.setText(f"Kondisi: {data['state']}")
+        if now - self._last_text_t < 0.2:  # teks 5 Hz
+            # Peta 1 Hz tetap jalan walau teks di-skip.
+            if now - self._last_map_t >= 1.0:
+                self._last_map_t = now
+                try:
+                    self.slim_map.update_vehicle(
+                        data['lat'], data['lon'], data['yaw_deg'])
+                except Exception:
+                    pass
+            return
+        self._last_text_t = now
 
-        # --- Mode kendali (KILL > MANUAL > AUTO): hijau AUTO, oranye MANUAL/HOLD, merah KILL.
+        yaw = float(data.get('yaw_deg', 0.0) or 0.0)
+        pitch = float(data.get('pitch_deg', 0.0) or 0.0)
+        roll = float(data.get('roll_deg', 0.0) or 0.0)
+        state = str(data.get('state', '--'))
+        dist = float(data.get('dist_to_wp_m', 0.0) or 0.0)
         op_mode = str(data.get('op_mode', 'AUTO'))
         man_on = bool(data.get('manual_active', False))
         m_surge = float(data.get('manual_surge', 0.0) or 0.0)
         m_yaw = float(data.get('manual_yaw', 0.0) or 0.0)
         rc_ok = bool(data.get('rc_ok', False))
-        self.chip_mode.setText(f"Mode: {op_mode}" + (" *" if man_on else ""))
-        self.chip_mode.setStyleSheet(
-            "font-family: monospace; font-weight: bold; padding: 2px 10px;"
-            + ("color: #ff6b6b;" if op_mode == "KILL"
-               else "color: #f39c12;" if op_mode in ("MANUAL", "HOLD")
-               else "color: #2ecc71;"))
+
+        # HUD 5 Hz (cukup untuk teks).
         try:
-            self.manual_mode_label.setText(
-                f"Mode: {op_mode}" + (" (STICK AKTIF)" if man_on else ""))
-            self.bar_surge.setValue(int(max(-1.0, min(1.0, m_surge)) * 100))
-            self.bar_yaw.setValue(int(max(-1.0, min(1.0, m_yaw)) * 100))
-            self.manual_status_label.setText(
-                f"RC: {'OK' if rc_ok else 'PUTUS'} | Stick: "
-                f"{m_surge:+.2f}/{m_yaw:+.2f}")
+            self.hud_overlay.set_data(state, yaw, data['lat'],
+                                      data['lon'], dist)
         except Exception:
             pass
 
-        # --- Baterai: hijau >= 50 %, kuning 20-50 %, merah < 20 %, abu = no data.
+        # Peta 1 Hz.
+        if now - self._last_map_t >= 1.0:
+            self._last_map_t = now
+            try:
+                self.slim_map.update_vehicle(data['lat'], data['lon'], yaw)
+            except Exception:
+                pass
+
+        # Sidebar.
+        mode_c = (theme.COLOR_BAD if op_mode == "KILL"
+                  else theme.COLOR_WARN if op_mode in ("MANUAL", "HOLD")
+                  else theme.COLOR_OK)
+        if self.side_mode.text() != op_mode:
+            self.side_mode.setText(op_mode)
+        if self._chip_cache.get("side_mode_c") != mode_c:
+            self._chip_cache["side_mode_c"] = mode_c
+            self.side_mode.setStyleSheet(
+                "font-family: monospace; font-weight: bold; font-size: 26px;"
+                f" color: {mode_c}; background: transparent;")
+        self.side_rc.setText(f"RC: {'OK' if rc_ok else 'PUTUS'}"
+                             f" | {'STICK' if man_on else 'AUTO'}")
+        if self.side_state.text() != state:
+            self.side_state.setText(state)
+        self.side_yaw.setText(f"H {yaw:5.1f}° | d {dist:5.1f} m")
+
+        n_wp = len(getattr(self.nav_thread.navigator, "waypoints", []))
+        tgt = int(data.get('target_wp_idx', 0) or 0) + 1
+        self.side_wp.setText(f"WP {min(tgt, max(n_wp, 1))} / {n_wp}")
+        self.side_dist.setText(f"{dist:.1f} m")
+
+        # Baterai LiPO 4S: penuh 16.8 V / kosong 12.8 V.
         volt = data.get('voltage_v')
         curr = data.get('current_a')
         pct = data.get('battery_pct')
@@ -789,127 +625,86 @@ class MainWindow(QMainWindow):
             except (TypeError, ValueError):
                 pct = None
         if pct is None:
-            self.chip_batt.setText("Baterai: --")
-            self.chip_batt.setStyleSheet(
-                "font-family: monospace; font-weight: bold;"
-                "padding: 2px 10px; color: #95a5a6;")
-            batt_txt, volt_txt, curr_txt = "--", "--", "--"
+            self.side_batt.setText("--")
+            self.side_volt.setText("-- V | -- A")
+            self._set_chip(self.chip_batt, "batt", "BAT --",
+                           theme.COLOR_IDLE)
         else:
             volt_s = f"{volt:.1f} V" if volt is not None else "--"
-            self.chip_batt.setText(f"Baterai: {pct:.0f}% ({volt_s})")
-            color = ("#2ecc71" if pct >= 50 else
-                     "#f1c40f" if pct >= 20 else "#ff6b6b")
-            self.chip_batt.setStyleSheet(
-                "font-family: monospace; font-weight: bold;"
-                f"padding: 2px 10px; color: {color};")
-            batt_txt = f"{pct:.0f} %"
-            volt_txt = volt_s
-            curr_txt = f"{curr:.1f} A" if curr is not None else "--"
+            curr_s = f"{curr:.1f} A" if curr is not None else "--"
+            self.side_batt.setText(f"{pct:.0f} %")
+            bc = (theme.COLOR_OK if pct >= 50
+                  else theme.COLOR_WARN if pct >= 20 else theme.COLOR_BAD)
+            self.side_batt.setStyleSheet(
+                "font-family: monospace; font-size: 22px; font-weight: bold;"
+                f" color: {bc}; background: transparent;")
+            self.side_volt.setText(f"{volt_s} | {curr_s}")
+            self._set_chip(self.chip_batt, "batt",
+                           f"BAT {pct:.0f}% ({volt_s})", bc)
 
-        self.monitor_table.setItem(0, 0, QTableWidgetItem(data['state']))
-        self.monitor_table.setItem(1, 0, QTableWidgetItem(f"{data['lat']:.7f}"))
-        self.monitor_table.setItem(2, 0, QTableWidgetItem(f"{data['lon']:.7f}"))
-        
-        target_idx_display_str = "N/A"
-        if data['state'] not in ["NO_WAYPOINTS", "NO_TELEM", "WAITING_GPS"]:
-            target_idx_display_str = str(data['target_wp_idx'] + 1)
-        elif data['state'] == "NO_WAYPOINTS":
-            target_idx_display_str = "0"
-        
-        self.monitor_table.setItem(3, 0, QTableWidgetItem(target_idx_display_str))
-        self.monitor_table.setItem(4, 0, QTableWidgetItem(f"{data['dist_to_wp_m']:.2f}"))
-        self.monitor_table.setItem(5, 0, QTableWidgetItem(batt_txt))
-        self.monitor_table.setItem(6, 0, QTableWidgetItem(volt_txt))
-        self.monitor_table.setItem(7, 0, QTableWidgetItem(curr_txt))
+        # Tab Misi.
+        self.misi_pos.setText(f"{data['lat']:.6f}, {data['lon']:.6f}")
+        self.misi_att.setText(f"Y {yaw:6.1f}°  P {pitch:5.1f}°"
+                              f"  R {roll:5.1f}°")
+        self.misi_speed.setText(
+            f"{float(data.get('groundspeed', 0.0) or 0.0):4.1f} m/s")
+        mav_ok = bool(data.get('mavlink_ok', False))
+        gps_fix = bool(data.get('gps_fix', False))
+        self.misi_link.setText(
+            f"Autopilot: {'NYALA' if mav_ok else 'MATI'} | "
+            f"GPS: {'FIX' if gps_fix else 'MENCARI'}")
+        self._set_chip(self.chip_link, "link",
+                       f"● {'LINK' if mav_ok else 'NO-LINK'}",
+                       theme.COLOR_OK if mav_ok else theme.COLOR_BAD)
+        self._set_chip(self.chip_mode, "mode",
+                       f"{op_mode}{'*' if man_on else ''}", mode_c)
 
-    def on_record_waypoint(self):
-        if self.current_lat == 0.0 and self.current_lon == 0.0 and self.nav_thread.navigator.current_state != "NO_WAYPOINTS":
-            self.wp_status_label.setText("Error: No position data yet.")
-            return
-            
-        lat = self.current_lat
-        lon = self.current_lon
-
-        self.nav_thread.navigator.waypoints.append({'lat': lat, 'lon': lon})
-        new_index = len(self.nav_thread.navigator.waypoints) - 1
-
-        text = f"Added WP #{new_index + 1} ({lat:.6f}, {lon:.6f})"
-        self.wp_status_label.setText(text)
-
-        print("[GUI] Waypoint recorded directly to memory. Refreshing map...")
-        self.initialize_map_widget()
-
-    def on_save_waypoints(self):
-        wps_to_save = self.nav_thread.navigator.waypoints
-
+        # Tab Manual.
         try:
-            with open(WAYPOINT_FILE, mode='w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=['lat', 'lon'])
-                writer.writeheader()
-                writer.writerows(wps_to_save)
+            self.manual_mode_label.setText(
+                f"Mode: {op_mode}" + (" (STICK AKTIF)" if man_on else ""))
+            self.bar_surge.setValue(
+                int(max(-1.0, min(1.0, m_surge)) * 100))
+            self.bar_yaw.setValue(int(max(-1.0, min(1.0, m_yaw)) * 100))
+            self.manual_status_label.setText(
+                f"RC: {'OK' if rc_ok else 'PUTUS'} | Stick: "
+                f"{m_surge:+.2f}/{m_yaw:+.2f}")
+        except Exception:
+            pass
 
-            self.wp_status_label.setText(f"Saved {len(wps_to_save)} WPs to {WAYPOINT_FILE}")
-            
-            self.nav_thread.update_waypoints(wps_to_save)
-            
-            self.initialize_map_widget()
-            
-        except Exception as e:
-            self.wp_status_label.setText(f"Error saving: {e}")
-
-    def on_clear_waypoints(self):
-        self.nav_thread.navigator.waypoints = []
-        self.wp_status_label.setText("All waypoints cleared (in memory). Save to commit.")
-        
-        self.initialize_map_widget()
-
-            
-    def closeEvent(self, event):
+    def closeEvent(self, event):  # noqa: N802 - API Qt
         print("Closing application...")
-        self.nav_thread.stop()
-        self.nav_thread.wait()
-        
+        try:
+            self.nav_thread.stop()
+            self.nav_thread.wait()
+        except Exception:
+            pass
         if hasattr(self.nav_thread, 'save_config_to_file'):
             print("Menyimpan parameter tuning terakhir...")
-            self.nav_thread.save_config_to_file()
-        
-        if os.path.exists(TMP_MAP_FILE): os.remove(TMP_MAP_FILE)
-            
+            try:
+                self.nav_thread.save_config_to_file()
+            except Exception:
+                pass
+        try:
+            if os.path.exists(TMP_MAP_FILE):
+                os.remove(TMP_MAP_FILE)
+        except Exception:
+            pass
         event.accept()
+
 
 if __name__ == "__main__":
     if not WAYPOINTS:
         print("WARNING: 'plan.csv' is empty or not found.")
         print("Application will start with an empty map.")
-        print("Use the 'Waypoint Recorder' to add waypoints.")
+        print("Use '+ WP' to add waypoints.")
 
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
-    app.setStyleSheet("""
-        QSplitter::handle { background: #d7dde3; }
-        QPushButton {
-            background: #f7f9fb; border: 1px solid #c8d0d8;
-            border-radius: 4px; padding: 5px 10px;
-        }
-        QPushButton:hover { background: #eef3f7; }
-        QTableWidget {
-            gridline-color: #e1e6eb; background: #ffffff;
-            alternate-background-color: #f6f8fa;
-        }
-        QTableWidget::item { padding: 3px; }
-        QHeaderView::section {
-            background: #eef2f6; border: none;
-            border-bottom: 1px solid #d7dde3; padding: 4px;
-        }
-        QDial { background: transparent; }
-        QLineEdit, QDoubleSpinBox, QSpinBox {
-            background: #ffffff; border: 1px solid #c8d0d8;
-            border-radius: 3px; padding: 3px;
-        }
-    """)
-    
+    theme.apply_theme(app)
+
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())

@@ -32,15 +32,21 @@ SESSION_VIDEO_DIR = os.path.join(DATA_DIR, "session_videos")
 # kemampuan aslinya di-clamp sendiri oleh driver. CAMERA_MAX_AUTO_* hanya
 # membatasi ukuran yang boleh diminta saat probing.
 #
-# CAMERA_TARGET_FPS = 20: loop video & pacing menargetkan 20 fps stabil
-# (negosiasi tetap boleh memilih mode yang nyata-nya > 20, mis. 1280x720
-# MJPG ~30 fps — pacing loop yang menurunkannya ke 20, bukan kamera).
-CAMERA_TARGET_FPS = 23
+# CAMERA_TARGET_FPS = 25: capture + loop video + render GUI dikunci 25 Hz
+# (monotonic pacing). Negosiasi memilih mode yang nyata >= 20 fps
+# (prioritas 1280x720@25 MJPG, fallback 640x480@25); bila kamera hanya
+# mampu lambat (mis. 10 fps), loop tetap pacing 25 via frame terakhir
+# (chip GUI jujur tulis real/display). Deteksi YOLO async tak diblokir.
+CAMERA_TARGET_FPS = 25
 CAMERA_MAX_AUTO_WIDTH = 1920
 CAMERA_MAX_AUTO_HEIGHT = 1080
-# Minimum fps yang MASIH diterima saat negosiasi mode. Diturunkan ke 15
-# supaya resolusi tinggi tetap lolos walau target pacing hanya 20.
-CAMERA_MIN_ACCEPT_FPS = 18
+# Minimum fps nyata agar mode lolos negosiasi. 20 = toleransi jitter
+# dari target 25 (kamera sehat 720p MJPG umumnya ~30 fps).
+CAMERA_MIN_ACCEPT_FPS = 20
+# Throttle GUI (agar start & render ringan di RPi/laptop):
+# teks telemetri 5 Hz, peta 1 Hz, chip FPS 1 Hz.
+GUI_TELEMETRY_HZ = 5
+GUI_MAP_HZ = 1
 
 # Orientasi frame kamera: 0 = normal, 1 = mirror kiri-kanan (flip
 # horizontal), 2 = atas-bawah (flip vertikal), 3 = 180 derajat. Default 1

@@ -390,3 +390,28 @@ def flip_frame_if_needed(frame, flip_mode=1):
     if code is None:
         return frame
     return cv2.flip(frame, code)
+
+
+# --- Pacing 25 Hz (monotonic): capture + loop + render dikunci 25 fps ---
+TARGET_FPS = 25
+TARGET_INTERVAL_S = 1.0 / TARGET_FPS
+
+
+def pace_to_fps(next_deadline):
+    """Tidur sampai deadline monotonic; return deadline berikutnya.
+
+    `next_deadline` = waktu monotonic (time.monotonic) target frame
+    berikutnya. Bila loop terlambat (overrun), deadline dimajukan tanpa
+    tidur agar tidak menumpuk. Pemakaian:
+        deadline = time.monotonic()
+        while ...:
+            ... # kerja 1 frame
+            deadline = pace_to_fps(deadline)
+    """
+    now = time.monotonic()
+    sleep_s = next_deadline - now
+    if sleep_s > 0:
+        time.sleep(sleep_s)
+        return next_deadline + TARGET_INTERVAL_S
+    # Terlambat: kejar tanpa tidur (maks 1 interval agar tak spiral).
+    return now + TARGET_INTERVAL_S

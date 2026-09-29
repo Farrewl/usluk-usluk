@@ -1,8 +1,8 @@
 """Lapisan tipis Python -> C (ctypes only, TANPA logika hitung).
 
-Semua hitungan (PID, EKF, nav, fuzzy, RC, manual, mixer, arbitrator)
-dijalankan fungsi C di core/libaterkia.so. Python hanya meneruskan angka
-& struct — tidak ada rumus yang diduplikasi di sini.
+Semua hitungan (PID, EKF, nav, fuzzy, RC, manual, mixer, arbitrator,
+gate-vision) dijalankan fungsi C di core/libaterkia.so. Python hanya
+meneruskan angka & struct — tidak ada rumus yang diduplikasi di sini.
 
 Build: gcc -shared -fPIC -O2 -Icore/include core/src/*.c -o core/libaterkia.so -lm
 (gamepad_input.cpp hanya dipakai via CMake static lib, bukan .so ini.)
@@ -398,3 +398,187 @@ class ModeState:
                int(bool(manual_req)), int(bool(rc_ok)),
                float(dt), float(lost_hold_s))
         return {"mode": int(m), "name": OP_NAMES.get(int(m), "?")}
+
+
+# ---------------------------------------------------------------------------
+# gate_vision.h — koleksi pasangan + jarak pinhole + kriteria geometri buoy
+# + sequencer latch (pengganti app/gate_sequencer.py di jalur produksi).
+# Warna HSV tetap di Python (butuh citra); modul ini hanya geometri.
+# ---------------------------------------------------------------------------
+
+# Batas kompilasi (sama dengan #define GV_* di gate_vision.h).
+GV_MAX_DET = 64
+GV_MAX_PAIRS = 64
+GV_MEM_PER_CLS = 32
+
+
+# Urutan field = struct gv_ball_t (C).
+class _GvBallC(ctypes.Structure):
+    _fields_ = [("cx", _D), ("cy", _D), ("area", _D)]
+
+
+# Urutan field = struct gv_pair_t (C).
+class _GvPairC(ctypes.Structure):
+    _fields_ = [("red_idx", _I), ("green_idx", _I)]
+
+
+# Urutan field = struct gv_mem_t (C).
+class _GvMemC(ctypes.Structure):
+    _fields_ = [("cx", _D), ("cy", _D), ("area", _D), ("unseen", _I)]
+
+
+# Urutan field = struct gv_seq_t (C) — layout terverifikasi 2160 byte.
+class _GvSeqC(ctypes.Structure):
+    _fields_ = [
+        ("pass_distance_m", _D),
+        ("lost_tolerance_frames", _I),
+        ("gate_width_m", _D),
+        ("focal_length_px", _D),
+        ("midpoint_match_px", _D),
+        ("track_match_px", _D),
+        ("track_boost", _D),
+        ("has_active", _I),
+        ("active_mid_x", _D),
+        ("active_mid_y", _D),
+        ("active_dist", _D),
+        ("active_red", _I),
+        ("active_green", _I),
+        ("lost_frames", _I),
+        ("is_passed", _I),
+        ("mem", _GvMemC * 2 * GV_MEM_PER_CLS),
+        ("mem_n", _I * 2),
+    ]
+
+
+def _balls_to_c(balls):
+    """List dict {cx, cy, area} -> array C (maks GV_MAX_DET)."""
+    n = min(len(balls), GV_MAX_DET)
+    arr = (_GvBallC * max(n, 1))()
+    for i in range(n):
+        arr[i].cx = float(balls[i].get("cx", 0.0))
+        arr[i].cy = float(balls[i].get("cy", 0.0))
+        arr[i].area = float(balls[i].get("area", 0.0))
+    return arr, n
+
+
+def collect_gate_pairs_c(red_balls, green_balls, vertical_align_px,
+                         area_similarity_ratio):
+    """Kumpulkan pasangan gate (C). Return list (red_ball, green_ball)."""
+    red_arr, n_red = _balls_to_c(red_balls)
+    grn_arr, n_grn = _balls_to_c(green_balls)
+    out = (_GvPairC * GV_MAX_PAIRS)()
+    fn = _sig("gv_collect_pairs",
+              [ctypes.POINTER(_GvBallC), _I,
+               ctypes.POINTER(_GvBallC), _I, _D, _D,
+               ctypes.POINTER(_GvPairC)], _I)
+    n = fn(red_arr, n_red, grn_arr, n_grn,
+           float(vertical_align_px), float(area_similarity_ratio), out)
+    pairs = []
+    for i in range(max(0, min(int(n), GV_MAX_PAIRS))):
+        ri, gi = int(out[i].red_idx), int(out[i].green_idx)
+        if 0 <= ri < len(red_balls) and 0 <= gi < len(green_balls):
+            pairs.append((red_balls[ri], green_balls[gi]))
+    return pairs
+
+
+def estimate_gate_distance_c(pixel_width, gate_width_m, focal_length_px):
+    """Jarak gate pinhole (C); +inf bila tak reliabel."""
+    fn = _sig("gv_estimate_distance", [_D, _D, _D], _D)
+    return float(fn(float(pixel_width), float(gate_width_m),
+                    float(focal_length_px)))
+
+
+def buoy_geometry_ok_c(w, h, min_area, max_aspect_deviation):
+    """Kriteria geometri buoy (C): 1 = lolos, 0 = tolak."""
+    fn = _sig("gv_buoy_ok", [_D, _D, _D, _D], _I)
+    return bool(fn(float(w), float(h), float(min_area),
+                   float(max_aspect_deviation)))
+
+
+def buoy_geometry_fail_c(w, h, min_area, max_aspect_deviation):
+    """Alasan penolakan geometri buoy (C): 0 = lolos, 1 = terlalu kecil,
+    2 = area < min_area, 3 = aspek menyimpang."""
+    fn = _sig("gv_buoy_fail", [_D, _D, _D, _D], _I)
+    return int(fn(float(w), float(h), float(min_area),
+                  float(max_aspect_deviation)))
+
+
+class GateSequencerC:
+    """Sequencer gate; state di memori Python, hitungan di C (gv_seq_*)."""
+
+    def __init__(self, pass_distance_m=1.2, lost_tolerance_frames=5,
+                 gate_width_m=1.0, focal_length_px=400.0,
+                 midpoint_match_px=6.0, track_match_px=30.0,
+                 track_boost=1.5):
+        self._C = _GvSeqC
+        self._s = _GvSeqC()
+        self._pair_cache = []  # pasangan frame terakhir (untuk active_pair)
+        _sig("gv_seq_init",
+             [ctypes.POINTER(self._C), _D, _I, _D, _D, _D, _D, _D],
+             None)(ctypes.byref(self._s), float(pass_distance_m),
+                   int(lost_tolerance_frames), float(gate_width_m),
+                   float(focal_length_px), float(midpoint_match_px),
+                   float(track_match_px), float(track_boost))
+
+    def reset(self):
+        _sig("gv_seq_reset", [ctypes.POINTER(self._C)], None)(
+            ctypes.byref(self._s))
+        self._pair_cache = []
+
+    @property
+    def active_pair(self):
+        """Pasangan aktif (seperti GateSequencer Python) atau None."""
+        if not self._s.has_active:
+            return None
+        ri, gi = int(self._s.active_red), int(self._s.active_green)
+        reds = getattr(self, "_last_red", [])
+        grns = getattr(self, "_last_green", [])
+        if 0 <= ri < len(reds) and 0 <= gi < len(grns):
+            return (reds[ri], grns[gi])
+        for r, g in self._pair_cache:
+            if r is not None and g is not None:
+                return (r, g)
+        return None
+
+    def update(self, red_balls, green_balls, pairs, image_center_y):
+        """Perbarui antrean (C). Return (mid_x, mid_y, dist, is_passed).
+
+        `pairs` = list (red_ball, green_ball) dari collect_gate_pairs_c.
+        Bila kosong -> (None, None, inf, False).
+        """
+        self._last_red = list(red_balls)
+        self._last_green = list(green_balls)
+        self._pair_cache = list(pairs)
+        red_arr, n_red = _balls_to_c(red_balls)
+        grn_arr, n_grn = _balls_to_c(green_balls)
+        # Petakan pasangan ke index array C (cari posisi dict yang sama).
+        parr = (_GvPairC * max(len(pairs), 1))()
+        for i, (r, g) in enumerate(pairs[:GV_MAX_PAIRS]):
+            try:
+                ri = list(red_balls).index(r)
+            except ValueError:
+                ri = -1
+            try:
+                gi = list(green_balls).index(g)
+            except ValueError:
+                gi = -1
+            if ri < 0 or gi < 0:
+                continue
+            parr[i].red_idx = ri
+            parr[i].green_idx = gi
+        fn = _sig("gv_seq_update",
+                  [ctypes.POINTER(self._C),
+                   ctypes.POINTER(_GvBallC), _I,
+                   ctypes.POINTER(_GvBallC), _I,
+                   ctypes.POINTER(_GvPairC), _I, _D,
+                   ctypes.POINTER(_D), ctypes.POINTER(_D),
+                   ctypes.POINTER(_D), ctypes.POINTER(_I)], _I)
+        mx, my, dist = _D(0.0), _D(0.0), _D(float("inf"))
+        ps = _I(0)
+        has = fn(ctypes.byref(self._s), red_arr, n_red, grn_arr, n_grn,
+                 parr, len(pairs), float(image_center_y),
+                 ctypes.byref(mx), ctypes.byref(my),
+                 ctypes.byref(dist), ctypes.byref(ps))
+        if not has:
+            return None, None, float("inf"), False
+        return float(mx.value), float(my.value), float(dist.value), bool(ps.value)

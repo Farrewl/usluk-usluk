@@ -52,5 +52,9 @@ target_include_directories(asv_mode_manager PUBLIC include)
 add_library(asv_gamepad_input STATIC src/gamepad_input.cpp)
 target_include_directories(asv_gamepad_input PUBLIC include)
 
+add_library(asv_gate_vision STATIC src/gate_vision.c)
+target_include_directories(asv_gate_vision PUBLIC include)
+target_link_libraries(asv_gate_vision PUBLIC m)
+
 enable_testing()
 add_subdirectory(tests)

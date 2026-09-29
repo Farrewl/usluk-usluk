@@ -55,11 +55,10 @@ aterkia-asv/
 │   ├── geo.py              # Matematika geodetik
 │   ├── camera.py           # Buka kamera + flip + negosiasi resolusi
 │   ├── mavlink_telemetry.py# Baca MAVLink non-blocking (attitude + baterai)
-│   ├── detection_validation.py # validate_buoy() filter + debug
+│   ├── detection_validation.py # Fraksi warna HSV (butuh OpenCV); geometri -> C
 │   ├── filtering.py        # Referensi Python PID/Complementary/EKF (fallback C)
-│   ├── fuzzy.py            # Fuzzy Sugeno gate/docking
-│   ├── gate_sequencer.py   # GateSequencer + collect_gate_pairs
-│   ├── gate_sequencer.py   # GateSequencer + collect_gate_pairs
+│   ├── fuzzy.py            # Referensi uji Fuzzy Sugeno (produksi -> C)
+│   ├── gate_sequencer.py   # REFERENSI UJI saja (produksi -> gate_vision.c)
 │   ├── aterkia_core.py     # ctypes wrapper tipis ke core/libaterkia.so
 │   └── gateway.py          # Relay Redis ↔ WebSocket (opsional)
 ├── core/                   # Inti C/C++ (komputasi deterministik)
@@ -68,6 +67,8 @@ aterkia-asv/
 │   │   ├── nav_math.c      # Haversine, bearing, CTE, normalize
 │   │   ├── fuzzy.c         # Sugeno singleton
 │   │   ├── state_machine.c # 16 state misi
+│   │   ├── gate_vision.c   # Koleksi pasangan gate, pinhole, geometri buoy,
+│   │   │                   #   sequencer latch+memori (port gate_sequencer.py)
 │   │   ├── mavlink_bridge.c# Framing MAVLink v1 + serial
 │   │   ├── control_filters.c # PID+deadband, complementary, EKF heading
 │   │   ├── thruster_mixer.c  # Differential drive surge+yaw→PWM
@@ -88,7 +89,7 @@ aterkia-asv/
 │   ├── test_deteksi.py     # Live kamera + deteksi (--flip --debug --imgsz)
 │   ├── download_weights.sh # Unduh model YOLO
 │   └── run_gui.sh          # Jalankan GUI Linux
-└── tests/                  # Unit test (104 OK, 1 skip)
+└── tests/                  # Unit test (131 OK, 1 skip)
     ├── test_core_*.py      # ctypes cross-check C vs Python (bit-per-bit)
     ├── test_geo.py
     ├── test_filtering.py
@@ -99,7 +100,7 @@ aterkia-asv/
 
 ## Fitur Baru (Implementasi Terbaru)
 
-- **Kamera**: `CAMERA_FLIP_MODE` (0-3), target **20 fps stabil**, negosiasi resolusi otomatis.
+- **Kamera**: `CAMERA_FLIP_MODE` (0-3), target **30 fps stabil**, negosiasi resolusi otomatis.
 - **Deteksi Buoy**: Threshold longgar (`conf=0.35`, `color_frac=0.05`, `sat=0.35`, `aspect=0.50`, `area=40px`) + `DETECTION_DEBUG` cetak alasan tolak.
 - **Gate Sequencer**: Kumpulkan semua pasang plausibel → latch target → switch cepat lewat midpoint (`GATE_VERTICAL_ALIGN_PX=75px`).
 - **Filter C Core**: PID+deadband/anti-windup, Complementary, EKF 1-D heading — bit-per-bit sama Python.

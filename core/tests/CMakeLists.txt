@@ -26,3 +26,7 @@ add_test(NAME manual_control COMMAND test_manual_control)
 add_executable(test_mode_manager test_mode_manager.c)
 target_link_libraries(test_mode_manager PRIVATE asv_mode_manager)
 add_test(NAME mode_manager COMMAND test_mode_manager)
+
+add_executable(test_gate_vision test_gate_vision.c)
+target_link_libraries(test_gate_vision PRIVATE asv_gate_vision m)
+add_test(NAME gate_vision COMMAND test_gate_vision)

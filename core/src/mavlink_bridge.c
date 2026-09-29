@@ -187,11 +187,15 @@ int mav_serial_open(const char *path, int baud) {
         close(fd);
         return -1;
     }
-    cfmakeraw(&tio);
+    /* Ekuivalen cfmakeraw(3) manual: tanpa feature-test macro agar lolos
+     * -std=c11 -Wall -Wextra -Werror (cfmakeraw disembunyikan strict ISO). */
+    tio.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR |
+                     ICRNL | IXON);
+    tio.c_oflag &= ~OPOST;
+    tio.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
     tio.c_cflag |= CLOCAL | CREAD;
-    tio.c_cflag &= ~CSIZE;
-    tio.c_cflag |= CS8;          /* 8 data bit */
-    tio.c_cflag &= ~PARENB;      /* tanpa parity */
+    tio.c_cflag &= ~(CSIZE | PARENB);
+    tio.c_cflag |= CS8;          /* 8 data bit, tanpa parity */
     tio.c_cflag &= ~CSTOPB;      /* 1 stop bit */
     tio.c_cc[VMIN] = 0;          /* read tak memblok; polling */
     tio.c_cc[VTIME] = 0;

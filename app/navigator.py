@@ -3,7 +3,10 @@ from . import aterkia_core as core
 from .manual_link import ManualLink
 from .camera import open_camera, flip_frame_if_needed, pace_to_fps
 from .detection_validation import validate_buoy
-from .gate_sequencer import GateSequencer, collect_gate_pairs
+# Sequencer gate + koleksi pasangan: hitung di C (gate_vision via
+# aterkia_core). Modul Python app/gate_sequencer.py dipertahankan HANYA
+# sebagai referensi uji (tests/test_gate_sequencer.py) — jalur produksi
+# di file ini TIDAK mengimpornya langsung.
 from ultralytics import YOLO
 from pymavlink import mavutil
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -85,8 +88,8 @@ class VisionOffboardNavigator:
                             "mode": 0, "mode_name": "AUTO", "rc_ok": False,
                             "source": "AUTO"}
 
-        # --- Antrean target gate (titik tengah merah+hijau) ---
-        self.gate_seq = GateSequencer(
+        # --- Antrean target gate (titik tengah merah+hijau, hitung di C) ---
+        self.gate_seq = core.GateSequencerC(
             pass_distance_m=self.config.GATE_PASS_DISTANCE_M,
             lost_tolerance_frames=self.config.GATE_LOST_TOLERANCE_FRAMES,
             gate_width_m=self.config.GATE_WIDTH_METERS,
@@ -445,8 +448,9 @@ class VisionOffboardNavigator:
                             continue 
                         
                     detections = self._detect_objects(frame, self.gate_model, force_run=False)
-                    # Pemilihan gate TIDAK lagi per-frame murni (_find_best_gate):
-                    # GateSequencer mengumpulkan semua pasangan, mengunci target
+                    # Pemilihan gate TIDAK lagi per-frame murni (dulu
+                    # `_find_best_gate`): GateSequencer mengumpulkan semua
+                    # pasangan, mengunci target
                     # aktif & melompat cepat ke gate berikutnya saat yang aktif
                     # dilewati -> kapal tidak "mikir kelamaan" di tengah gate.
                     best_gate, gate_distance = self._track_gate(detections)
@@ -1282,9 +1286,10 @@ class VisionOffboardNavigator:
         return max(dt, 1e-4)
 
     def _track_gate(self, detections):
-        """Pilih target gate aktif lewat GateSequencer (titik tengah).
+        """Pilih target gate aktif lewat sequencer C (titik tengah).
 
-        Menggantikan `_find_best_gate` per-frame: sequencer mengumpulkan
+        Menggantikan versi per-frame lama (`_find_best_gate`, sudah dihapus):
+        sequencer C mengumpulkan
         SEMUA pasangan, latch target aktif (tahan walau sempat hilang), dan
         melompat cepat ke gate berikutnya saat yang aktif dilewati.
 
@@ -1305,13 +1310,14 @@ class VisionOffboardNavigator:
         if not red_balls or not green_balls:
             pairs = []
         else:
-            pairs = collect_gate_pairs(
+            # Koleksi pasangan di C (gv_collect_pairs via aterkia_core).
+            pairs = core.collect_gate_pairs_c(
                 red_balls, green_balls,
                 self.config.GATE_VERTICAL_ALIGN_PX,
                 self.config.GATE_AREA_SIMILARITY_RATIO)
 
         mid_x, mid_y, dist, is_passed = self.gate_seq.update(
-            pairs, self.image_center_y)
+            red_balls, green_balls, pairs, self.image_center_y)
 
         if mid_x is None:
             self.gate_active_mid = None
@@ -1324,50 +1330,6 @@ class VisionOffboardNavigator:
             # jangan koreksi arah; sequencer sudah menyiapkan gate berikutnya.
             return None, float('inf')
         return pair, dist
-
-    def _find_best_gate(self, detections):
-        red_balls = detections.get(self.config.RED_BALL_CLASS_ID, [])
-        green_balls = detections.get(self.config.GREEN_BALL_CLASS_ID, [])
-        min_area = self.config.MIN_BUOY_AREA_PX
-        red_balls = [b for b in red_balls if b['area'] >= min_area]
-        green_balls = [b for b in green_balls if b['area'] >= min_area]
-
-        if not red_balls or not green_balls: return None, float('inf') 
-
-        FOCAL_LENGTH_PX = self.config.FOCAL_LENGTH_PX
-        GATE_WIDTH_METERS = self.config.GATE_WIDTH_METERS
-        AREA_SIMILARITY_RATIO_THRESHOLD = self.config.GATE_AREA_SIMILARITY_RATIO
-        vertical_alignment_threshold = self.config.GATE_VERTICAL_ALIGN_PX 
-        plausible_pairs = [] 
-
-        for r_ball in red_balls:
-            for g_ball in green_balls:
-                if abs(r_ball['cy'] - g_ball['cy']) > vertical_alignment_threshold: continue 
-                r_area = r_ball['area']; g_area = g_ball['area']
-                if r_area == 0 or g_area == 0: continue
-                max_area = max(r_area, g_area)
-                if max_area == 0: continue 
-                if min(r_area, g_area) / max_area < AREA_SIMILARITY_RATIO_THRESHOLD: continue 
-                plausible_pairs.append((r_ball, g_ball))
-
-        if not plausible_pairs: return None, float('inf') 
-        best_pair = None
-        min_estimated_distance = float('inf') 
-        for pair in plausible_pairs:
-            r_ball, g_ball = pair
-            current_distance_m = float('inf')
-            pixel_width = abs(r_ball['cx'] - g_ball['cx'])
-            if pixel_width > 5 and FOCAL_LENGTH_PX > 0: 
-                try:
-                    current_distance_m = (GATE_WIDTH_METERS * FOCAL_LENGTH_PX) / pixel_width
-                except ZeroDivisionError:
-                    current_distance_m = float('inf')
-            if current_distance_m < min_estimated_distance:
-                min_estimated_distance = current_distance_m
-                best_pair = pair
-        if best_pair is None:
-            return None, float('inf')
-        return best_pair, min_estimated_distance
 
     def _apply_yaw_pid(self, raw_correction_rad, dynamic_gain):
         """PID + deadband untuk koreksi yaw (hitung di C via aterkia_core).

@@ -19,8 +19,13 @@ mempertahankan target aktif (titik tengah + perkiraan jarak) yang di-latch:
     yang sudah dikumpulkan.
 
 Semua fungsi murni & deterministik agar mudah diuji:
-  tests/test_gate_sequencer.py. Dipakai oleh app/navigator.py (misi asli)
-  dan app/simulator.py (skenario darat).
+  tests/test_gate_sequencer.py.
+
+STATUS: modul ini kini HANYA REFERENSI UJI. Jalur produksi (app/navigator.py)
+memakai padanan C-nya lewat app/aterkia_core.py (collect_gate_pairs_c,
+estimate_gate_distance_c, GateSequencerC — inti gv_* di core/src/gate_vision.c).
+Versi Python dipertahankan sebagai oracle pembanding di
+tests/test_core_gate_vision.py: bila C menyimpang, test itu gagal.
 """
 
 

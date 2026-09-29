@@ -26,12 +26,38 @@ test — kasus sintetis ada di tests/test_detection_validation.py.
 import cv2
 import numpy as np
 
+from . import aterkia_core as core
+
 # Batas hue (OpenCV: 0..179) untuk warna buoy.
 RED_HUE_MAX = 10        # merah "rendah": hue 0..10
 RED_HUE_MIN2 = 170      # merah "tinggi":  hue 170..179
 GREEN_HUE_MIN = 35      # hijau: hue 35..85
 GREEN_HUE_MAX = 85
 MIN_VALUE = 40          # value HSV di bawah ini = hitam/pudar, tak dihitung
+
+# Batas tepi sisi minimum — cerminan ambah di C (gv_buoy_fail). Dipakai HANYA
+# untuk menyusun pesan debug, bukan untuk memutuskan.
+DEBUG_MIN_SIDE_PX = 2
+
+# Ambang "kotak kecil" (fraksi warna dibagi 2). Ini keputusan NYATA pada
+# jalur warna (Python), jadi konstanta biasa — bukan debug.
+SMALL_BOX_AREA_PX = 80
+
+
+def _buoy_geometry_reason(fail, w, h, area, min_area, max_aspect_deviation):
+    """Pesan debug untuk penolakan geometri, dibangun dari kode C.
+
+    `fail` = nilai balik core.buoy_geometry_fail_c (1/2/3). Angka turunan
+    (area/aspek) hanya untuk ditampilkan, tidak ikut memutuskan apa pun.
+    """
+    if fail == 1:
+        return f"kotak terlalu kecil (w={w}, h={h} px) < {DEBUG_MIN_SIDE_PX} px"
+    if fail == 2:
+        return f"area {area} px < MIN_BUOY_AREA_PX({min_area:.0f})"
+    if fail == 3:
+        return (f"aspek {w / h:.2f} menyimpang > {max_aspect_deviation:.2f} "
+                f"(bukan bentuk bola/bujur sangkar)")
+    return f"geometri ditolak (kode {fail})"
 
 
 def _is_red_hue(hue):
@@ -99,6 +125,12 @@ def validate_buoy(frame, cls, xyxy, min_area,
     buruk; wajah operator tetap tertolak karena hue kulit adalah oranye/kuning,
     bukan merah ATAU hijau.
 
+    Catatan arsitektur: kriteria GEOMETRI (w/h, area, rasio aspek) diputuskan
+    di C (gv_buoy_fail via app/aterkia_core.py) — rumus tunggal, tanpa
+    duplikat Python. Yang tetap di sini hanya nilai yang butuh citra: konversi
+    HSV + fraksi warna (butuh OpenCV). Bila .so belum di-build, pemanggil
+    gagal eksplisit (tidak ada fallback diam-diam ke rumus Python).
+
     saat `debug=True`, kembalikan (ok: bool, reasons: list[str]) dengan
     nilai terukur tiap kriteria agar mudah dicetak di test-live
     (scripts/test_deteksi.py --debug).
@@ -109,28 +141,17 @@ def validate_buoy(frame, cls, xyxy, min_area,
     reasons = []
 
     area = w * h
-    if w <= 2 or h <= 2:
+    # Kode penolakan geometri dari C (0 = lolos). Sumber kebenaran tunggal.
+    fail = core.buoy_geometry_fail_c(w, h, min_area, max_aspect_deviation)
+    if fail != 0:
         if debug:
-            reasons.append(f"kotak terlalu kecil (w={w}, h={h} px) < 2 px")
-            return False, reasons
-        return False
-    if area < int(min_area):
-        if debug:
-            reasons.append(f"area {area} px < MIN_BUOY_AREA_PX({min_area:.0f})")
-            return False, reasons
-        return False
-
-    aspect = w / h
-    if abs(aspect - 1.0) > max_aspect_deviation:
-        if debug:
-            reasons.append(
-                f"aspek {aspect:.2f} menyimpang > {max_aspect_deviation:.2f} "
-                f"(bukan bentuk bola/bujur sangkar)")
+            reasons.append(_buoy_geometry_reason(fail, w, h, area, min_area,
+                                                max_aspect_deviation))
             return False, reasons
         return False
 
     # Box kecil (jauh) → statistik warna tidak stabil → turunkan ambang 2×
-    is_small = area < 80
+    is_small = area < SMALL_BOX_AREA_PX
     eff_color_frac = min_color_fraction * (0.5 if is_small else 1.0)
 
     frac = color_fraction(frame, cls, xyxy, min_saturation)
@@ -144,7 +165,7 @@ def validate_buoy(frame, cls, xyxy, min_area,
         return False
 
     if debug:
-        reasons.append(f"LOLOS (area {area} px, aspek {aspect:.2f}, "
+        reasons.append(f"LOLOS (area {area} px, aspek {w / h:.2f}, "
                        f"warna {frac:.3f}{' [box kecil]' if is_small else ''})")
         return True, reasons
     return True

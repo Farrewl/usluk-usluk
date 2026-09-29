@@ -378,6 +378,16 @@ class GroundSimNavigator:
                 self.manual_link.attach_mav(self.mav.master)
             except Exception:
                 pass
+            # Forward ke QGroundControl bila diminta (env GCS_FORWARD=1):
+            # Pixhawk --serial--> NUC (master) --udp--> QGC laptop.
+            if os.environ.get("GCS_FORWARD", "0") == "1":
+                try:
+                    self.mav.enable_gcs_forward(
+                        True,
+                        ip=os.environ.get("GCS_IP", "127.0.0.1"),
+                        port=int(os.environ.get("GCS_PORT", "14550")))
+                except Exception:
+                    pass
         else:
             print("[SIM] Pixhawk offline — roll/pitch/yaw dari mock.")
         self._last_mav_log = 0.0
@@ -565,6 +575,7 @@ class GroundSimNavigator:
                 "manual_surge": float(man.get("surge", 0.0)),
                 "manual_yaw": float(man.get("yaw", 0.0)),
                 "rc_ok": bool(man.get("rc_ok", False)),
+                "gcs_forward": bool(getattr(self.mav, "gcs_active", False)),
             }
             # Baterai dari Pixhawk (SYS_STATUS/BATTERY_STATUS) bila terhubung.
             if self.mav and self.mav.has_battery:

@@ -392,8 +392,8 @@ def flip_frame_if_needed(frame, flip_mode=1):
     return cv2.flip(frame, code)
 
 
-# --- Pacing 25 Hz (monotonic): capture + loop + render dikunci 25 fps ---
-TARGET_FPS = 25
+# --- Pacing 30 Hz (monotonic): capture + loop + render dikunci 30 fps ---
+TARGET_FPS = 30
 TARGET_INTERVAL_S = 1.0 / TARGET_FPS
 
 

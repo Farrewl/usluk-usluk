@@ -9,7 +9,8 @@ Jalankan:  python3 -m unittest discover -s tests -v
 import glob
 import unittest
 
-from app.mavlink_telemetry import detect_serial_port
+from app.mavlink_telemetry import (MavlinkTelemetry, detect_serial_port,
+                                   GCS_DEFAULT_PORT)
 
 
 class TestDetectSerialPort(unittest.TestCase):
@@ -40,6 +41,31 @@ class TestDetectSerialPort(unittest.TestCase):
             self.skipTest("tidak ada /dev/ttyACM0 di mesin ini")
         port = detect_serial_port("/dev/ttyACM0")
         self.assertEqual(port, "/dev/ttyACM0")
+
+
+class TestGcsForward(unittest.TestCase):
+    """Forward QGC: default mati, nyala via enable, tanpa hardware."""
+
+    def test_default_mati(self):
+        mav = MavlinkTelemetry(port="/dev/ttyTIDAKADA")
+        self.assertFalse(mav.gcs_active)
+        self.assertEqual(GCS_DEFAULT_PORT, 14550)
+
+    def test_enable_tanpa_connect_tetap_aman(self):
+        mav = MavlinkTelemetry(port="/dev/ttyTIDAKADA")
+        mav.enable_gcs_forward(True, ip="127.0.0.1", port=14550)
+        # Belum connect -> socket belum dibuka, tapi flag tersimpan.
+        self.assertFalse(mav.gcs_active)
+        # poll() tanpa koneksi harus aman (tidak crash).
+        mav.poll()
+        mav.enable_gcs_forward(False)
+        self.assertFalse(mav.gcs_active)
+
+    def test_close_selalu_aman(self):
+        mav = MavlinkTelemetry(port="/dev/ttyTIDAKADA")
+        mav.enable_gcs_forward(True)
+        mav.close()  # tanpa connect pun tidak boleh crash
+        self.assertFalse(mav.gcs_active)
 
 
 if __name__ == "__main__":

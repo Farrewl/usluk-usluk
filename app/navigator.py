@@ -1,7 +1,7 @@
 from . import settings as cfg
 from . import aterkia_core as core
 from .manual_link import ManualLink
-from .camera import open_camera, flip_frame_if_needed
+from .camera import open_camera, flip_frame_if_needed, pace_to_fps
 from .detection_validation import validate_buoy
 from .gate_sequencer import GateSequencer, collect_gate_pairs
 from ultralytics import YOLO
@@ -333,6 +333,9 @@ class VisionOffboardNavigator:
         self._start_video_recording()
 
         try:
+            # Pacing 30 Hz monotonic (sama seperti simulator ground):
+            # capture + inferensi + OFFBOARD stream terkunci 30 fps.
+            deadline = time.monotonic()
             while self.running:
                 self._update_telemetry()
                 self._publish_telemetry()
@@ -988,6 +991,7 @@ class VisionOffboardNavigator:
                 }
                 data_packet.update(self._battery_fields())
                 data_signal.emit(data_packet)
+                deadline = pace_to_fps(deadline)
 
         finally:
             self._cleanup()

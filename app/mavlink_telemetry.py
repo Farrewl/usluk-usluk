@@ -27,6 +27,15 @@ except ImportError:          # pragma: no cover - mesin tanpa pymavlink
     mavutil = None
     MAVLINK_AVAILABLE = False
 
+# --- Ground Control Station (QGroundControl) forwarding ---
+# Pixhawk 6C hanya punya 1 link serial ke NUC; QGC di laptop lapangan
+# ikut memantau + Arm/Mode via UDP forward (bukan colok serial kedua).
+# Arsitektur: Pixhawk --serial--> NUC (master) --udp--> QGC 14550.
+# Otoritas: QGC pegang Arm/Mode/E-stop, NUC pegang otonomi OFFBOARD.
+# Failsafe GUI tetap: KILL > MANUAL > AUTO.
+GCS_DEFAULT_IP = "127.0.0.1"
+GCS_DEFAULT_PORT = 14550
+
 
 def detect_serial_port(preferred=None):
     """Pilih port serial Pixhawk.
@@ -67,6 +76,12 @@ class MavlinkTelemetry:
         self.master = None
         self.connected = False
         self.last_heartbeat_time = 0.0
+        # Jembatan GCS (QGC): koneksi udp-out malas ke laptop lapangan.
+        # Dibuat HANYA bila enable_gcs_forward(True) dipanggil — default
+        # mati agar mesin tanpa QGC tidak membuka socket sia-sia.
+        self._gcs = None
+        self._gcs_addr = (GCS_DEFAULT_IP, GCS_DEFAULT_PORT)
+        self._gcs_enabled = False
         self._attitude = {}            # {'roll','pitch','yaw'} rad
         self._pos = None               # (lat_deg, lon_deg) atau None (no GPS)
         self._groundspeed = 0.0
@@ -117,6 +132,53 @@ class MavlinkTelemetry:
             self.master.close()
         self.master = None
         self.connected = False
+        if self._gcs is not None:
+            try:
+                self._gcs.close()
+            except Exception:
+                pass
+            self._gcs = None
+        self._gcs_enabled = False
+
+    # ------------------- forward ke QGroundControl -------------------
+    def enable_gcs_forward(self, on=True, ip=None, port=None):
+        """Nyalakan/matikan forward UDP ke QGC (default 127.0.0.1:14550).
+
+        Dipanggil SETELAH connect() sukses. GCS membaca heartbeat +
+        telemetri yang sama (Pixhawk tetap 1 master = NUC). QGC bisa
+        Arm/Mode/E-stop; otonomi tetap dari NUC.
+        """
+        if ip is not None or port is not None:
+            self._gcs_addr = (ip or self._gcs_addr[0],
+                              int(port or self._gcs_addr[1]))
+        self._gcs_enabled = bool(on)
+        if not on and self._gcs is not None:
+            try:
+                self._gcs.close()
+            except Exception:
+                pass
+            self._gcs = None
+
+    @property
+    def gcs_active(self):
+        """True bila socket GCS terbuka & siap forward."""
+        return bool(self._gcs_enabled and self._gcs is not None)
+
+    def _ensure_gcs(self):
+        """Buka socket udp-out ke QGC secara malas (sekali saja)."""
+        if not self._gcs_enabled or not MAVLINK_AVAILABLE:
+            return
+        if self._gcs is not None:
+            return
+        try:
+            ip, prt = self._gcs_addr
+            self._gcs = mavutil.mavlink_connection(
+                f"udpout:{ip}:{prt}", source_system=1,
+                source_component=191)  # comp GCS-passthrough
+            print(f"[MAV] Forward QGC aktif -> udp:{ip}:{prt}.")
+        except Exception as exc:
+            print(f"[MAV] Gagal buka forward QGC: {exc}")
+            self._gcs = None
 
     # ------------------- request stream -------------------
     def _request_streams(self):
@@ -157,12 +219,23 @@ class MavlinkTelemetry:
 
     # ------------------- baca pesan (non-blocking) -------------------
     def poll(self):
-        """Baca SEMUA pesan yang mengantre; perbarui state internal."""
+        """Baca SEMUA pesan yang mengantre; perbarui state internal.
+
+        Bila GCS forward aktif, setiap pesan mentah ikut diteruskan ke
+        QGC via UDP (tanpa parsing ulang — murah di CPU).
+        """
         if not self.connected or self.master is None:
             return
+        if self._gcs_enabled:
+            self._ensure_gcs()
         try:
             msg = self.master.recv_match(blocking=False)
             while msg is not None:
+                if self._gcs is not None:
+                    try:
+                        self._gcs.write(msg.get_msgbuf())
+                    except Exception:
+                        pass
                 mtype = msg.get_type()
                 if mtype == "ATTITUDE":
                     self._attitude = {
@@ -203,6 +276,19 @@ class MavlinkTelemetry:
                         self._battery_pct = float(rem)
                 elif mtype == "HEARTBEAT":
                     self.last_heartbeat_time = time.time()
+                    if self._gcs is not None:
+                        # QGC butuh heartbeat rutin dari link agar status
+                        # "Connected" tidak kedip; kirim max 1 Hz.
+                        now_hb = time.time()
+                        if now_hb - getattr(self, "_last_gcs_hb", 0.0) >= 1.0:
+                            self._last_gcs_hb = now_hb
+                            try:
+                                self._gcs.mav.heartbeat_send(
+                                    mavutil.mavlink.MAV_TYPE_SURFACE_BOAT,
+                                    mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                                    0, 0, 0)
+                            except Exception:
+                                pass
                 msg = self.master.recv_match(blocking=False)
         except Exception as exc:
             print(f"[MAV] Error poll: {exc}")

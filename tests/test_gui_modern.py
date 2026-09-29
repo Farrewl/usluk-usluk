@@ -17,15 +17,15 @@ from app.slim_map import (SlimMapWidget, latlon_to_tile_float,
 class TestPacing25(unittest.TestCase):
 
     def test_target_25(self):
-        self.assertEqual(TARGET_FPS, 25)
+        self.assertEqual(TARGET_FPS, 30)
 
     def test_25_frame_sekitar_1_detik(self):
         dl = time.monotonic()
         t0 = time.monotonic()
-        for _ in range(25):
+        for _ in range(30):
             dl = pace_to_fps(dl)
         dt = time.monotonic() - t0
-        # 25 frame @25Hz = 1.0 s; toleransi scheduling OS.
+        # 30 frame @30Hz = 1.0 s; toleransi scheduling OS.
         self.assertGreater(dt, 0.7)
         self.assertLess(dt, 1.6)
 

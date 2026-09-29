@@ -374,7 +374,7 @@ class MainWindow(QMainWindow):
         self.chip_link = QLabel("● --")
         self.chip_mode = QLabel("AUTO")
         self.chip_batt = QLabel("--")
-        self.chip_fps = QLabel("FPS --/25")
+        self.chip_fps = QLabel("FPS --/30")
         for chip in (self.chip_link, self.chip_mode,
                      self.chip_batt, self.chip_fps):
             chip.setStyleSheet(
@@ -548,11 +548,11 @@ class MainWindow(QMainWindow):
             self._fps_val = self._fps_count / (now_m - self._fps_t0)
             self._fps_count = 0
             self._fps_t0 = now_m
-            fps_c = (theme.COLOR_OK if self._fps_val >= 20
-                     else theme.COLOR_WARN if self._fps_val >= 10
+            fps_c = (theme.COLOR_OK if self._fps_val >= 27
+                     else theme.COLOR_WARN if self._fps_val >= 15
                      else theme.COLOR_BAD)
             self._set_chip(self.chip_fps, "fps",
-                           f"FPS {self._fps_val:.0f}/25", fps_c)
+                           f"FPS {self._fps_val:.0f}/30", fps_c)
 
         now = time.time()
         if now - self._last_text_t < 0.2:  # teks 5 Hz
@@ -650,11 +650,14 @@ class MainWindow(QMainWindow):
             f"{float(data.get('groundspeed', 0.0) or 0.0):4.1f} m/s")
         mav_ok = bool(data.get('mavlink_ok', False))
         gps_fix = bool(data.get('gps_fix', False))
+        gcs_on = bool(data.get('gcs_forward', False))
         self.misi_link.setText(
             f"Autopilot: {'NYALA' if mav_ok else 'MATI'} | "
-            f"GPS: {'FIX' if gps_fix else 'MENCARI'}")
+            f"GPS: {'FIX' if gps_fix else 'MENCARI'} | "
+            f"QGC: {'FWD' if gcs_on else '--'}")
         self._set_chip(self.chip_link, "link",
-                       f"● {'LINK' if mav_ok else 'NO-LINK'}",
+                       f"● {'LINK' if mav_ok else 'NO-LINK'}"
+                       f"{'+QGC' if gcs_on else ''}",
                        theme.COLOR_OK if mav_ok else theme.COLOR_BAD)
         self._set_chip(self.chip_mode, "mode",
                        f"{op_mode}{'*' if man_on else ''}", mode_c)

@@ -503,6 +503,17 @@ def buoy_geometry_fail_c(w, h, min_area, max_aspect_deviation):
                   float(max_aspect_deviation)))
 
 
+def yaw_correction_c(target_x_px, image_center_x, distance_m,
+                     focal_length_px):
+    """Koreksi yaw mentah (rad) dari error titik tengah piksel (C).
+
+    0.0 bila distance_m < 0.1 atau focal <= 0 (tak reliabel).
+    """
+    fn = _sig("gv_yaw_correction", [_D, _D, _D, _D], _D)
+    return float(fn(float(target_x_px), float(image_center_x),
+                    float(distance_m), float(focal_length_px)))
+
+
 class GateSequencerC:
     """Sequencer gate; state di memori Python, hitungan di C (gv_seq_*)."""
 

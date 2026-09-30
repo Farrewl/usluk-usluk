@@ -6,6 +6,7 @@
  *   - pixel <= 5 -> +inf (tak reliabel)
  *   - buoy 10x10 lolos; 2x2 / aspek 3:1 / area < min ditolak
  *   - latch: frame kosong < toleransi -> target lama dipertahankan
+ *   - yaw: atan2(((tx-cx)*d)/f, d); d<0.1 / f<=0 -> 0.0
  *
  * Jalankan:
  *   gcc -Wall -Wextra -I core/include core/tests/test_gate_vision.c \
@@ -57,6 +58,17 @@ int main(void) {
     check_int("fail kecil=1", gv_buoy_fail(2, 2, 16, 0.5), 1);
     check_int("fail area=2", gv_buoy_fail(3, 3, 16, 0.5), 2);
     check_int("fail aspek=3", gv_buoy_fail(30, 10, 16, 0.5), 3);
+
+    /* --- koreksi yaw dari error piksel --- */
+    /* error 40 px @ 4 m, f=400: error_m=0.4 -> atan2(0.4, 4). */
+    check_close("yaw 40px@4m", gv_yaw_correction(360.0, 320.0, 4.0, 400.0),
+                atan2(0.4, 4.0), 1e-12);
+    check_close("yaw nol", gv_yaw_correction(320.0, 320.0, 4.0, 400.0),
+                0.0, 1e-12);
+    check_close("yaw dist<0.1 nol",
+                gv_yaw_correction(360.0, 320.0, 0.05, 400.0), 0.0, 0.0);
+    check_close("yaw focal<=0 nol",
+                gv_yaw_correction(360.0, 320.0, 4.0, 0.0), 0.0, 0.0);
 
     /* --- koleksi pasangan --- */
     {

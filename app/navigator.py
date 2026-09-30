@@ -3,6 +3,9 @@ from . import aterkia_core as core
 from .manual_link import ManualLink
 from .camera import open_camera, flip_frame_if_needed, pace_to_fps
 from .detection_validation import validate_buoy
+from .yolo_async import YoloAsyncWorker
+from .uploader import UploadWorker
+from .logutil import get_logger, throttled
 # Sequencer gate + koleksi pasangan: hitung di C (gate_vision via
 # aterkia_core). Modul Python app/gate_sequencer.py dipertahankan HANYA
 # sebagai referensi uji (tests/test_gate_sequencer.py) — jalur produksi
@@ -11,8 +14,16 @@ from ultralytics import YOLO
 from pymavlink import mavutil
 from PyQt5.QtCore import QThread, pyqtSignal
 import numpy as np
-import sys, time, math, cv2, csv, redis, base64, threading, requests, random, subprocess, re
-import os, json
+import time
+import math
+import cv2
+import redis
+import base64
+import threading
+import os
+import json
+
+log = get_logger()
 
 # Hitungan navigasi (PID/EKF/komplementer/geodesi/fuzzy) berjalan di C via
 # app/aterkia_core.py (core/libaterkia.so). Modul Python app/filtering.py,
@@ -20,7 +31,7 @@ import os, json
 # (tests/test_*.py cross-check bit-per-bit) — jalur produksi di file ini
 # TIDAK mengimpornya langsung.
 FUZZY_ENABLED = True
-print("Fuzzy Logic (core C fuzzy_gate/docking_p_gain) SIAP via aterkia_core.")
+log.info("Fuzzy Logic (core C fuzzy_gate/docking_p_gain) SIAP via aterkia_core.")
 
 
 WAYPOINTS = [] 
@@ -100,51 +111,61 @@ class VisionOffboardNavigator:
         # Fuzzy Sugeno (core C via aterkia_core): tidak butuh inisialisasi
         # objek controller, cukup fungsi murni.
         if FUZZY_ENABLED:
-            print("Fuzzy Logic Controllers SIAP (app/fuzzy.py).")
-        
+            log.info("Fuzzy Logic Controllers SIAP (C).")
+
         self.redis_client = None
         try:
-            print(f"Menghubungkan ke Redis di {self.config.REDIS_HOST}:{self.config.REDIS_PORT}...")
+            log.info("Menghubungkan ke Redis di %s:%s...",
+                     self.config.REDIS_HOST, self.config.REDIS_PORT)
             self.redis_client = redis.Redis(host=self.config.REDIS_HOST, port=self.config.REDIS_PORT, decode_responses=True)
             self.redis_client.ping()
-            print("Berhasil terhubung ke Redis.")
+            log.info("Berhasil terhubung ke Redis.")
         except Exception as e:
-            print(f"PERINGATAN: Gagal terhubung ke Redis: {e}. Web dashboard tidak akan berfungsi.")
+            log.warning("Gagal terhubung ke Redis: %s. Web dashboard tidak akan berfungsi.", e)
             self.redis_client = None
-        
+
         try:
-            print(f"Memuat model GATE: {self.config.MODEL_PATH}..."); 
+            log.info("Memuat model GATE: %s...", self.config.MODEL_PATH)
             self.gate_model = YOLO(self.config.MODEL_PATH).to(self.config.YOLO_DEVICE)
         except Exception as e:
             raise FileNotFoundError(f"FATAL: Gagal memuat model GATE: {e}")
-            
+
         try:
-            print(f"Memuat model BOX HIJAU: {self.config.BOX_MODEL_PATH}..."); 
+            log.info("Memuat model BOX HIJAU: %s...", self.config.BOX_MODEL_PATH)
             self.box_model = YOLO(self.config.BOX_MODEL_PATH).to(self.config.YOLO_DEVICE)
         except Exception as e:
-            print(f"PERINGATAN: Gagal memuat model BOX HIJAU: {e}. Misi foto tidak akan berfungsi.")
+            log.warning("Gagal memuat model BOX HIJAU: %s. Misi foto tidak akan berfungsi.", e)
             self.box_model = None
 
         try:
-            print(f"Memuat model BOX MERAH: {self.config.RED_DOCK_MODEL_PATH}..."); 
+            log.info("Memuat model BOX MERAH: %s...", self.config.RED_DOCK_MODEL_PATH)
             self.red_dock_model = YOLO(self.config.RED_DOCK_MODEL_PATH).to(self.config.YOLO_DEVICE)
         except Exception as e:
-            print(f"PERINGATAN: Gagal memuat model BOX MERAH: {e}. Misi docking tidak akan berfungsi.")
+            log.warning("Gagal memuat model BOX MERAH: %s. Misi docking tidak akan berfungsi.", e)
             self.red_dock_model = None
-        
+
         try:
-            print(f"Memuat model BOX BIRU: {self.config.BLUE_BOX_MODEL_PATH}..."); 
+            log.info("Memuat model BOX BIRU: %s...", self.config.BLUE_BOX_MODEL_PATH)
             self.blue_box_model = YOLO(self.config.BLUE_BOX_MODEL_PATH).to(self.config.YOLO_DEVICE)
         except Exception as e:
-            print(f"PERINGATAN: Gagal memuat model BOX BIRU: {e}. Misi foto WP 8 tidak akan berfungsi.")
+            log.warning("Gagal memuat model BOX BIRU: %s. Misi foto WP 8 tidak akan berfungsi.", e)
             self.blue_box_model = None
 
-        print(f"Membuka kamera utama (Indeks {self.config.CAMERA_INDEX})...");
+        # Worker inferensi async + uploader berantrean: loop 30 Hz tak pernah
+        # menunggu YOLO maupun jaringan (lihat app/yolo_async.py,
+        # app/uploader.py).
+        self.yolo_worker = YoloAsyncWorker()
+        self.upload_worker = UploadWorker(
+            self.config.SERVER_UPLOAD_URL,
+            max_queue=getattr(self.config, "UPLOAD_QUEUE_SIZE", 3),
+            max_retries=getattr(self.config, "UPLOAD_MAX_RETRIES", 1))
+
+        log.info("Membuka kamera utama (Indeks %s)...", self.config.CAMERA_INDEX)
         self.cap = open_camera(self.config.CAMERA_INDEX,
                                target_fps=self.config.CAMERA_TARGET_FPS,
                                auto_highest=True)
-        
-        if self.cap is None: 
+
+        if self.cap is None:
             raise IOError(f"FATAL: Tidak bisa membuka kamera utama di indeks {self.config.CAMERA_INDEX}.")
 
         # Ukuran hasil negosiasi menimpa default (frame sintetis & tampilan
@@ -153,9 +174,9 @@ class VisionOffboardNavigator:
         real_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.config.FRAME_WIDTH = real_w
         self.config.FRAME_HEIGHT = real_h
-        print(f"[CAM] Mode aktif kamera utama: {real_w}x{real_h}.")
-        
-        print("Kamera utama terbuka. Melakukan 'warm-up'...")
+        log.info("[CAM] Mode aktif kamera utama: %sx%s.", real_w, real_h)
+
+        log.info("Kamera utama terbuka. Melakukan 'warm-up'...")
         start_warmup = time.time()
         warmup_success = False
         while time.time() - start_warmup < 3.0:
@@ -164,16 +185,18 @@ class VisionOffboardNavigator:
                 warmup_success = True
                 break
             time.sleep(0.1)
-        if not warmup_success: print("PERINGATAN: Kamera utama tidak mengirimkan frame.")
+        if not warmup_success:
+            log.warning("Kamera utama tidak mengirimkan frame.")
         
-        print(f"Kamera foto WP (Indeks {self.config.WAYPOINT_PHOTO_CAMERA_INDEX}) akan dibuka nanti saat diperlukan.")
-        self.wp_photo_cap = None 
+        log.info("Kamera foto WP (Indeks %s) akan dibuka nanti saat diperlukan.",
+                 self.config.WAYPOINT_PHOTO_CAMERA_INDEX)
+        self.wp_photo_cap = None
 
-        print(f"Menghubungkan ke PX4 di: {self.config.SERIAL_PORT}...");
+        log.info("Menghubungkan ke PX4 di: %s...", self.config.SERIAL_PORT)
         try:
             self.master = mavutil.mavlink_connection(self.config.SERIAL_PORT, baud=self.config.BAUD_RATE, autoreconnect=True)
             self.master.wait_heartbeat()
-            print("Heartbeat diterima.")
+            log.info("Heartbeat diterima.")
             # Receiver RC dibaca Pixhawk via RCIN (hardware failsafe tetap
             # hidup); NUC membaca RC_CHANNELS dari koneksi yang SAMA.
             self.manual_link.attach_mav(self.master)
@@ -183,6 +206,9 @@ class VisionOffboardNavigator:
             raise ConnectionError(f"FATAL: Gagal terhubung: {e}")
 
         self.current_lat, self.current_lon, self.current_yaw_rad = None, None, None
+        # Cap waktu monotonic telemetri terakhir (ATTITUDE / GLOBAL_POSITION):
+        # dipakai failsafe stale-link (lihat _check_failsafe).
+        self._last_telem_mono = 0.0
         
         self.processing_width = 640
         self.processing_height = 360
@@ -193,10 +219,15 @@ class VisionOffboardNavigator:
         
         self.roi_top_y_cutoff = int(self.processing_height * self.config.ROI_TOP_CUTOFF_PERCENT)
         if self.roi_top_y_cutoff > 0:
-            print(f"ROI diaktifkan: Mengabaikan {self.roi_top_y_cutoff} piksel teratas ({self.config.ROI_TOP_CUTOFF_PERCENT*100}% dari {self.processing_height})")
-        
-        self.frame_counter = 0
-        self.last_detections = {}
+            log.info("ROI diaktifkan: Mengabaikan %s piksel teratas (%s%% dari %s)",
+                     self.roi_top_y_cutoff, self.config.ROI_TOP_CUTOFF_PERCENT * 100,
+                     self.processing_height)
+
+        # Hasil deteksi TERAKHIR per model async (model_id -> dict). Loop tak
+        # pernah menunggu inferensi: `_request_detections` submit job tiap
+        # frame-skip, `_take_latest` memakai hasil bila segar.
+        self._det_cache = {}
+        self._frame_seq = 0
         self.last_stream_time = 0
         self.leg_start_lat, self.leg_start_lon = None, None 
         self.last_vision_correction_rad = 0.0
@@ -213,81 +244,89 @@ class VisionOffboardNavigator:
         self.current_nuc_signal_ms = 0 # Menyimpan latensi dalam ms
         self.signal_stop_event = threading.Event()
         self.signal_thread = threading.Thread(target=self._signal_monitor_loop, daemon=True)
-        
+
+        # --- State failsafe otomatis (lihat _check_failsafe) ---
+        # Aktif bila telemetri stale ATAU baterai rendah (ditahan agar spike
+        # sesaat tak memicu). Saat aktif: thrust 0 + coba RTL best-effort.
+        self.failsafe_active = False
+        self.failsafe_reason = ""
+        self._lowbatt_since = None  # monotonic awal kondisi low-batt
+        self._rtl_sent_mono = 0.0   # throttle perintah RTL (maks 1x/5 detik)
+
         self.redis_publish_data = None
         self.redis_frame_lock = threading.Lock()
         self.redis_stop_event = threading.Event()
         self.redis_publish_thread = threading.Thread(target=self._redis_publish_loop, daemon=True)
 
     def _redis_publish_loop(self):
-        print("THREAD REDIS: Dimulai.")
+        log.info("THREAD REDIS: Dimulai.")
         while not self.redis_stop_event.is_set():
             frame_to_publish = None
             counts_to_publish = None
             extra_info = None # Variabel baru
-            
+
             with self.redis_frame_lock:
                 if self.redis_publish_data is not None:
                     # Unpack 3 item sekarang
                     frame_to_publish, counts_to_publish, extra_info = self.redis_publish_data
-                    frame_to_publish = frame_to_publish.copy() 
-                    self.redis_publish_data = None 
-            
+                    frame_to_publish = frame_to_publish.copy()
+                    self.redis_publish_data = None
+
             if frame_to_publish is not None and self.redis_client:
                 try:
                     _, buffer = cv2.imencode('.jpg', frame_to_publish, [cv2.IMWRITE_JPEG_QUALITY, 60])
                     jpg_as_base64 = base64.b64encode(buffer).decode('utf-8')
-                    
+
                     payload = {
                         "type": "vision_update",
                         "frame_base64": jpg_as_base64,
                         "buoy_counts": counts_to_publish,
                         # Masukkan info tambahan ke payload JSON
-                        "info": extra_info 
+                        "info": extra_info
                     }
                     self.redis_client.publish(self.config.VISION_CHANNEL, json.dumps(payload))
                 except Exception as e:
-                    pass
+                    if throttled("redis_pub", 5.0):
+                        log.warning("Gagal publish frame ke Redis: %s", e)
             time.sleep(0.03)
-        print("THREAD REDIS: Berhenti.")
+        log.info("THREAD REDIS: Berhenti.")
 
     def _set_state_and_publish(self, new_state):
         if self.current_state == new_state: return
         self.current_state = new_state
-        print(f"\nSTATE CHANGE: -> {new_state}")
+        log.info("STATE CHANGE: -> %s", new_state)
         if not self.redis_client: return
         try:
             payload = {"type": "mission_update", "state_name": new_state}
             self.redis_client.publish(self.config.MISSION_CHANNEL, json.dumps(payload))
         except Exception as e:
-            print(f"PERINGATAN: Gagal publish status '{new_state}' ke Redis: {e}")
+            log.warning("Gagal publish status '%s' ke Redis: %s", new_state, e)
 
     def _signal_monitor_loop(self):
-        print("THREAD SINYAL: Dimulai.")
+        """Pantau link NUC->internet via TCP connect (bukan ping subprocess).
+
+        Spawn `ping` tiap 2 detik = 1 proses baru terus-menerus (boros di
+        RPi + gagal di Windows tanpa ping). TCP connect ke DNS publik dengan
+        timeout 2 detik memberi sinyal "internet OK" yang setara untuk
+        kebutuhan dashboard, tanpa melahirkan proses.
+        """
+        import socket
+        log.info("THREAD SINYAL: Dimulai.")
         while not self.signal_stop_event.is_set():
             try:
-                param = '-n' if os.name == 'nt' else '-c'
-                command = ['ping', param, '1', '8.8.8.8']
-                result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=2)
-                
-                if result.returncode == 0:
-                    match = re.search(r'time[=<](\d+)', result.stdout)
-                    if match:
-                        self.current_nuc_signal_ms = int(match.group(1))
-                    else:
-                        self.current_nuc_signal_ms = 10 
-                else:
-                    self.current_nuc_signal_ms = 999 
-            except Exception as e:
-                self.current_nuc_signal_ms = 0
-            
+                start = time.monotonic()
+                sock = socket.create_connection(("8.8.8.8", 53), timeout=2.0)
+                sock.close()
+                self.current_nuc_signal_ms = int((time.monotonic() - start) * 1000)
+            except Exception:
+                self.current_nuc_signal_ms = 999
             time.sleep(2)
-        print("THREAD SINYAL: Berhenti.")
+        log.info("THREAD SINYAL: Berhenti.")
 
     def _redis_command_listener(self):
         """Mendengarkan perintah dari Web via Redis."""
         if not self.redis_client: return
-        print("THREAD COMMAND: Mendengarkan channel 'asv_commands'...")
+        log.info("THREAD COMMAND: Mendengarkan channel 'asv_commands'...")
         pubsub = self.redis_client.pubsub()
         pubsub.subscribe("asv_commands")
         
@@ -300,23 +339,30 @@ class VisionOffboardNavigator:
                         new_mode = data['mode']
                         if new_mode in ["raw", "processed"]:
                             self.stream_display_mode = new_mode
-                            print(f"\n[COMMAND] Mode Stream diubah ke: {new_mode.upper()}")
+                            log.info("[COMMAND] Mode Stream diubah ke: %s",
+                                     new_mode.upper())
                 except Exception:
                     pass
             time.sleep(0.1)
 
     def run(self, data_signal):
-        print("Mempersiapkan mode Offboard..."); self._prepare_for_offboard()
-        print("Menunggu data telemetri pertama (GPS 3D Fix & Attitude)...")
+        log.info("Mempersiapkan mode Offboard...")
+        self._prepare_for_offboard()
+        log.info("Menunggu data telemetri pertama (GPS 3D Fix & Attitude)...")
 
         if self.redis_client:
-            print("Memulai thread publisher Redis...")
+            log.info("Memulai thread publisher Redis...")
             self.redis_publish_thread.start()
 
-        print("Memulai thread monitor sinyal (Ping)...")
+        log.info("Memulai thread monitor sinyal...")
         self.signal_thread.start()
 
-        self.running = True 
+        # Worker YOLO async + uploader: hidup selama misi, berhenti di
+        # _cleanup (finally) agar tak ada thread nyangkut.
+        self.yolo_worker.start()
+        self.upload_worker.start()
+
+        self.running = True
 
         while self.running and (self.current_lat is None or self.current_yaw_rad is None):
             self._update_telemetry()
@@ -331,15 +377,21 @@ class VisionOffboardNavigator:
         if self.running and self.waypoints:
             self.leg_start_lat = self.current_lat
             self.leg_start_lon = self.current_lon
-            print(f"Posisi awal leg diatur ke: {self.leg_start_lat:.6f}, {self.leg_start_lon:.6f}")
-        
+            log.info("Posisi awal leg diatur ke: %.6f, %.6f",
+                     self.leg_start_lat, self.leg_start_lon)
+
         self._start_video_recording()
 
         try:
             # Pacing 30 Hz monotonic (sama seperti simulator ground):
-            # capture + inferensi + OFFBOARD stream terkunci 30 fps.
+            # capture + kontrol + OFFBOARD stream terkunci 30 fps.
+            # Inferensi YOLO ASYNC (submit + latest) — loop tak menunggu.
             deadline = time.monotonic()
             while self.running:
+                # dt loop tunggal per frame: dipakai manual_link, PID, dan
+                # EKF di bawah (dulu _control_dt dipanggil 3x/frame sehingga
+                # tiap konsumen dapat potongan dt berbeda).
+                loop_dt = self._control_dt()
                 self._update_telemetry()
                 self._publish_telemetry()
 
@@ -347,9 +399,10 @@ class VisionOffboardNavigator:
 
                 frame_raw = None
 
-                
+
                 if not ret:
-                    print("Frame kamera gagal dibaca! Menggunakan frame hitam.")
+                    if throttled("cam_fail", 5.0):
+                        log.warning("Frame kamera gagal dibaca! Menggunakan frame hitam.")
                     frame = np.zeros((self.processing_height, self.processing_width, 3), dtype=np.uint8)
                     time.sleep(0.1)
                     frame_raw = frame.copy()
@@ -399,6 +452,9 @@ class VisionOffboardNavigator:
                 target_yaw_angle_rad = bearing_ke_wp
                 lateral_thrust = 0.0
                 print_status = "???"
+                # Submit job YOLO async (tak menunggu): hasil dibaca tiap
+                # state via _detect_objects -> cache worker.
+                self._request_detections(frame)
                 detections = {}
                 best_gate = None; best_box = None; best_red_box = None
                 gate_distance = float('inf'); box_distance = float('inf'); red_box_distance = float('inf')
@@ -407,28 +463,28 @@ class VisionOffboardNavigator:
                     print_status = "WAYPOINT_NAV"
                     if self.current_waypoint_index in self.config.PHOTO_BOX_LEGS:
                         if self.box_model is not None:
-                            print("\n=== MEMULAI MISI FOTO BOX HIJAU ===")
+                            log.info("\n=== MEMULAI MISI FOTO BOX HIJAU ===")
                             self._set_state_and_publish("APPROACH_BOX_SEARCH")
                             self.last_vision_correction_rad = 0.0
                             self.green_box_confirm_timer = None 
                             continue
                         else:
-                            print("PERINGATAN: Misi Foto Box Hijau leg terpicu, tapi model box hijau tidak ada!")
+                            log.info("PERINGATAN: Misi Foto Box Hijau leg terpicu, tapi model box hijau tidak ada!")
                             
                     if self.current_waypoint_index in self.config.BLUE_BOX_PHOTO_LEGS:
                         if self.blue_box_model is not None:
-                            print(f"\n=== MEMULAI MISI FOTO SAMPING BOX BIRU (Leg {self.current_waypoint_index}) ===")
+                            log.info("\n=== MEMULAI MISI FOTO SAMPING BOX BIRU (Leg %s) ===", self.current_waypoint_index)
                             self._set_state_and_publish("APPROACH_BLUE_BOX_SEARCH")
                             self.last_vision_correction_rad = 0.0
                             self.blue_box_confirm_timer = None 
                             continue
                         else:
-                            print("PERINGATAN: Misi Foto Box Biru leg terpicu, tapi model box biru tidak ada!")
+                            log.info("PERINGATAN: Misi Foto Box Biru leg terpicu, tapi model box biru tidak ada!")
 
                     if jarak_ke_wp < self.config.ACCEPTANCE_RADIUS_M:
-                        print(f"\nWaypoint #{self.current_waypoint_index} tercapai.")
+                        log.info("\nWaypoint #%s tercapai.", self.current_waypoint_index)
                         if self.current_waypoint_index in self.config.STOP_AND_PHOTO_AT_WP:
-                            print(f"\n=== MEMULAI MISI FOTO WAYPOINT #{self.current_waypoint_index} ===")
+                            log.info("\n=== MEMULAI MISI FOTO WAYPOINT #%s ===", self.current_waypoint_index)
                             self._set_state_and_publish("TAKE_WAYPOINT_PHOTO")
                             self.task_timer = time.time() 
                             continue 
@@ -462,7 +518,7 @@ class VisionOffboardNavigator:
                     target_yaw_angle_rad = bearing_ke_wp
                     elapsed = time.time() - self.task_timer
                     if elapsed > self.config.TRANSITION_DURATION_S:
-                        print(f"Masa tenang transisi selesai ({elapsed:.1f}s). Kembali ke WAYPOINT_NAV.")
+                        log.info("Masa tenang transisi selesai (%ss). Kembali ke WAYPOINT_NAV.", elapsed)
                         self._set_state_and_publish("WAYPOINT_NAV")
                     else:
                         print_status = f"TRANSITION (GPS {elapsed:.1f}s)"
@@ -480,17 +536,17 @@ class VisionOffboardNavigator:
                         print_status = f"PHOTO_WP (Snap!)"
                     else:
                         if elapsed > self.config.WAYPOINT_PHOTO_STOP_DURATION_S:
-                            print(f"Foto Selesai. Melanjutkan misi...")
+                            log.info("Foto Selesai. Melanjutkan misi...")
                             if hasattr(self, 'wp_photo_taken'): del self.wp_photo_taken
 
                             if self.current_waypoint_index == self.config.RED_BOX_NAV_AFTER_WP:
                                 if self.red_dock_model is not None:
-                                    print("\n=== FOTO WP SELESAI, MEMULAI MISI DOCKING RED BOX ===")
+                                    log.info("\n=== FOTO WP SELESAI, MEMULAI MISI DOCKING RED BOX ===")
                                     self._set_state_and_publish("APPROACH_RED_BOX_SEARCH")
                                     self.last_vision_correction_rad = 0.0
                                     continue 
                                 else:
-                                    print(f"PERINGATAN: Misi Docking Red Box setelah WP {self.current_waypoint_index} tidak bisa dimulai (Model tidak ada).")
+                                    log.info("PERINGATAN: Misi Docking Red Box setelah WP %s tidak bisa dimulai (Model tidak ada).", self.current_waypoint_index)
 
                             current_target_wp = self.waypoints[self.current_waypoint_index]
                             self.leg_start_lat = current_target_wp['lat']
@@ -510,13 +566,13 @@ class VisionOffboardNavigator:
                     if best_box:
                         if self.green_box_confirm_timer is None:
                             self.green_box_confirm_timer = time.time()
-                            print("BOX_SEARCH: Potensi deteksi... Verifikasi dimulai.")
+                            log.info("BOX_SEARCH: Potensi deteksi... Verifikasi dimulai.")
 
                         elapsed_confirm = time.time() - self.green_box_confirm_timer
                         
                         if elapsed_confirm >= self.config.DETECTION_CONFIRM_DURATION_S:
                             print_status = "BOX_SEARCH (Confirmed!)"
-                            print(f"Konfirmasi Berhasil ({elapsed_confirm:.2f}s). Pindah ke ALIGN.")
+                            log.info("Konfirmasi Berhasil (%ss). Pindah ke ALIGN.", elapsed_confirm)
                             self._set_state_and_publish("APPROACH_BOX_ALIGN")
                             self.last_vision_correction_rad = 0.0
                             self.green_box_lost_timer = None 
@@ -529,7 +585,7 @@ class VisionOffboardNavigator:
                             target_yaw_angle_rad = self.current_yaw_rad 
                     else:
                         if self.green_box_confirm_timer is not None:
-                            print("BOX_SEARCH: Deteksi Gagal/Hilang saat verifikasi. Reset.")
+                            log.info("BOX_SEARCH: Deteksi Gagal/Hilang saat verifikasi. Reset.")
                             self.green_box_confirm_timer = None
 
                         print_status = "BOX_SEARCH (Rotating)"
@@ -560,7 +616,7 @@ class VisionOffboardNavigator:
                             self.last_vision_correction_rad = 0.0 
                     else:
                         if self.green_box_lost_timer is None:
-                            print("BOX_ALIGN (Lost! Starting patience timer...)")
+                            log.info("BOX_ALIGN (Lost! Starting patience timer...)")
                             self.green_box_lost_timer = time.time()
                         elapsed_lost = time.time() - self.green_box_lost_timer
                         if elapsed_lost < 2.0: 
@@ -609,7 +665,7 @@ class VisionOffboardNavigator:
                             print_status = "RETREAT (Done)"
                             self._set_state_and_publish("WAYPOINT_NAV")
                             self.retreat_step = "IDLE"
-                            print(f"\n=== MISI FOTO BOX SELESAI ===")
+                            log.info("\n=== MISI FOTO BOX SELESAI ===")
                             self.current_waypoint_index += 1
                             if self.current_waypoint_index < len(self.waypoints):
                                 self.leg_start_lat = self.current_lat
@@ -628,13 +684,13 @@ class VisionOffboardNavigator:
                     if best_box:
                         if self.blue_box_confirm_timer is None:
                             self.blue_box_confirm_timer = time.time()
-                            print("BLUE_BOX_SEARCH: Potensi deteksi... Verifikasi dimulai.")
+                            log.info("BLUE_BOX_SEARCH: Potensi deteksi... Verifikasi dimulai.")
                         
                         elapsed_confirm = time.time() - self.blue_box_confirm_timer
                         
                         if elapsed_confirm >= self.config.DETECTION_CONFIRM_DURATION_S:
                             print_status = "BLUE_BOX_SEARCH (Confirmed!)"
-                            print(f"Konfirmasi Box Biru Berhasil ({elapsed_confirm:.2f}s). Pindah ke ALIGN.")
+                            log.info("Konfirmasi Box Biru Berhasil (%ss). Pindah ke ALIGN.", elapsed_confirm)
                             self._set_state_and_publish("APPROACH_BLUE_BOX_ALIGN")
                             self.last_vision_correction_rad = 0.0 
                             self.blue_box_lost_timer = None 
@@ -647,7 +703,7 @@ class VisionOffboardNavigator:
                             target_yaw_angle_rad = self.current_yaw_rad
                     else:
                         if self.blue_box_confirm_timer is not None:
-                            print("BLUE_BOX_SEARCH: Deteksi Gagal/Hilang saat verifikasi. Reset.")
+                            log.info("BLUE_BOX_SEARCH: Deteksi Gagal/Hilang saat verifikasi. Reset.")
                             self.blue_box_confirm_timer = None
 
                         print_status = "BLUE_BOX_SEARCH (Rotating)"
@@ -679,7 +735,7 @@ class VisionOffboardNavigator:
                             self.last_vision_correction_rad = 0.0 
                     else:
                         if self.blue_box_lost_timer is None:
-                            print("BLUE_BOX_ALIGN (Lost! Starting patience timer...)")
+                            log.info("BLUE_BOX_ALIGN (Lost! Starting patience timer...)")
                             self.blue_box_lost_timer = time.time()
                         elapsed_lost = time.time() - self.blue_box_lost_timer
                         if elapsed_lost < 2.0: 
@@ -708,12 +764,12 @@ class VisionOffboardNavigator:
                     # Fase 2: Eksekusi Smart Capture
                     elif elapsed < 4.0: 
                         if not hasattr(self, 'blue_box_photo_taken'):
-                            print("\n=== [WP 8] MEMULAI PROSEDUR SMART PHOTO ===")
+                            log.info("\n=== [WP 8] MEMULAI PROSEDUR SMART PHOTO ===")
 
                             # A. Matikan Kamera Navigasi
                             if self.cap.isOpened():
                                 self.cap.release()
-                                print("[WP 8] Kamera Navigasi dipause.")
+                                log.info("[WP 8] Kamera Navigasi dipause.")
                             time.sleep(1.0) 
 
                             # B. Buka Kamera Bawah (Index 1) dengan Settingan Terang
@@ -725,7 +781,7 @@ class VisionOffboardNavigator:
                                 cam_bawah.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                                 cam_bawah.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1) # Force Auto ON (Value 1)
 
-                                print("[WP 8] Warming up sensor (20 frames)...")
+                                log.info("[WP 8] Warming up sensor (20 frames)...")
                                 for _ in range(20): cam_bawah.read()
 
                                 foto_sukses = False
@@ -737,7 +793,7 @@ class VisionOffboardNavigator:
                                     if ret_b:
                                         last_frame_bawah = frame_b.copy() # Backup frame
                                         avg_bright = np.mean(frame_b)
-                                        print(f"[WP 8] Try {percobaan}: Brightness = {avg_bright:.2f}")
+                                        log.info("[WP 8] Try %s: Brightness = %s", percobaan, avg_bright)
                                         
                                         # Validasi Brightness > 1.0 (Bisa dinaikkan jika perlu)
                                         if avg_bright > 1.0:
@@ -749,19 +805,19 @@ class VisionOffboardNavigator:
                                                 os.makedirs(self.config.WAYPOINT_PHOTO_DIR)
                                                 
                                             cv2.imwrite(fname_full, frame_b)
-                                            print(f"[WP 8] FOTO SUKSES: {fname_full}")
+                                            log.info("[WP 8] FOTO SUKSES: %s", fname_full)
                                             
-                                            threading.Thread(target=self._upload_snapshot_to_server, args=(fname_full, fname_short), daemon=True).start()
+                                            self.upload_worker.enqueue(fname_full, fname_short)
                                             foto_sukses = True
                                             break
                                         else:
-                                            print("[WP 8] Foto Gelap. Retry...")
+                                            log.info("[WP 8] Foto Gelap. Retry...")
                                             time.sleep(0.2)
                                 
                                 # --- FALLBACK: UPLOAD MESKIPUN GELAP ---
                                 if not foto_sukses and last_frame_bawah is not None:
-                                    print("[PERINGATAN] Gagal mendapatkan foto terang setelah 5x percobaan.")
-                                    print("[ACTION] Mengupload foto terakhir (meskipun gelap) sebagai bukti data.")
+                                    log.info("[PERINGATAN] Gagal mendapatkan foto terang setelah 5x percobaan.")
+                                    log.info("[ACTION] Mengupload foto terakhir (meskipun gelap) sebagai bukti data.")
                                     
                                     timestamp = int(time.time())
                                     fname_short = f"WP8_BlueBox_DARK_{timestamp}.jpg"
@@ -771,17 +827,17 @@ class VisionOffboardNavigator:
                                         os.makedirs(self.config.WAYPOINT_PHOTO_DIR)
                                     
                                     cv2.imwrite(fname_full, last_frame_bawah)
-                                    # Tetap upload ke web
-                                    threading.Thread(target=self._upload_snapshot_to_server, args=(fname_full, fname_short), daemon=True).start()
+                                    # Tetap upload ke web (via antrean 1 worker)
+                                    self.upload_worker.enqueue(fname_full, fname_short)
 
                                 cam_bawah.release()
                             else:
-                                print("[WP 8] Gagal buka kamera bawah air!")
+                                log.info("[WP 8] Gagal buka kamera bawah air!")
                             
                             self.blue_box_photo_taken = True
                             
                             # D. Nyalakan Lagi Kamera Navigasi
-                            print("[WP 8] Restarting Nav Camera...")
+                            log.info("[WP 8] Restarting Nav Camera...")
                             self.cap = open_camera(self.config.CAMERA_INDEX,
                                                    target_fps=self.config.CAMERA_TARGET_FPS,
                                                    auto_highest=True)
@@ -822,13 +878,13 @@ class VisionOffboardNavigator:
                         else:
                             print_status = "BLUE_RETREAT (Done)"
                             self.retreat_step = "IDLE"
-                            print(f"\n=== MISI FOTO BOX BIRU SELESAI ===")
+                            log.info("\n=== MISI FOTO BOX BIRU SELESAI ===")
                             if self.red_dock_model is not None:
-                                print("\n=== MEMULAI MISI DOCKING RED BOX (Setelah Box Biru) ===")
+                                log.info("\n=== MEMULAI MISI DOCKING RED BOX (Setelah Box Biru) ===")
                                 self._set_state_and_publish("APPROACH_RED_BOX_SEARCH")
                                 self.last_vision_correction_rad = 0.0
                             else:
-                                print("PERINGATAN: Model docking tidak ada, melanjutkan ke WP Nav...")
+                                log.info("PERINGATAN: Model docking tidak ada, melanjutkan ke WP Nav...")
                                 self._set_state_and_publish("WAYPOINT_NAV")
                                 self.current_waypoint_index += 1
                                 if self.current_waypoint_index < len(self.waypoints):
@@ -882,7 +938,7 @@ class VisionOffboardNavigator:
                     thrust = 0.0
                     target_yaw_angle_rad = self.current_yaw_rad
                     if time.time() - self.task_timer > self.config.DOCK_HOLD_DURATION_S: 
-                        print("\n=== MISI DOCKING RED BOX SELESAI ===")
+                        log.info("\n=== MISI DOCKING RED BOX SELESAI ===")
                         current_target_wp = self.waypoints[self.current_waypoint_index]
                         self.leg_start_lat = current_target_wp['lat']
                         self.leg_start_lon = current_target_wp['lon']
@@ -903,10 +959,10 @@ class VisionOffboardNavigator:
                 # + gamepad USB, olah kurva stick & mode di C. Bila mode
                 # MANUAL: thrust = surge manual, yaw = yaw saat ini +
                 # offset proporsional stick (±0.8 rad ≈ ±45°).
+                # dt = loop_dt (dt loop tunggal, bukan _control_dt baru).
                 try:
-                    dt_man = self._control_dt()
                     self.manual_last = self.manual_link.update(
-                        dt=dt_man, kill=False,
+                        dt=loop_dt, kill=False,
                         gui_manual=self.manual_gui_request)
                 except Exception:
                     pass
@@ -926,6 +982,16 @@ class VisionOffboardNavigator:
                     thrust = 0.0
                     lateral_thrust = 0.0
                     print_status = "KILL (E-stop)"
+
+                # --- Failsafe otomatis (stale-link / low-batt): timpa thrust
+                # & yaw sebelum perintah dikirim ke Pixhawk. Lihat
+                # _check_failsafe (aksi + RTL best-effort di dalamnya).
+                fs_reason = self._check_failsafe()
+                if fs_reason:
+                    thrust = 0.0
+                    lateral_thrust = 0.0
+                    target_yaw_angle_rad = self.current_yaw_rad or 0.0
+                    print_status = f"FAILSAFE ({fs_reason})"
 
                 self._stream_offboard_command(thrust, target_yaw_angle_rad, print_status, lateral_thrust=lateral_thrust)
                 
@@ -992,6 +1058,13 @@ class VisionOffboardNavigator:
                                          or {}).get("yaw", 0.0)),
                     "rc_ok": bool((getattr(self, "manual_last", {})
                                    or {}).get("rc_ok", False)),
+                    # Failsafe + antrean upload: GUI baca chip/link status.
+                    "failsafe_active": bool(getattr(self, "failsafe_active",
+                                                   False)),
+                    "failsafe_reason": str(getattr(self, "failsafe_reason",
+                                                  "") or ""),
+                    "upload_pending": int(getattr(getattr(
+                        self, "upload_worker", None), "pending", 0) or 0),
                 }
                 data_packet.update(self._battery_fields())
                 data_signal.emit(data_packet)
@@ -1001,7 +1074,7 @@ class VisionOffboardNavigator:
             self._cleanup()
 
     def stop(self):
-        print("Navigator backend menerima sinyal stop...")
+        log.info("Navigator backend menerima sinyal stop...")
         self.running = False
 
     def _get_gate_nav_yaw(self, bearing_ke_wp, best_gate, gate_distance):
@@ -1033,7 +1106,7 @@ class VisionOffboardNavigator:
                 
                 bearing_ke_wp = bearing_ke_wp_berikutnya
                 is_pre_turning = True
-                print(f"PRE-TURN: Navigating to WP #{next_wp_index} bearing ({math.degrees(bearing_ke_wp):.1f} deg) at {jarak_ke_wp_saat_ini:.1f}m from current WP (Radius: {PRE_TURN_RADIUS_M:.1f}m).")
+                log.info("PRE-TURN: Navigating to WP #%s bearing (%s deg) at %sm from current WP (Radius: %sm).", next_wp_index, math.degrees(bearing_ke_wp), jarak_ke_wp_saat_ini, PRE_TURN_RADIUS_M)
         
         cross_track_dist = self._get_cross_track_distance(self.current_lat, self.current_lon, start_lat, start_lon, target_wp['lat'], target_wp['lon'])
 
@@ -1047,7 +1120,9 @@ class VisionOffboardNavigator:
             if is_on_track:
                 if best_gate:
                     raw_correction_rad = self._calculate_yaw_correction_gate(best_gate, gate_distance)
-                    dt = self._control_dt()
+                    # dt loop frame ini (bukan ukur baru): EKF & PID di bawah
+                    # memakai potongan waktu yang sama dengan manual_link.
+                    dt = self._loop_dt_now()
 
                     # EKF heading (hitung di C): prediksi dengan laju yaw
                     # (gyro pendek) lalu koreksi heading terukur — heading
@@ -1089,9 +1164,18 @@ class VisionOffboardNavigator:
         return target_yaw_angle_rad, print_status
 
     def _update_telemetry(self):
+        """Tarik pesan MAVLink non-blokir + cap waktu monotonic.
+
+        Cap (`_last_telem_mono`) diperbarui tiap ATTITUDE / GLOBAL_POSITION
+        tiba — dipakai failsafe stale-link. SYS_STATUS tak dihitung (bisa
+        jarang dikirim firmware).
+        """
         msg = self.master.recv_match(type=['ATTITUDE', 'GLOBAL_POSITION_INT', 'VFR_HUD', 'SYS_STATUS'], blocking=False)
         while msg:
-            match msg.get_type():
+            mtype = msg.get_type()
+            if mtype in ('ATTITUDE', 'GLOBAL_POSITION_INT'):
+                self._last_telem_mono = time.monotonic()
+            match mtype:
                 case 'GLOBAL_POSITION_INT':
                     self.current_lat, self.current_lon = msg.lat / 1e7, msg.lon / 1e7
                 case 'ATTITUDE':
@@ -1116,68 +1200,127 @@ class VisionOffboardNavigator:
                         self.current_battery_pct = None
             msg = self.master.recv_match(type=['ATTITUDE', 'GLOBAL_POSITION_INT', 'VFR_HUD', 'SYS_STATUS'], blocking=False)
 
-    def _detect_objects(self, frame, model_to_use, force_run=False):
-        self.frame_counter += 1
-        if not force_run and (self.frame_counter % (self.config.YOLO_FRAME_SKIP + 1) != 0): return self.last_detections
-        if model_to_use is None:
-            self.last_detections = {}
-            return {}
-        is_gate = model_to_use is self.gate_model
-        # Gate: gunakan conf rendah (0.25) agar box kecil (jauh) keluar dari model,
-        # lalu filter adaptif di validate_buoy.
-        conf = 0.25 if is_gate else 0.25
-        results = model_to_use(frame, verbose=False, imgsz=self.config.YOLO_INFERENCE_SIZE,
-                               half=self.config.YOLO_HALF_PRECISION, device=self.config.YOLO_DEVICE,
-                               conf=conf)
+    # --- Deteksi YOLO ASYNC (loop tak menunggu inferensi) ---
+    # Pola: tiap frame (kecuali frame-skip) submit 1 job per model AKTIF ke
+    # YoloAsyncWorker; hasil dibaca via latest() bila segar (<=
+    # YOLO_RESULT_MAX_AGE_S), kalau tidak pakai cache terakhir. Filter
+    # warna/bentuk/conf adaptif (validate_buoy) tetap di sini supaya perilaku
+    # identik dengan jalur sinkron lama — hanya inferensi yang pindah thread.
+
+    # ID model untuk worker async (string stabil, bukan id(objek)).
+    _MID_GATE = "gate"
+    _MID_BOX = "box"
+    _MID_BLUE = "blue"
+    _MID_RED = "red"
+
+    def _request_detections(self, frame):
+        """Submit job inferensi untuk model yang AKTIF di state saat ini.
+
+        Dipanggil tiap frame; frame-skip (YOLO_FRAME_SKIP) mengatur seberapa
+        sering job diserahkan. Model None (gagal dimuat) dilewati.
+        """
+        self._frame_seq += 1
+        if self._frame_seq % (self.config.YOLO_FRAME_SKIP + 1) != 0:
+            return
+        st = self.current_state
+        want = set()
+        if st == "WAYPOINT_NAV":
+            want.add((self._MID_GATE, self.gate_model,
+                      self.config.BUOY_CONF_SMALL_THRESHOLD))
+        elif st in ("APPROACH_BOX_SEARCH", "APPROACH_BOX_ALIGN"):
+            want.add((self._MID_BOX, self.box_model, 0.25))
+        elif st in ("APPROACH_BLUE_BOX_SEARCH", "APPROACH_BLUE_BOX_ALIGN"):
+            want.add((self._MID_BLUE, self.blue_box_model, 0.25))
+        elif st in ("APPROACH_RED_BOX_SEARCH", "APPROACH_RED_BOX_ALIGN"):
+            want.add((self._MID_RED, self.red_dock_model, 0.25))
+        for mid, model, conf in want:
+            if model is not None:
+                self.yolo_worker.submit(
+                    mid, model, frame, conf,
+                    self.config.YOLO_INFERENCE_SIZE,
+                    self.config.YOLO_HALF_PRECISION,
+                    self.config.YOLO_DEVICE)
+
+    def _take_latest(self, model_id):
+        """Hasil mentah worker: dict {cls: [...]} atau {} bila belum/basi.
+
+        Basi (> YOLO_RESULT_MAX_AGE_S) -> cache terakhir model itu; belum
+        pernah ada -> {} (caller berlaku seperti "tak ada deteksi").
+        """
+        max_age = getattr(self.config, "YOLO_RESULT_MAX_AGE_S", 0.5)
+        raw, _age = self.yolo_worker.latest(model_id, max_age_s=max_age)
+        if raw is None:
+            return dict(self._det_cache.get(model_id, {}))
+        if raw:
+            self._det_cache[model_id] = raw
+            return raw
+        return dict(self._det_cache.get(model_id, {}))
+
+    def _parse_detections(self, raw, validate_gate=False):
+        """Hasil mentah -> format navigator {cls: [{cx,cy,box,area,conf}]}.
+
+        `validate_gate=True` (model gate): terapkan ambang conf adaptif +
+        validate_buoy (warna/bentuk) — SATU panggilan per box (debug=True
+        pun dipakai untuk keputusan, tanpa komputasi ganda).
+        """
         detections = {}
-        for r in results:
-            for box in r.boxes:
-                cls_tensor = box.cls
-                if cls_tensor is None or len(cls_tensor) == 0: continue 
-                cls = int(cls_tensor[0])
-                xyxy_tensor = box.xyxy
-                if xyxy_tensor is None or len(xyxy_tensor) == 0: continue
-                x1, y1, x2, y2 = map(int, xyxy_tensor[0])
-                w = x2 - x1
-                h = y2 - y1
-                area = w * h
-                if is_gate and cls in (self.config.RED_BALL_CLASS_ID,
-                                       self.config.GREEN_BALL_CLASS_ID):
-                    # Ambang conf adaptif: box kecil (jauh) pakai threshold longgar
+        is_debug = bool(getattr(self.config, "DETECTION_DEBUG", False))
+        for cls, items in (raw or {}).items():
+            for b in items:
+                try:
+                    x1, y1, x2, y2 = b["box"]
+                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                area = (x2 - x1) * (y2 - y1)
+                conf_val = float(b.get("conf", 1.0))
+                if validate_gate and cls in (
+                        self.config.RED_BALL_CLASS_ID,
+                        self.config.GREEN_BALL_CLASS_ID):
+                    # Ambang conf adaptif: box kecil (jauh) lebih longgar.
                     conf_thresh = (self.config.BUOY_CONF_SMALL_THRESHOLD
                                    if area < self.config.BUOY_SMALL_AREA_PX
                                    else self.config.BUOY_CONF_THRESHOLD)
-                    if float(box.conf[0]) < conf_thresh:
+                    if conf_val < conf_thresh:
                         continue
-                    # Debug: panggil validate_buoy(..., debug=True) & cetak
-                    # alasan tolak (throttle maks 1x/detik agar tidak spam).
-                    if self.config.DETECTION_DEBUG:
-                        ok, reasons = validate_buoy(
-                            frame, cls, (x1, y1, x2, y2),
-                            min_area=self.config.MIN_BUOY_AREA_PX,
-                            min_color_fraction=self.config.BUOY_MIN_COLOR_FRACTION,
-                            min_saturation=self.config.BUOY_MIN_SATURATION,
-                            max_aspect_deviation=self.config.BUOY_MAX_ASPECT_DEVIATION,
-                            debug=True)
-                        if not ok:
-                            now = time.time()
-                            if not hasattr(self, '_last_debug_print') or now - self._last_debug_print > 1.0:
-                                print(f"[DETECT DEBUG] buoy cls={cls} area={area} ditolak: {'; '.join(reasons)}")
-                                self._last_debug_print = now
-                        if not ok:
-                            continue
-                    else:
-                        if not validate_buoy(
-                                frame, cls, (x1, y1, x2, y2),
-                                min_area=self.config.MIN_BUOY_AREA_PX,
-                                min_color_fraction=self.config.BUOY_MIN_COLOR_FRACTION,
-                                min_saturation=self.config.BUOY_MIN_SATURATION,
-                                max_aspect_deviation=self.config.BUOY_MAX_ASPECT_DEVIATION):
-                            continue
-                if cls not in detections: detections[cls] = []
-                detections[cls].append({'cx':(x1+x2)//2, 'cy':(y1+y2)//2, 'box':(x1,y1,x2,y2), 'area':area})
-        self.last_detections = detections
+                    ok, reasons = validate_buoy(
+                        self._last_frame, cls, (x1, y1, x2, y2),
+                        min_area=self.config.MIN_BUOY_AREA_PX,
+                        min_color_fraction=self.config.BUOY_MIN_COLOR_FRACTION,
+                        min_saturation=self.config.BUOY_MIN_SATURATION,
+                        max_aspect_deviation=self.config.BUOY_MAX_ASPECT_DEVIATION,
+                        debug=True)
+                    if not ok:
+                        if is_debug and throttled("detect_dbg", 1.0):
+                            log.info("[DETECT DEBUG] buoy cls=%s area=%s "
+                                     "ditolak: %s", cls, area,
+                                     "; ".join(reasons))
+                        continue
+                ent = {"cx": (x1 + x2) // 2, "cy": (y1 + y2) // 2,
+                       "box": (x1, y1, x2, y2), "area": area,
+                       "conf": conf_val}
+                detections.setdefault(cls, []).append(ent)
         return detections
+
+    def _detect_objects(self, frame, model_to_use, force_run=False):
+        """Kompatibilitas: deteksi sinkron dari cache async + frame terbaru.
+
+        `model_to_use` dipetakan ke ID worker (gate/box/blue/red); `frame`
+        disimpan sebagai `_last_frame` untuk validate_buoy. `force_run`
+        diabaikan (kesegaran diatur YOLO_RESULT_MAX_AGE_S) — dipertahankan
+        agar call-site lama tak perlu diubah serentak.
+        """
+        self._last_frame = frame
+        if model_to_use is self.gate_model:
+            return self._parse_detections(
+                self._take_latest(self._MID_GATE), validate_gate=True)
+        if model_to_use is self.box_model:
+            return self._parse_detections(self._take_latest(self._MID_BOX))
+        if model_to_use is self.blue_box_model:
+            return self._parse_detections(self._take_latest(self._MID_BLUE))
+        if model_to_use is self.red_dock_model:
+            return self._parse_detections(self._take_latest(self._MID_RED))
+        return {}
 
     def _find_best_box(self, detections, target_class_id, use_roi=False):
         boxes = detections.get(target_class_id, [])
@@ -1199,19 +1342,15 @@ class VisionOffboardNavigator:
             
     def _calculate_yaw_correction_box(self, best_box, distance_m):
         if not isinstance(best_box, dict) or 'cx' not in best_box: return 0.0
-        midpoint_x = best_box['cx']
-        error_px = midpoint_x - self.image_center_x
-        try:
-            if distance_m < 0.1 or self.config.FOCAL_LENGTH_PX == 0: return 0.0
-            error_m = (error_px * distance_m) / self.config.FOCAL_LENGTH_PX
-        except ZeroDivisionError: 
-            print("ERROR: FOCAL_LENGTH_PX di Config adalah 0.")
-            return 0.0
-        raw_correction_rad = math.atan2(error_m, distance_m)
-        self.last_used_p_gain = self.config.VISION_P_GAIN 
-        
+        # Rumus di C (gv_yaw_correction): 0.0 bila tak reliabel.
+        raw_correction_rad = core.yaw_correction_c(
+            best_box['cx'], self.image_center_x, distance_m,
+            self.config.FOCAL_LENGTH_PX)
+        self.last_used_p_gain = self.config.VISION_P_GAIN
+
         # PID + deadband (pengganti raw * VISION_P_GAIN).
-        return self._apply_yaw_pid(raw_correction_rad, self.config.VISION_P_GAIN)
+        return self._apply_yaw_pid(raw_correction_rad, self.config.VISION_P_GAIN,
+                                   self._loop_dt_now())
 
     def _take_photo(self, frame):
         if not self.config.SAVE_GREEN_BOX_PHOTO: return
@@ -1223,23 +1362,23 @@ class VisionOffboardNavigator:
             
             success = cv2.imwrite(filename_full, frame)
             if success:
-                print(f"--- Foto Box Hijau disimpan: {filename_full} ---")
+                log.info("--- Foto Box Hijau disimpan: %s ---", filename_full)
                 # Trigger Upload di Thread terpisah
-                threading.Thread(target=self._upload_snapshot_to_server, args=(filename_full, filename_short), daemon=True).start()
+                self.upload_worker.enqueue(filename_full, filename_short)
             else:
-                print(f"Gagal menyimpan foto ke {filename_full}")
+                log.info("Gagal menyimpan foto ke %s", filename_full)
         except Exception as e:
-            print(f"Gagal menyimpan foto: {e}")
+            log.info("Gagal menyimpan foto: %s", e)
 
     # --- [MODIFIKASI 2: Update _take_waypoint_photo dengan Settingan Terang] ---
     def _take_waypoint_photo(self):
-        print(f"Membuka Kamera WP (Index {self.config.WAYPOINT_PHOTO_CAMERA_INDEX})...")
+        log.info("Membuka Kamera WP (Index %s)...", self.config.WAYPOINT_PHOTO_CAMERA_INDEX)
         cap = None 
         try:
             cam_idx = self.config.WAYPOINT_PHOTO_CAMERA_INDEX
             cap = open_camera(cam_idx, 640, 480) 
             if cap is None:
-                print(f"ERROR: Gagal membuka kamera foto waypoint di indeks {cam_idx}.")
+                log.info("ERROR: Gagal membuka kamera foto waypoint di indeks %s.", cam_idx)
                 return
             
             # == SETTINGAN OBAT KUAT ==
@@ -1252,10 +1391,10 @@ class VisionOffboardNavigator:
             
             ret, frame = cap.read()
             if not ret:
-                print("ERROR: Gagal mengambil frame WP.")
+                log.info("ERROR: Gagal mengambil frame WP.")
                 cap.release(); return
                 
-            print("Frame foto WP berhasil diambil.")
+            log.info("Frame foto WP berhasil diambil.")
             cap.release()
 
             # Simpan & Upload
@@ -1267,23 +1406,29 @@ class VisionOffboardNavigator:
             
             success = cv2.imwrite(filename_full, frame)
             if success:
-                print(f"--- Foto Waypoint disimpan: {filename_full} ---")
-                threading.Thread(target=self._upload_snapshot_to_server, args=(filename_full, filename_short), daemon=True).start()
+                log.info("--- Foto Waypoint disimpan: %s ---", filename_full)
+                self.upload_worker.enqueue(filename_full, filename_short)
         except Exception as e:
-            print(f"ERROR saat akses kamera foto: {e}")
+            log.info("ERROR saat akses kamera foto: %s", e)
             if cap and cap.isOpened(): cap.release()
 
     def _control_dt(self):
         """Selang waktu loop nyata (detik) untuk PID/filter.
 
         dt diukur dari `self._last_loop_time` (di-set di __init__), bukan
-        tebakan — koreksi tetap benar walau loop berjalan 20 fps (fps turun
-        dari 30) atau tersendat oleh YOLO.
+        tebakan — koreksi tetap benar walau loop melambat. Hasilnya juga
+        disimpan di `self._loop_dt` agar pemanggil dalam frame yang sama
+        (manual_link, PID, EKF) memakai dt yang SAMA, bukan potongan baru.
         """
         now = time.time()
         dt = now - self._last_loop_time
         self._last_loop_time = now
-        return max(dt, 1e-4)
+        self._loop_dt = max(dt, 1e-4)
+        return self._loop_dt
+
+    def _loop_dt_now(self):
+        """dt loop frame ini (tanpa mengukur ulang)."""
+        return getattr(self, "_loop_dt", 0.033)
 
     def _track_gate(self, detections):
         """Pilih target gate aktif lewat sequencer C (titik tengah).
@@ -1331,42 +1476,37 @@ class VisionOffboardNavigator:
             return None, float('inf')
         return pair, dist
 
-    def _apply_yaw_pid(self, raw_correction_rad, dynamic_gain):
+    def _apply_yaw_pid(self, raw_correction_rad, dynamic_gain, dt=None):
         """PID + deadband untuk koreksi yaw (hitung di C via aterkia_core).
 
         Pengganti pola lama `raw * gain`. Gain P tetap bisa dinamis
         (fuzzy / VISION_P_GAIN) — di-set ulang tiap panggilan; term
-        integral & derivatif memakai dt loop nyata (`_control_dt`) supaya
-        perilaku tidak berubah saat fps turun (20 fps).
+        integral & derivatif memakai dt loop frame ini (`_loop_dt_now`)
+        supaya perilaku tidak berubah saat fps turun.
         """
         self.pid_gate.kp = dynamic_gain
-        return self.pid_gate.update(raw_correction_rad, self._control_dt())
+        return self.pid_gate.update(raw_correction_rad,
+                                    self._loop_dt_now() if dt is None else dt)
 
     def _calculate_yaw_correction_gate(self, best_gate, distance_m):
         if not isinstance(best_gate, (list, tuple)) or len(best_gate) != 2: return 0.0
         r_ball, g_ball = best_gate
         if not isinstance(r_ball, dict) or not isinstance(g_ball, dict) or 'cx' not in r_ball or 'cx' not in g_ball: return 0.0
-            
+
         midpoint_x = (r_ball['cx'] + g_ball['cx']) / 2.0
-        error_px = midpoint_x - self.image_center_x
-        
-        try:
-            if distance_m < 0.1 or self.config.FOCAL_LENGTH_PX == 0: return 0.0
-            error_m = (error_px * distance_m) / self.config.FOCAL_LENGTH_PX
-        except ZeroDivisionError: 
-            print("ERROR: FOCAL_LENGTH_PX di Config adalah 0.")
-            return 0.0 
-            
-        raw_correction_rad = math.atan2(error_m, distance_m)
+        # Rumus di C (gv_yaw_correction): 0.0 bila tak reliabel.
+        raw_correction_rad = core.yaw_correction_c(
+            midpoint_x, self.image_center_x, distance_m,
+            self.config.FOCAL_LENGTH_PX)
         dynamic_p_gain = self.config.VISION_P_GAIN
-        
+
         if FUZZY_ENABLED:
             # Sugeno singleton (hitung di C via aterkia_core). Input diklem
             # ke semesta 0..2 m; error_px dipakai abs langsung (< 320 piksel
             # karena offset dari pusat frame ±160 px).
-            dynamic_p_gain = core.fuzzy_gate_gain(min(max(distance_m, 0.0), 2.0),
-                                                  abs(error_px))
-        
+            dynamic_p_gain = core.fuzzy_gate_gain(
+                min(max(distance_m, 0.0), 2.0), abs(midpoint_x - self.image_center_x))
+
         self.last_used_p_gain = dynamic_p_gain
         # PID + deadband (bukan raw * gain): lihat _apply_yaw_pid.
         return self._apply_yaw_pid(raw_correction_rad, dynamic_p_gain)
@@ -1374,43 +1514,38 @@ class VisionOffboardNavigator:
     def _calculate_yaw_correction_blue_box(self, best_box, distance_m):
         if not isinstance(best_box, dict) or 'cx' not in best_box: return 0.0
         box_center_x_px = best_box['cx']
+        # Offset lateral (m) -> piksel; target di C seperti gate.
         try:
             if distance_m < 0.1 or self.config.FOCAL_LENGTH_PX == 0: return 0.0
             offset_in_pixels = (self.config.BLUE_BOX_LATERAL_OFFSET_M * self.config.FOCAL_LENGTH_PX) / distance_m
             target_x_in_frame = box_center_x_px + offset_in_pixels
-            error_px = target_x_in_frame - self.image_center_x
-            error_m = (error_px * distance_m) / self.config.FOCAL_LENGTH_PX
-        except ZeroDivisionError: 
-            print("ERROR: FOCAL_LENGTH_PX di Config adalah 0.")
+        except ZeroDivisionError:
             return 0.0
-        
-        raw_correction_rad = math.atan2(error_m, distance_m)
+
+        raw_correction_rad = core.yaw_correction_c(
+            target_x_in_frame, self.image_center_x, distance_m,
+            self.config.FOCAL_LENGTH_PX)
         self.last_used_p_gain = self.config.VISION_P_GAIN
         # PID + deadband (pengganti raw * VISION_P_GAIN).
         return self._apply_yaw_pid(raw_correction_rad, self.config.VISION_P_GAIN)
 
     def _calculate_yaw_correction_red_box(self, best_box, distance_m):
         if not isinstance(best_box, dict) or 'cx' not in best_box: return 0.0
-            
+
         midpoint_x = best_box['cx']
-        error_px = midpoint_x - self.image_center_x
-        
-        try:
-            if distance_m < 0.1 or self.config.FOCAL_LENGTH_PX == 0: return 0.0
-            error_m = (error_px * distance_m) / self.config.FOCAL_LENGTH_PX
-        except ZeroDivisionError: 
-            print("ERROR: FOCAL_LENGTH_PX di Config adalah 0.")
-            return 0.0
-            
-        raw_correction_rad = math.atan2(error_m, distance_m)
+        # Rumus di C (gv_yaw_correction): 0.0 bila tak reliabel.
+        raw_correction_rad = core.yaw_correction_c(
+            midpoint_x, self.image_center_x, distance_m,
+            self.config.FOCAL_LENGTH_PX)
         dynamic_p_gain = self.config.VISION_P_GAIN
-        
+
         if FUZZY_ENABLED:
             # Sugeno singleton (hitung di C via aterkia_core). Input diklem
             # ke semesta 0..10 m; error_px dipakai abs langsung.
-            dynamic_p_gain = core.fuzzy_docking_gain(min(max(distance_m, 0.0), 10.0),
-                                                     abs(error_px))
-        
+            dynamic_p_gain = core.fuzzy_docking_gain(
+                min(max(distance_m, 0.0), 10.0),
+                abs(midpoint_x - self.image_center_x))
+
         self.last_used_p_gain = dynamic_p_gain
 
         # PID + deadband (pengganti raw * dynamic_p_gain) — dock merah.
@@ -1516,26 +1651,22 @@ class VisionOffboardNavigator:
         return buoy_counts
 
     def _upload_snapshot_to_server(self, file_path, filename):
-        if not os.path.exists(file_path):
-            print(f"UPLOAD GAGAL: File tidak ditemukan di {file_path}")
+        """Kompatibilitas: arahkan ke antrean UploadWorker (P1).
+
+        Dipertahankan agar kode lama/simulator yang memanggil langsung tetap
+        jalan — TIDAK spawn thread baru, hanya enqueue.
+        """
+        worker = getattr(self, "upload_worker", None)
+        if worker is None:
+            log.warning("UPLOAD: worker belum siap, %s dibuang.", filename)
             return
-        print(f"Meng-upload {filename} ke {self.config.SERVER_UPLOAD_URL}...")
-        try:
-            with open(file_path, 'rb') as f:
-                files_payload = {'file': (filename, f, 'image/jpeg')}
-                response = requests.post(self.config.SERVER_UPLOAD_URL, files=files_payload, timeout=10)
-                if response.status_code == 200:
-                    print(f"UPLOAD SUKSES: {filename} (Server merespon: {response.text})")
-                else:
-                    print(f"UPLOAD GAGAL: Server merespon {response.status_code} - {response.text}")
-        except requests.exceptions.RequestException as e:
-            print(f"UPLOAD ERROR: Koneksi ke server gagal: {e}")
-        except Exception as e:
-            print(f"UPLOAD ERROR: Terjadi error: {e}")
+        if not worker.enqueue(file_path, filename):
+            log.warning("UPLOAD: antrean penuh/bermasalah, %s dibuang.",
+                        filename)
 
     def _start_video_recording(self):
         if not self.config.ENABLE_SESSION_RECORDING:
-            print("--- [Config] ENABLE_SESSION_RECORDING di-set False. Perekaman video sesi NONAKTIF. ---")
+            log.info("--- [Config] ENABLE_SESSION_RECORDING di-set False. Perekaman video sesi NONAKTIF. ---")
             self.video_writer = None
             return
         try:
@@ -1545,14 +1676,14 @@ class VisionOffboardNavigator:
             fourcc = cv2.VideoWriter_fourcc(*'MJPG')
             frame_size = (self.processing_width, self.processing_height)
             self.video_writer = cv2.VideoWriter(filename, fourcc, self.config.SESSION_VIDEO_FPS, frame_size)
-            print(f"\n--- [Perekam Sesi] Mulai merekam ke: {filename} ---")
+            log.info("\n--- [Perekam Sesi] Mulai merekam ke: %s ---", filename)
         except Exception as e:
-            print(f"PERINGATAN: Gagal memulai perekam video sesi: {e}")
+            log.info("PERINGATAN: Gagal memulai perekam video sesi: %s", e)
             self.video_writer = None
 
     def _stop_video_recording(self):
         if self.video_writer is not None:
-            print(f"--- [Perekam Sesi] Berhenti merekam. Menyimpan file... ---")
+            log.info("--- [Perekam Sesi] Berhenti merekam. Menyimpan file... ---")
             self.video_writer.release()
             self.video_writer = None
 
@@ -1570,7 +1701,7 @@ class VisionOffboardNavigator:
             try:
                 self.master.mav.set_attitude_target_send(0, self.master.target_system, self.master.target_component, type_mask, quat, body_roll_rate_cmd, 0, 0, thrust_limited)
             except Exception as e:
-                print(f"Error sending attitude target: {e}")
+                log.info("Error sending attitude target: %s", e)
 
     def _stream_offboard_command(self, thrust, target_yaw_rad, status="N/A", force_send=False, lateral_thrust=0.0): 
         current_time = time.time()
@@ -1578,30 +1709,51 @@ class VisionOffboardNavigator:
         stream_interval = 1.0 / self.config.OFFBOARD_STREAM_RATE_HZ if self.config.OFFBOARD_STREAM_RATE_HZ > 0 else float('inf')
         if force_send or time_since_last_stream >= stream_interval:
             if not isinstance(target_yaw_rad, (int, float)) or math.isnan(target_yaw_rad):
-                print(f"Invalid target_yaw_rad: {target_yaw_rad}, using current yaw.")
+                log.info("Invalid target_yaw_rad: %s, using current yaw.", target_yaw_rad)
                 target_yaw_rad = self.current_yaw_rad or 0.0 
             self._set_attitude_target(thrust, target_yaw_rad, lateral_thrust)
             self.last_stream_time = current_time
             pass
 
     def _prepare_for_offboard(self):
-        print("Mengirim stream awal (3 detik)...")
+        log.info("Mengirim stream awal (3 detik)...")
         start_time = time.time()
         while time.time() - start_time < 3.0:
             self._set_attitude_target(0.0, 0)
             sleep_duration = max(0, (1.0 / self.config.OFFBOARD_STREAM_RATE_HZ) - 0.001)
             time.sleep(sleep_duration) 
-        print("SISTEM SIAP. Silakan ARMING dan ganti ke mode OFFBOARD.")
+        log.info("SISTEM SIAP. Silakan ARMING dan ganti ke mode OFFBOARD.")
 
     def _cleanup(self):
-        print("\nMembersihkan resource...")
-        self._stop_video_recording() 
+        log.info("\nMembersihkan resource...")
+        self._stop_video_recording()
+        # Hentikan worker async dulu (YOLO + uploader) agar tak ada thread
+        # nyangkut saat kamera/MAVLink ditutup.
+        for _worker in (getattr(self, "yolo_worker", None),
+                        getattr(self, "upload_worker", None)):
+            try:
+                if _worker is not None:
+                    _worker.stop_and_wait()
+            except Exception:
+                pass
+        # Hentikan thread pendengar Redis/sinyal (jangan bocor antar sesi).
+        for _ev, _thr in ((getattr(self, "command_stop_event", None),
+                           getattr(self, "command_thread", None)),
+                          (getattr(self, "signal_stop_event", None),
+                           getattr(self, "signal_thread", None))):
+            try:
+                if _ev is not None:
+                    _ev.set()
+                if _thr is not None and _thr.is_alive():
+                    _thr.join(timeout=1.0)
+            except Exception:
+                pass
         if hasattr(self, 'redis_publish_thread') and self.redis_publish_thread.is_alive():
-            print("Menghentikan thread publisher Redis...")
+            log.info("Menghentikan thread publisher Redis...")
             self.redis_stop_event.set()
             self.redis_publish_thread.join(timeout=1.0) 
         if hasattr(self, 'master') and self.master:
-            print("Mengirim perintah berhenti...")
+            log.info("Mengirim perintah berhenti...")
             for _ in range(10): 
                 current_yaw = self.current_yaw_rad or 0.0
                 self._set_attitude_target(0.0, current_yaw, 0.0) 
@@ -1609,17 +1761,17 @@ class VisionOffboardNavigator:
             try:
                 self.master.close()
             except Exception as e:
-                print(f"Error closing MAVLink connection: {e}")
+                log.info("Error closing MAVLink connection: %s", e)
         if hasattr(self, 'cap') and self.cap and self.cap.isOpened():
             self.cap.release()
-            print("Kamera utama dilepaskan.")
+            log.info("Kamera utama dilepaskan.")
         if hasattr(self, 'wp_photo_cap') and self.wp_photo_cap and self.wp_photo_cap.isOpened():
             self.wp_photo_cap.release()
-            print("Kamera foto waypoint dilepaskan.")
+            log.info("Kamera foto waypoint dilepaskan.")
         if hasattr(self, 'redis_client') and self.redis_client:
-            print("Menutup koneksi Redis...")
+            log.info("Menutup koneksi Redis...")
             self.redis_client.close()
-        print("Selesai.")
+        log.info("Selesai.")
 
     def _normalize_angle(self, angle_rad):
         """Bawa sudut ke [-pi, pi]. Hitung di C (nav_math) via aterkia_core."""
@@ -1637,7 +1789,7 @@ class VisionOffboardNavigator:
     def _yaw_to_quaternion(self, yaw_rad):
         # (Fungsi _yaw_to_quaternion tidak berubah)
         if not isinstance(yaw_rad, (int, float)) or math.isnan(yaw_rad):
-            print(f"Invalid yaw_rad for quaternion: {yaw_rad}, using 0.0")
+            log.info("Invalid yaw_rad for quaternion: %s, using 0.0", yaw_rad)
             yaw_rad = 0.0
         cy = math.cos(yaw_rad * 0.5); sy = math.sin(yaw_rad * 0.5)
         cr = 1.0; sr = 0.0
@@ -1661,6 +1813,93 @@ class VisionOffboardNavigator:
             pct = max(0.0, min(100.0, (volt - 12.8) / (16.8 - 12.8) * 100.0))
         return {"voltage_v": volt, "current_a": curr, "battery_pct": pct}
 
+    # ID mode RTL ArduPilot Rover (lihat mode_mapping_rover pymavlink).
+    _ROVER_RTL_MODE = 11
+    # Jeda minimal antar percobaan kirim RTL (detik, monotonic).
+    _RTL_RETRY_INTERVAL_S = 5.0
+
+    def _request_rtl(self):
+        """Minta mode RTL via MAV_CMD_DO_SET_MODE (best-effort).
+
+        Pixhawk TETAP pemegang failsafe utama (RCIN + geofence bawaan);
+        perintah ini hanya usaha tambahan dari NUC, di-throttle maks 1x per
+        5 detik agar tak membanjiri link MAVLink yang sedang bermasalah.
+        """
+        now = time.monotonic()
+        if now - self._rtl_sent_mono < self._RTL_RETRY_INTERVAL_S:
+            return
+        self._rtl_sent_mono = now
+        try:
+            self.master.mav.command_long_send(
+                self.master.target_system, self.master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_SET_MODE, 0,
+                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                self._ROVER_RTL_MODE, 0, 0, 0, 0, 0)
+            log.warning("FAILSAFE: perintah RTL dikirim (best-effort).")
+        except Exception as e:
+            if throttled("rtl_fail", 10.0):
+                log.warning("FAILSAFE: gagal kirim perintah RTL: %s", e)
+
+    def _check_failsafe(self):
+        """Evaluasi failsafe tiap frame sebelum stream OFFBOARD.
+
+        Return "" bila aman (loop lanjut normal), atau string alasan bila
+        aktif — caller MENIMPA thrust=0 & yaw=current lalu label status
+        "FAILSAFE (alasan)". Kondisi pemicu (ambang di Config, tab
+        Failsafe di Settings):
+          1. stale-link: tak ada ATTITUDE/GLOBAL_POSITION > batas detik;
+          2. low-batt: persen ATAU tegangan di bawah ambang, DITAHAN selama
+             hold agar spike sesaat (arus dud) tak memicu RTL palsu.
+        Saat aktif: thrust 0 + coba RTL via _request_rtl (best-effort).
+        Pulih otomatis bila kondisi normal kembali (log 1x).
+        """
+        if not getattr(self.config, "FAILSAFE_ENABLED", True):
+            if self.failsafe_active:
+                self.failsafe_active = False
+                self.failsafe_reason = ""
+            return ""
+        now = time.monotonic()
+        reason = ""
+        # 1. Stale-link (_last_telem_mono dicap di _update_telemetry).
+        timeout = float(getattr(self.config, "FAILSAFE_TELEM_TIMEOUT_S", 2.0))
+        last = float(getattr(self, "_last_telem_mono", 0.0) or 0.0)
+        if last > 0.0 and (now - last) > timeout:
+            reason = f"telemetri basi {now - last:.1f}s"
+        # 2. Baterai rendah (ditahan).
+        if not reason:
+            fields = self._battery_fields()
+            pct = fields.get("battery_pct")
+            volt = fields.get("voltage_v")
+            low_pct = float(getattr(self.config, "FAILSAFE_LOW_BATT_PCT",
+                                    20.0))
+            low_v = float(getattr(self.config, "FAILSAFE_LOW_VOLT_V", 13.2))
+            hold = float(getattr(self.config, "FAILSAFE_LOW_BATT_HOLD_S",
+                                 3.0))
+            low = ((pct is not None and pct < low_pct)
+                   or (volt is not None and volt < low_v))
+            if low:
+                if self._lowbatt_since is None:
+                    self._lowbatt_since = now
+                elif now - self._lowbatt_since >= hold:
+                    detail = (f"{pct:.0f}%" if pct is not None
+                              else f"{volt:.1f}V")
+                    reason = f"baterai rendah {detail}"
+            else:
+                self._lowbatt_since = None
+        if reason:
+            if not self.failsafe_active:
+                log.warning("FAILSAFE AKTIF: %s — thrust 0 + coba RTL.",
+                            reason)
+            self.failsafe_active = True
+            self.failsafe_reason = reason
+            self._request_rtl()
+            return reason
+        if self.failsafe_active:
+            log.info("FAILSAFE pulih: kondisi normal kembali.")
+        self.failsafe_active = False
+        self.failsafe_reason = ""
+        return ""
+
     def _publish_telemetry(self):
         if self.current_lat is None or self.current_yaw_rad is None: return
         current_roll = 0.0; current_pitch = 0.0
@@ -1680,7 +1919,7 @@ class VisionOffboardNavigator:
             payload = { "type": "telemetry", "data": telemetry_data }
             if self.redis_client: self.redis_client.publish(self.config.TELEMETRY_CHANNEL, json.dumps(payload))
         except Exception as e:
-            print(f"PERINGATAN: Gagal publish telemetri ke Redis: {e}")
+            log.info("PERINGATAN: Gagal publish telemetri ke Redis: %s", e)
     
     def _publish_vision_frame(self, frame, status_message, buoy_counts=None):
         pass 
@@ -1697,9 +1936,9 @@ class NavigatorThread(QThread):
 
     def save_config_to_file(self):
         if not hasattr(self, 'config'):
-            print("Penyimpanan Gagal: Objek config belum ada.")
+            log.info("Penyimpanan Gagal: Objek config belum ada.")
             return
-        print(f"Menyimpan parameter tuning ke {TUNING_FILE}...")
+        log.info("Menyimpan parameter tuning ke %s...", TUNING_FILE)
         params_to_save = {
             'ACCEPTANCE_RADIUS_M': self.config.ACCEPTANCE_RADIUS_M,
             'THRUST_VALUE': self.config.THRUST_VALUE,
@@ -1735,6 +1974,21 @@ class NavigatorThread(QThread):
             'YAW_SEARCH_DOCK': self.config.YAW_SEARCH_DOCK,
             'YOLO_FRAME_SKIP': self.config.YOLO_FRAME_SKIP,
             'YOLO_INFERENCE_SIZE': self.config.YOLO_INFERENCE_SIZE,
+            'YOLO_RESULT_MAX_AGE_S': getattr(
+                self.config, 'YOLO_RESULT_MAX_AGE_S', 0.5),
+            'UPLOAD_QUEUE_SIZE': getattr(self.config, 'UPLOAD_QUEUE_SIZE', 3),
+            'UPLOAD_MAX_RETRIES': getattr(
+                self.config, 'UPLOAD_MAX_RETRIES', 1),
+            'FAILSAFE_ENABLED': getattr(self.config, 'FAILSAFE_ENABLED',
+                                       True),
+            'FAILSAFE_TELEM_TIMEOUT_S': getattr(
+                self.config, 'FAILSAFE_TELEM_TIMEOUT_S', 2.0),
+            'FAILSAFE_LOW_BATT_PCT': getattr(
+                self.config, 'FAILSAFE_LOW_BATT_PCT', 20.0),
+            'FAILSAFE_LOW_VOLT_V': getattr(
+                self.config, 'FAILSAFE_LOW_VOLT_V', 13.2),
+            'FAILSAFE_LOW_BATT_HOLD_S': getattr(
+                self.config, 'FAILSAFE_LOW_BATT_HOLD_S', 3.0),
             'SESSION_VIDEO_FPS': self.config.SESSION_VIDEO_FPS,
             'CAMERA_FLIP_MODE': self.config.CAMERA_FLIP_MODE,
             'MANUAL_ENABLED': self.config.MANUAL_ENABLED,
@@ -1752,31 +2006,30 @@ class NavigatorThread(QThread):
             'VISION_ENABLED_LEGS': self.config.VISION_ENABLED_LEGS,
             'PHOTO_BOX_LEGS': self.config.PHOTO_BOX_LEGS,
             'BLUE_BOX_PHOTO_LEGS': self.config.BLUE_BOX_PHOTO_LEGS,
-            'STOP_AND_PHOTO_AT_WP': self.config.STOP_AND_PHOTO_AT_WP
         }
         try:
             with open(TUNING_FILE, 'w') as f:
                 json.dump(params_to_save, f, indent=4)
-            print("Parameter berhasil disimpan.")
+            log.info("Parameter berhasil disimpan.")
         except Exception as e:
-            print(f"ERROR: Gagal menyimpan parameter tuning: {e}")
+            log.info("ERROR: Gagal menyimpan parameter tuning: %s", e)
 
     def update_config_param(self, key, value):
         if hasattr(self.config, key):
             setattr(self.config, key, value)
-            print(f"[TUNING] {key} updated to {value}")
+            log.info("[TUNING] %s updated to %s", key, value)
         else:
-            print(f"[ERROR] Config key '{key}' not found!")
+            log.info("[ERROR] Config key '%s' not found!", key)
         
     def run(self):
-        print("Starting NavigatorThread (ASLI DENGAN PX4 & REDIS)...")
+        log.info("Starting NavigatorThread (ASLI DENGAN PX4 & REDIS)...")
         try:
             self.navigator.run(self.newData) 
         except Exception as e:
-            print(f"FATAL ERROR IN NAVIGATOR THREAD: {e}")
+            log.info("FATAL ERROR IN NAVIGATOR THREAD: %s", e)
             import traceback
             traceback.print_exc()
-        print("NavigatorThread finished.")
+        log.info("NavigatorThread finished.")
 
     def stop(self):
         if self.navigator:
@@ -1786,12 +2039,12 @@ class NavigatorThread(QThread):
         global WAYPOINTS
         WAYPOINTS = new_waypoints
         if not self.navigator: return
-        print("\n--- [RESET MISSION] Perintah Save/Reload diterima ---")
+        log.info("\n--- [RESET MISSION] Perintah Save/Reload diterima ---")
         self.navigator.waypoints = new_waypoints
         if not new_waypoints or len(new_waypoints) == 0:
             self.navigator.current_waypoint_index = 0
             self.navigator._set_state_and_publish("NO_WAYPOINTS")
-            print("[RESET MISSION] Tidak ada waypoint baru. Berhenti (IDLE).")
+            log.info("[RESET MISSION] Tidak ada waypoint baru. Berhenti (IDLE).")
         else:
             self.navigator.current_waypoint_index = 0
             if self.navigator.current_lat is not None:
@@ -1804,5 +2057,5 @@ class NavigatorThread(QThread):
             self.navigator.retreat_step = "IDLE"
             self.navigator.last_vision_correction_rad = 0.0
             self.navigator._set_state_and_publish("WAYPOINT_TRANSITION")
-            print(f"[RESET MISSION] Misi direset. Menuju ke WP 0 baru.")
-        print(f"Navigator waypoints updated (HARD RESET).")
+            log.info("[RESET MISSION] Misi direset. Menuju ke WP 0 baru.")
+        log.info("Navigator waypoints updated (HARD RESET).")

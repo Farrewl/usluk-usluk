@@ -200,6 +200,23 @@ class SettingsDialog(QDialog):
                       0, 10, 1, is_int=True)
         self._add_row(f, "YOLO_INFERENCE_SIZE:", "YOLO_INFERENCE_SIZE",
                       320, 1280, 32, is_int=True)
+        self._add_row(f, "YOLO_RESULT_MAX_AGE_S:", "YOLO_RESULT_MAX_AGE_S",
+                      0.1, 2.0, 0.1)
+        self._add_row(f, "UPLOAD_QUEUE_SIZE:", "UPLOAD_QUEUE_SIZE",
+                      1, 10, 1, is_int=True)
+        self._add_row(f, "UPLOAD_MAX_RETRIES:", "UPLOAD_MAX_RETRIES",
+                      0, 5, 1, is_int=True)
+        self._add_header(f, "Failsafe Otomatis (stale-link / low-batt)")
+        self._add_row(f, "FAILSAFE_ENABLED:", "FAILSAFE_ENABLED",
+                      0, 1, 1, is_int=True)
+        self._add_row(f, "FAILSAFE_TELEM_TIMEOUT_S:",
+                      "FAILSAFE_TELEM_TIMEOUT_S", 0.5, 10.0, 0.5)
+        self._add_row(f, "FAILSAFE_LOW_BATT_PCT:", "FAILSAFE_LOW_BATT_PCT",
+                      5.0, 50.0, 1.0)
+        self._add_row(f, "FAILSAFE_LOW_VOLT_V:", "FAILSAFE_LOW_VOLT_V",
+                      11.0, 16.0, 0.1)
+        self._add_row(f, "FAILSAFE_LOW_BATT_HOLD_S:",
+                      "FAILSAFE_LOW_BATT_HOLD_S", 0.0, 10.0, 0.5)
         self._add_row(f, "SESSION_VIDEO_FPS:", "SESSION_VIDEO_FPS",
                       1.0, 30.0, 1.0)
         self._add_row(f, "CAMERA_FLIP_MODE:", "CAMERA_FLIP_MODE",

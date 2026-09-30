@@ -594,11 +594,15 @@ class MainWindow(QMainWindow):
                 pass
 
         # Sidebar.
-        mode_c = (theme.COLOR_BAD if op_mode == "KILL"
+        fs_on = bool(data.get('failsafe_active', False))
+        fs_reason = str(data.get('failsafe_reason', '') or '')
+        up_pending = int(data.get('upload_pending', 0) or 0)
+        mode_c = (theme.COLOR_BAD if (op_mode == "KILL" or fs_on)
                   else theme.COLOR_WARN if op_mode in ("MANUAL", "HOLD")
                   else theme.COLOR_OK)
-        if self.side_mode.text() != op_mode:
-            self.side_mode.setText(op_mode)
+        mode_txt = (f"FAILSAFE:{fs_reason[:18]}" if fs_on else op_mode)
+        if self.side_mode.text() != mode_txt:
+            self.side_mode.setText(mode_txt)
         if self._chip_cache.get("side_mode_c") != mode_c:
             self._chip_cache["side_mode_c"] = mode_c
             self.side_mode.setStyleSheet(
@@ -660,7 +664,9 @@ class MainWindow(QMainWindow):
                        f"{'+QGC' if gcs_on else ''}",
                        theme.COLOR_OK if mav_ok else theme.COLOR_BAD)
         self._set_chip(self.chip_mode, "mode",
-                       f"{op_mode}{'*' if man_on else ''}", mode_c)
+                       "%s%s%s" % (mode_txt, '*' if man_on else '',
+                                   (" ^%d" % up_pending) if up_pending else ''),
+                       mode_c)
 
         # Tab Manual.
         try:

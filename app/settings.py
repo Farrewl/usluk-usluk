@@ -115,8 +115,14 @@ TUNING_PARAM_KEYS = frozenset({
     "MANUAL_DEADBAND", "MANUAL_EXPO", "MANUAL_RATE_LIMIT",
     "RC_TIMEOUT_MS", "RC_CH_THROTTLE", "RC_CH_YAW", "RC_CH_MODE",
     "RC_CH_DEADMAN", "MANUAL_LOST_HOLD_S",
-    # YOLO
-    "YOLO_FRAME_SKIP", "YOLO_INFERENCE_SIZE",
+    # failsafe otomatis (lihat app/navigator.py _check_failsafe)
+    "FAILSAFE_ENABLED", "FAILSAFE_TELEM_TIMEOUT_S",
+    "FAILSAFE_LOW_BATT_PCT", "FAILSAFE_LOW_VOLT_V",
+    "FAILSAFE_LOW_BATT_HOLD_S",
+    # YOLO async (lihat app/yolo_async.py)
+    "YOLO_FRAME_SKIP", "YOLO_INFERENCE_SIZE", "YOLO_RESULT_MAX_AGE_S",
+    # uploader foto (lihat app/uploader.py)
+    "UPLOAD_QUEUE_SIZE", "UPLOAD_MAX_RETRIES",
 })
 
 
@@ -293,10 +299,34 @@ class Config:
         self.RC_CH_DEADMAN = saved.get('RC_CH_DEADMAN', 7)
         self.MANUAL_LOST_HOLD_S = saved.get('MANUAL_LOST_HOLD_S', 1.0)
 
+        # ---------- Failsafe otomatis (lihat _check_failsafe) ----------
+        # Telemetri stale (tak ada ATTITUDE/GLOBAL_POSITION > batas) ATAU
+        # baterai rendah (persen ATAU tegangan di bawah ambang, ditahan
+        # selama FAILSAFE_LOW_BATT_HOLD_S agar spike sesaat tak memicu) ->
+        # thrust 0 + coba set mode RTL via MAV_CMD_DO_SET_MODE (best-effort).
+        self.FAILSAFE_ENABLED = saved.get('FAILSAFE_ENABLED', True)
+        self.FAILSAFE_TELEM_TIMEOUT_S = saved.get(
+            'FAILSAFE_TELEM_TIMEOUT_S', 2.0)
+        self.FAILSAFE_LOW_BATT_PCT = saved.get(
+            'FAILSAFE_LOW_BATT_PCT', 20.0)
+        self.FAILSAFE_LOW_VOLT_V = saved.get(
+            'FAILSAFE_LOW_VOLT_V', 13.2)
+        self.FAILSAFE_LOW_BATT_HOLD_S = saved.get(
+            'FAILSAFE_LOW_BATT_HOLD_S', 3.0)
+
         # ---------- YOLO & video ----------
         self.YOLO_FRAME_SKIP = saved.get('YOLO_FRAME_SKIP', 1)
         self.YOLO_INFERENCE_SIZE = saved.get('YOLO_INFERENCE_SIZE', 320)
+        # Umur maks hasil async (detik): hasil lebih tua dianggap basi dan
+        # loop memakai cache terakhir / kosong. 0.5 s ~= 1-2 frame @ inferensi
+        # lambat; cukup segar untuk kontrol, cukup longgar untuk CPU RPi.
+        self.YOLO_RESULT_MAX_AGE_S = saved.get('YOLO_RESULT_MAX_AGE_S', 0.5)
+        # Antrean upload foto: penuh -> foto terlama dibuang (baru menang).
+        self.UPLOAD_QUEUE_SIZE = saved.get('UPLOAD_QUEUE_SIZE', 3)
+        # Coba ulang upload per foto bila gagal (total = 1 + nilai ini).
+        self.UPLOAD_MAX_RETRIES = saved.get('UPLOAD_MAX_RETRIES', 1)
         self.YOLO_HALF_PRECISION = False           # CPU tidak mendukung half precision
         self.YOLO_DEVICE = 'cpu'                   # paksa jalan di CPU
         self.RED_BALL_CLASS_ID = 1
         self.GREEN_BALL_CLASS_ID = 0
+        self.GREEN_BOX_CLASS_ID = 0                # model box hijau: 1 class

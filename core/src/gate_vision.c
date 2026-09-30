@@ -91,6 +91,26 @@ int gv_buoy_ok(double w, double h, double min_area,
     return gv_buoy_fail(w, h, min_area, max_aspect_deviation) == 0;
 }
 
+/* Koreksi yaw mentah (rad) dari error titik tengah piksel.
+
+ * Memindahkan rumus yang sebelumnya diduplikasi 4x di Python
+ * (_calculate_yaw_correction_gate/box/blue/red):
+ *   error_m = (error_px * distance_m) / focal_length_px
+ *   raw     = atan2(error_m, distance_m)
+ * Aturan batas: distance_m < 0.1 ATAU focal <= 0 -> 0.0 (tak reliabel).
+ */
+double gv_yaw_correction(double target_x_px, double image_center_x,
+                         double distance_m, double focal_length_px) {
+    double error_px;
+    double error_m;
+    if (distance_m < 0.1 || focal_length_px <= 0.0) {
+        return 0.0;
+    }
+    error_px = target_x_px - image_center_x;
+    error_m = (error_px * distance_m) / focal_length_px;
+    return atan2(error_m, distance_m);
+}
+
 void gv_seq_init(gv_seq_t *s, double pass_distance_m,
                  int lost_tolerance_frames, double gate_width_m,
                  double focal_length_px, double midpoint_match_px,

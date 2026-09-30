@@ -88,6 +88,12 @@ int gv_buoy_ok(double w, double h, double min_area,
 int gv_buoy_fail(double w, double h, double min_area,
                  double max_aspect_deviation);
 
+/* Koreksi yaw mentah (rad) dari error titik tengah piksel:
+ * atan2(((target_x - center_x) * dist) / focal, dist).
+ * Return 0.0 bila distance_m < 0.1 atau focal <= 0 (tak reliabel). */
+double gv_yaw_correction(double target_x_px, double image_center_x,
+                         double distance_m, double focal_length_px);
+
 /* Inisialisasi sequencer (panggil sekali). */
 void gv_seq_init(gv_seq_t *s, double pass_distance_m,
                  int lost_tolerance_frames, double gate_width_m,

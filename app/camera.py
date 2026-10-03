@@ -19,26 +19,36 @@ import time
 
 import cv2
 
-# Cache file untuk mode kamera (index, fourcc, width, height, fps).
-# Hanya negosiasi penuh bila file hilang / index berubah / force=True.
+# Cache file untuk mode kamera (index, fourcc, width, height, fps, uid).
+# Hanya negosiasi penuh bila file hilang / index berubah / UID kamera
+# berubah (cabut-colok pindah port USB) / force=True.
 CAM_MODE_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "..", "data", "cam_mode.json")
+
+# Direktori symlink persisten V4L2 (nama kamera stabil antar colokan).
+# Contoh isi: usb-046d_HD_Pro_Webcam_C920-video-index0 -> ../../video0
+V4L_BY_ID_DIR = "/dev/v4l/by-id"
+
+# Status baca kamera untuk reconnect throttle (dipakai camera_manager).
+CAM_RECONNECT_INTERVAL_S = 2.0
+CAM_FAIL_THRESHOLD = 10
 
 # Level log OpenCV yang tersimpan (None = belum dibungkam sesi ini).
 _OPENCV_LOG_LEVEL_SAVED = None
 
 
 def _load_cam_cache():
-    """Baca cache mode kamera dari file JSON."""
+    """Baca cache mode kamera dari file JSON (None bila tak ada/rusak)."""
     try:
         with open(CAM_MODE_CACHE, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+            return data if isinstance(data, dict) else None
     except Exception:
         return None
 
 
-def _save_cam_cache(index, fourcc_val, width, height, fps):
-    """Simpan mode kamera ke file JSON."""
+def _save_cam_cache(index, fourcc_val, width, height, fps, uid=None):
+    """Simpan mode kamera ke file JSON (termasuk UID persisten bila ada)."""
     try:
         os.makedirs(os.path.dirname(CAM_MODE_CACHE), exist_ok=True)
         data = {
@@ -48,10 +58,93 @@ def _save_cam_cache(index, fourcc_val, width, height, fps):
             "height": int(height),
             "fps": float(fps),
         }
+        if uid:
+            data["uid"] = str(uid)
         with open(CAM_MODE_CACHE, "w") as f:
             json.dump(data, f)
     except Exception:
         pass
+
+
+def invalidate_cam_cache():
+    """Hapus cache mode kamera (dipanggil bila open gagal / ganti kamera).
+
+    Return True bila file dihapus, False bila tak ada/gagal.
+    """
+    try:
+        if os.path.exists(CAM_MODE_CACHE):
+            os.remove(CAM_MODE_CACHE)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _v4l_uid_for_index(index):
+    """UID persisten kamera index N dari symlink /dev/v4l/by-id.
+
+    Index V4L2 (= urutan colok) bisa berubah saat cabut-colok; nama
+    by-id (VID:PID + serial) stabil. Return nama symlink (mis.
+    'usb-046d_HD_Pro_Webcam_C920-video-index0') atau None bila tak ada.
+    """
+    try:
+        idx = int(index)
+    except (TypeError, ValueError):
+        return None
+    if not os.path.isdir(V4L_BY_ID_DIR):
+        return None
+    try:
+        names = os.listdir(V4L_BY_ID_DIR)
+    except OSError:
+        return None
+    target_suffix = f"video{idx}"
+    for name in sorted(names):
+        try:
+            link = os.readlink(os.path.join(V4L_BY_ID_DIR, name))
+        except OSError:
+            continue
+        # link relatif macam '../../video0' -> ambil basename.
+        if os.path.basename(link.rstrip("/")) == target_suffix:
+            return name
+    return None
+
+
+def list_cameras(max_index=6):
+    """Daftar kamera yang terdeteksi tanpa membuka frame penuh.
+
+    Tiap entri: {'index': int, 'uid': str|None, 'label': str}.
+    Di Linux: node /dev/videoN yang ada + nama by-id bila ketemu.
+    Di Windows: index 0..max_index (probing penuh dihindari di sini;
+    GUI memanggil rescan/open untuk validasi).
+    Return list (bisa kosong bila tak ada kamera).
+    """
+    found = []
+    if platform.system() == "Windows":
+        for i in range(int(max_index) + 1):
+            found.append({
+                "index": i,
+                "uid": None,
+                "label": f"Kamera {i}",
+            })
+        return found
+    for i in range(int(max_index) + 1):
+        if not _index_may_exist(i):
+            continue
+        uid = _v4l_uid_for_index(i)
+        if uid:
+            # 'usb-Logitech_HD_Pro_Webcam_C920_ABC123-video-index0'
+            # -> tampil pendek 'HD_Pro_Webcam_C920'.
+            short = uid
+            for prefix in ("usb-",):
+                if short.startswith(prefix):
+                    short = short[len(prefix):]
+            short = short.rsplit("-video-index", 1)[0]
+            short = short.replace("_", " ")
+            label = f"{i}: {short}"
+        else:
+            label = f"Kamera {i}"
+        found.append({"index": i, "uid": uid, "label": label})
+    return found
 
 
 def _silence_opencv_warns():
@@ -267,24 +360,45 @@ def negotiate_best_camera(preferred, target_fps=30, max_width=1920,
     `_probe_index_quality`), lalu hanya index dengan luas piksel terbesar
     yang di-negosiasi penuh. Seri diputuskan fps, lalu index (preferen).
 
-    Cache: simpan/baca hasil negosiasi ke `data/cam_mode.json`.
+    Cache: simpan/baca hasil negosiasi ke `data/cam_mode.json`
+    (termasuk UID persisten by-id). Bila UID berubah (cabut-colok pindah
+    port USB) cache diabaikan + dihapus agar tak mengunci index basi.
     `force_renegotiate=True` paksa negosiasi ulang (bila kamera ganti).
 
     Return: (index_terpilih, fourcc_val, width, height, fps) atau None.
     """
-    # Coba cache dulu (hanya bila index sama & tidak force).
+    # Coba cache dulu (hanya bila index sama, UID sama, & tidak force).
     if not force_renegotiate:
         cache = _load_cam_cache()
         if (cache and cache.get("index") == int(preferred)
                 and cache.get("width", 0) <= int(max_width)
                 and cache.get("height", 0) <= int(max_height)):
-            fourcc_val = cache.get("fourcc")
-            width = cache.get("width")
-            height = cache.get("height")
-            fps = cache.get("fps", 0.0)
-            print(f"[CAM] Mode cache index={preferred}: {width}x{height} "
-                  f"{fps:.0f} fps.")
-            return (int(preferred), fourcc_val, width, height, fps)
+            cached_uid = cache.get("uid")
+            live_uid = _v4l_uid_for_index(int(preferred))
+            if cached_uid and live_uid and cached_uid != live_uid:
+                # Kamera di index ini sudah beda fisik (tukar colokan).
+                print(f"[CAM] UID berubah ({cached_uid} -> {live_uid}); "
+                      "cache dibuang, negosiasi ulang.")
+                invalidate_cam_cache()
+            else:
+                fourcc_val = cache.get("fourcc")
+                width = cache.get("width")
+                height = cache.get("height")
+                fps = cache.get("fps", 0.0)
+                print(f"[CAM] Mode cache index={preferred}: {width}x{height} "
+                      f"{fps:.0f} fps.")
+                # Validasi cepat: cache basi (kamera dicabut) terdeteksi
+                # di sini — langsung negosiasi ulang, bukan gagal diam.
+                _probe = _make_capture(int(preferred),
+                                       _platform_backends()[0])
+                if _probe is not None and _probe.isOpened():
+                    _probe.release()
+                    return (int(preferred), fourcc_val, width, height, fps)
+                if _probe is not None:
+                    _probe.release()
+                print(f"[CAM] Cache index={preferred} basi (tak bisa "
+                      "dibuka); negosiasi ulang.")
+                invalidate_cam_cache()
 
     order = [int(preferred)]
     for i in range(int(max_index) + 1):
@@ -318,8 +432,9 @@ def negotiate_best_camera(preferred, target_fps=30, max_width=1920,
     if best_idx != int(preferred):
         print(f"[CAM] Kamera {int(preferred)} resolusinya lebih kecil; "
               f"pakai index {best_idx} (area terbesar).")
-    # Simpan cache untuk start berikutnya.
-    _save_cam_cache(best_idx, mode[0], mode[1], mode[2], mode[3])
+    # Simpan cache untuk start berikutnya (termasuk UID persisten).
+    _save_cam_cache(best_idx, mode[0], mode[1], mode[2], mode[3],
+                    uid=_v4l_uid_for_index(best_idx))
     return (best_idx, mode[0], mode[1], mode[2], mode[3])
 
 

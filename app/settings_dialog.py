@@ -249,6 +249,13 @@ class SettingsDialog(QDialog):
                       1.0, 30.0, 1.0)
         self._add_row(f, "CAMERA_FLIP_MODE:", "CAMERA_FLIP_MODE",
                       0, 3, 1, is_int=True)
+        self._add_header(f, "Pixhawk Non-blocking + Histeresis (P6-B)")
+        self._add_row(f, "MAV_CONNECT_TIMEOUT_S:", "MAV_CONNECT_TIMEOUT_S",
+                      0.5, 10.0, 0.5)
+        self._add_row(f, "MAV_RETRY_INTERVAL_S:", "MAV_RETRY_INTERVAL_S",
+                      1.0, 30.0, 1.0)
+        self._add_row(f, "TELEM_HYSTERESIS_FRAMES:",
+                      "TELEM_HYSTERESIS_FRAMES", 1, 30, 1, is_int=True)
         self._add_header(f, "Filter & Kontroler (PID/EKF)")
         self._add_row(f, "PID_KP:", "PID_KP", 0.0, 10.0, 0.1)
         self._add_row(f, "PID_KI:", "PID_KI", 0.0, 5.0, 0.05)

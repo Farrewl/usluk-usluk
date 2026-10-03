@@ -15,7 +15,7 @@ import time
 import cv2
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QSplitter, QFrame,
-                             QPushButton, QTabWidget)
+                             QPushButton, QTabWidget, QComboBox)
 from PyQt5.QtCore import QTimer, Qt, QLibraryInfo, QRect
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont
 
@@ -104,8 +104,9 @@ class HudOverlay(QWidget):
 class VideoPanel(QWidget):
     """Panel video + HUD overlay yang ikut meresize."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, title="NAV"):
         super().__init__(parent)
+        self.title = str(title)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.video_label = QLabel("")
@@ -116,6 +117,30 @@ class VideoPanel(QWidget):
         self.hud = HudOverlay(self)
         self.hud.setGeometry(0, 0, self.width(), self.height())
         self.hud.raise_()
+
+    def set_frame(self, frame):
+        """Tampilkan frame BGR OpenCV (None = hitam polos)."""
+        try:
+            if frame is None:
+                self.video_label.clear()
+                return
+            h, w, ch = frame.shape
+            if h <= 0 or w <= 0:
+                return
+            lw, lh = self.video_label.width(), self.video_label.height()
+            disp = frame
+            if lw > 1 and lh > 1 and (w > lw or h > lh):
+                scale = min(lw / w, lh / h)
+                if scale < 1.0:
+                    disp = cv2.resize(
+                        frame, (int(w * scale), int(h * scale)),
+                        interpolation=cv2.INTER_AREA)
+                h, w, ch = disp.shape
+            q_img = QImage(disp.data, w, h, ch * w,
+                           QImage.Format_RGB888).rgbSwapped()
+            self.video_label.setPixmap(QPixmap.fromImage(q_img))
+        except Exception:
+            pass
 
     def resizeEvent(self, event):  # noqa: N802 - API Qt
         self.hud.setGeometry(0, 0, self.width(), self.height())
@@ -247,10 +272,20 @@ class MainWindow(QMainWindow):
 
         split = QSplitter(Qt.Vertical)
         self.slim_map = SlimMapWidget()
-        self.video_panel = VideoPanel()
+        # Dual-view P6-C: NAV besar + BAWAH kecil (toggle bila 1 kamera).
+        self.video_panel = VideoPanel(title="NAV")
         self.video_label = self.video_panel.video_label
         self.hud_overlay = self.video_panel.hud
-        split.addWidget(self.video_panel)
+        self.video_panel_bawah = VideoPanel(title="BAWAH")
+        self.video_panel_bawah.hud.hide()  # kecil: tanpa HUD
+        self.video_label_bawah = self.video_panel_bawah.video_label
+        vid_split = QSplitter(Qt.Horizontal)
+        vid_split.addWidget(self.video_panel)
+        vid_split.addWidget(self.video_panel_bawah)
+        vid_split.setSizes([700, 260])
+        self.video_panel_bawah.hide()  # muncul bila frame bawah ada
+        self._bawah_shown = False
+        split.addWidget(vid_split)
         split.addWidget(self.slim_map)
         split.setSizes([560, 300])
         layout.addWidget(split, 1)
@@ -284,6 +319,50 @@ class MainWindow(QMainWindow):
         self.misi_link.setStyleSheet(
             "font-family: monospace; font-size: 13px; background: transparent;")
         l.addWidget(self.misi_link)
+        ml.addWidget(f)
+        # P6-A: Scan + pilih kamera NAV/BAWAH saat runtime (plug-and-play).
+        f, l = _card("Kamera")
+        row = QHBoxLayout()
+        self.cam_combo = QComboBox()
+        self.cam_scan_btn = QPushButton("Scan")
+        self.cam_scan_btn.setProperty("class", "toolBtn")
+        self.cam_scan_btn.clicked.connect(self.on_camera_scan)
+        row.addWidget(self.cam_combo, 1)
+        row.addWidget(self.cam_scan_btn)
+        l.addLayout(row)
+        row2 = QHBoxLayout()
+        self.cam_nav_btn = QPushButton("Pakai NAV")
+        self.cam_nav_btn.setProperty("class", "toolBtn")
+        self.cam_nav_btn.clicked.connect(self.on_camera_select_nav)
+        self.cam_bawah_btn = QPushButton("Pakai BAWAH")
+        self.cam_bawah_btn.setProperty("class", "toolBtn")
+        self.cam_bawah_btn.clicked.connect(self.on_camera_select_bawah)
+        row2.addWidget(self.cam_nav_btn)
+        row2.addWidget(self.cam_bawah_btn)
+        l.addLayout(row2)
+        self.cam_status_label = QLabel("Kamera: --")
+        self.cam_status_label.setStyleSheet(
+            "font-family: monospace; color: #8b949e; background: transparent;")
+        l.addWidget(self.cam_status_label)
+        ml.addWidget(f)
+        # P6-B: pilih port Pixhawk (USB langsung vs radio telemetri).
+        f, l = _card("Pixhawk")
+        prow = QHBoxLayout()
+        self.mav_combo = QComboBox()
+        self.mav_scan_btn = QPushButton("Scan")
+        self.mav_scan_btn.setProperty("class", "toolBtn")
+        self.mav_scan_btn.clicked.connect(self.on_mav_scan)
+        prow.addWidget(self.mav_combo, 1)
+        prow.addWidget(self.mav_scan_btn)
+        l.addLayout(prow)
+        self.mav_apply_btn = QPushButton("Pakai Port Ini")
+        self.mav_apply_btn.setProperty("class", "toolBtn")
+        self.mav_apply_btn.clicked.connect(self.on_mav_select)
+        l.addWidget(self.mav_apply_btn)
+        self.mav_status_label = QLabel("Pixhawk: --")
+        self.mav_status_label.setStyleSheet(
+            "font-family: monospace; color: #8b949e; background: transparent;")
+        l.addWidget(self.mav_status_label)
         ml.addWidget(f)
         ml.addStretch(1)
         tabs.addTab(misi, "Misi")
@@ -349,31 +428,125 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    # ------------------- kamera plug-and-play (P6-A/C) -------------------
+
+    def _cam_index_from_combo(self):
+        try:
+            text = self.cam_combo.currentText()
+            return int(str(text).split(":")[0].strip().split(" ")[0])
+        except Exception:
+            return None
+
+    def on_camera_scan(self):
+        """Isi dropdown dengan kamera terdeteksi (tanpa buka frame)."""
+        try:
+            cams = self.nav_thread.navigator.rescan_cameras()
+        except Exception:
+            cams = []
+        try:
+            self.cam_combo.blockSignals(True)
+            self.cam_combo.clear()
+            if not cams:
+                self.cam_combo.addItem("-- tidak ada kamera --")
+            for c in cams:
+                self.cam_combo.addItem(
+                    f"{c['index']}: {c.get('label', '')}")
+            self.cam_combo.blockSignals(False)
+            self.cam_status_label.setText(f"Kamera: {len(cams)} ditemukan")
+        except Exception:
+            pass
+
+    def on_camera_select_nav(self):
+        idx = self._cam_index_from_combo()
+        if idx is None:
+            return
+        try:
+            ok = self.nav_thread.navigator.select_camera("NAV", idx)
+            self.cam_status_label.setText(
+                f"NAV -> idx {idx} ({'OK' if ok else 'GAGAL'})")
+        except Exception:
+            pass
+
+    def on_camera_select_bawah(self):
+        idx = self._cam_index_from_combo()
+        if idx is None:
+            return
+        try:
+            ok = self.nav_thread.navigator.select_camera("BAWAH", idx)
+            self.cam_status_label.setText(
+                f"BAWAH -> idx {idx} ({'OK' if ok else 'GAGAL'})")
+        except Exception:
+            pass
+
+    # ------------------- pixhawk port select (P6-B) -------------------
+
+    def on_mav_scan(self):
+        try:
+            from app.mavlink_telemetry import detect_serial_ports
+            ports = detect_serial_ports(
+                getattr(self.nav_thread.config, "SERIAL_PORT", None))
+        except Exception:
+            ports = []
+        try:
+            self.mav_combo.blockSignals(True)
+            self.mav_combo.clear()
+            if not ports:
+                self.mav_combo.addItem("-- tidak ada port --")
+            for p in ports:
+                self.mav_combo.addItem(p)
+            self.mav_combo.blockSignals(False)
+        except Exception:
+            pass
+
+    def on_mav_select(self):
+        try:
+            port = self.mav_combo.currentText().strip()
+        except Exception:
+            return
+        if not port or port.startswith("--"):
+            return
+        try:
+            self.nav_thread.update_config_param("SERIAL_PORT", port)
+            self.mav_status_label.setText(f"Pixhawk: {port} (reconnect...)")
+        except Exception:
+            pass
+
     # ------------------- update UI (throttled) -------------------
 
     def update_ui(self, data):
         self.current_lat = data['lat']
         self.current_lon = data['lon']
 
-        # --- video: tiap paket (25 Hz) ---
-        frame = data['frame']
-        disp = frame
+        # --- video NAV: tiap paket (25 Hz) ---
         try:
-            lw = self.video_label.width()
-            lh = self.video_label.height()
-            if (lw > 1 and lh > 1
-                    and (frame.shape[1] > lw or frame.shape[0] > lh)):
-                scale = min(lw / frame.shape[1], lh / frame.shape[0])
-                if scale < 1.0:
-                    disp = cv2.resize(
-                        frame, (int(frame.shape[1] * scale),
-                                int(frame.shape[0] * scale)),
-                        interpolation=cv2.INTER_AREA)
-            h, w, ch = disp.shape
-            if h > 0 and w > 0:
-                q_img = QImage(disp.data, w, h, ch * w,
-                               QImage.Format_RGB888).rgbSwapped()
-                self.video_label.setPixmap(QPixmap.fromImage(q_img))
+            self.video_panel.set_frame(data.get('frame'))
+        except Exception:
+            pass
+        # --- video BAWAH: tampil hanya bila ada frame (dual-view P6-C) ---
+        try:
+            sec = data.get('frame_secondary')
+            if sec is not None:
+                if not self._bawah_shown:
+                    self.video_panel_bawah.show()
+                    self._bawah_shown = True
+                self.video_panel_bawah.set_frame(sec)
+            elif self._bawah_shown:
+                self.video_panel_bawah.hide()
+                self._bawah_shown = False
+        except Exception:
+            pass
+        # --- status kamera + sumber telemetri (chip jujur P6-A/B) ---
+        try:
+            cam_st = str(data.get('cam_status', 'OK'))
+            src = str(data.get('telem_source', 'MOCK'))
+            if "->" not in self.cam_status_label.text():
+                self.cam_status_label.setText(f"Kamera: {cam_st} | {src}")
+            mav_ok = bool(data.get('mavlink_ok', False))
+            port = getattr(self.nav_thread.config, "SERIAL_PORT", "?")
+            if "reconnect" not in self.mav_status_label.text():
+                self.mav_status_label.setText(
+                    f"Pixhawk: {port} "
+                    f"({'LINK' if mav_ok else 'NO-LINK'} | {src})")
         except Exception:
             pass
 

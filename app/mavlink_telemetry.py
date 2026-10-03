@@ -37,6 +37,31 @@ GCS_DEFAULT_IP = "127.0.0.1"
 GCS_DEFAULT_PORT = 14550
 
 
+def detect_serial_ports(preferred=None):
+    """Daftar SEMUA port serial kandidat (untuk dropdown pilihan Pixhawk).
+
+    Urutan: `preferred` dulu (bila ada) -> /dev/ttyACM* -> /dev/ttyUSB* ->
+    COM3..9 (Windows). Beda dengan detect_serial_port() yang hanya
+    mengembalikan 1 port (dipakai bila dropdown belum dipilih).
+    Return list[str] (bisa kosong bila tak ada hardware).
+    """
+    ports = []
+    if preferred and os.path.exists(preferred):
+        ports.append(preferred)
+    for pat in ("/dev/ttyACM*", "/dev/ttyUSB*"):
+        for p in sorted(glob.glob(pat)):
+            if p not in ports:
+                ports.append(p)
+    if os.name == "nt":
+        if preferred and preferred not in ports:
+            ports.append(preferred)
+        for n in range(3, 10):
+            com = f"COM{n}"
+            if com not in ports:
+                ports.append(com)
+    return ports
+
+
 def detect_serial_port(preferred=None):
     """Pilih port serial Pixhawk.
 

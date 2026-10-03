@@ -185,7 +185,9 @@ class TestCMavlinkVsPymavlink(unittest.TestCase):
     def test_serial_tanpa_hardware_gagal_halus(self):
         # Pixhawk boleh dicabut: open path yang tak ada harus < 0 tanpa
         # abort; bukan awal kegagalan bila kembali errno negatif.
-        fd = self.lib.mav_serial_open(b"/dev/ttyACM0", 57600)
+        # Pakai path yang pasti tak ada (bukan ttyACM0 — itu bisa nancep
+        # Pixhawk asli saat tes jalan di lapangan/laptop).
+        fd = self.lib.mav_serial_open(b"/dev/ttyFAKE_P6_TIDAK_ADA", 57600)
         self.assertLess(fd, 0, "tidak ada hardware -> fd harus negatif")
         self.lib.mav_serial_close(fd)   # aman untuk fd negatif
 

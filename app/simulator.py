@@ -48,6 +48,12 @@ try:
 except ImportError:
     CAMERA_HELPER = False
 
+try:
+    from .camera_manager import CameraManager
+    CAMERA_MANAGER_OK = True
+except ImportError:
+    CAMERA_MANAGER_OK = False
+
 from . import mavlink_telemetry as mavlink_mod
 
 try:
@@ -184,22 +190,34 @@ class GroundSimNavigator:
         self.current_groundspeed = 0.0
         self.dist_to_wp = 0.0
 
-        # --- KAMERA ASLI (resolusi tertinggi + fps stabil, lihat camera.py) ---
-        print(f"[SIM] Membuka Kamera Utama (Index {self.config.CAMERA_INDEX})...")
-        self.cap = (open_camera(self.config.CAMERA_INDEX,
-                                target_fps=self.config.CAMERA_TARGET_FPS,
-                                auto_highest=True)
-                    if CAMERA_HELPER else None)
-        if self.cap is not None:
-            # Ukuran hasil negosiasi menimpa default agar frame sintetis,
-            # ROI, dan tampilan video konsisten dengan kamera asli.
-            real_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            real_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            self.config.FRAME_WIDTH = real_w
-            self.config.FRAME_HEIGHT = real_h
-            print(f"[CAM] Mode aktif kamera utama: {real_w}x{real_h}.")
+        # --- KAMERA GANDA (lihat app/camera_manager.py) ---
+        # Primary = navigasi (negosiasi resolusi), secondary = bawah air
+        # (640x480). Keduanya hidup bareng + reconnect otomatis bila USB
+        # dicabut / reset bus saat Pixhawk dicolok. `self.cap` dipertahankan
+        # sebagai alias primary agar kode lama tetap jalan.
+        print(f"[SIM] Membuka kamera NAV idx={self.config.CAMERA_INDEX} + "
+              f"BAWAH idx={self.config.WAYPOINT_PHOTO_CAMERA_INDEX}...")
+        self.cam = (CameraManager(self.config)
+                    if (CAMERA_HELPER and CAMERA_MANAGER_OK) else None)
+        if self.cam is not None:
+            st = self.cam.status()["primary"]
+            if st["opened"]:
+                try:
+                    real_w = int(self.cam.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    real_h = int(self.cam.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    self.config.FRAME_WIDTH = real_w
+                    self.config.FRAME_HEIGHT = real_h
+                    print(f"[CAM] Mode aktif kamera utama: {real_w}x{real_h}.")
+                except Exception:
+                    pass
+            else:
+                print("[SIM] Kamera utama TIDAK terbuka — pakai frame "
+                      "sintetis + coba lagi otomatis.")
+            sec = self.cam.status()["secondary"]
+            print(f"[CAM] Kamera bawah: {sec['label']}.")
         else:
-            print("[SIM] Kamera utama TIDAK terbuka — pakai frame sintetis.")
+            print("[SIM] Helper kamera tak ada — pakai frame sintetis.")
+        self.cap = self.cam.cap if self.cam is not None else None
 
         # --- MODEL YOLO ASLI ---
         if YOLO_AVAILABLE:
@@ -267,6 +285,14 @@ class GroundSimNavigator:
         self._loop_start = time.time()
         self._yolo_subcount = 0
         self._last_detection = {}   # id(model) -> (detected, annotated)
+        # Histeresis telemetri mock->real: butuh N frame bagus beruntun
+        # sebelum pindah (hindari GUI lompat saat Pixhawk baru dicolok /
+        # heartbeat sesaat). Mundur ke mock juga butuh N gagal beruntun.
+        self._telem_good_streak = 0
+        self._telem_bad_streak = 0
+        self._telem_use_real = False
+        self._mav_port_logged = None
+        self._mav_retry_mono = 0.0
         # Jembatan manual RC/gamepad (hitung di C) — dipasang ke master
         # MAVLink setelah konek; GUI bisa minta manual via flag ini.
         self.manual_link = ManualLink(self.config)
@@ -275,6 +301,71 @@ class GroundSimNavigator:
                             "mode": 0, "mode_name": "AUTO", "rc_ok": False,
                             "source": "AUTO"}
         self._last_loop_t = time.time()
+
+    def _mav_ensure_connected(self):
+        """Connect Pixhawk non-blocking (throttled): dipanggil tiap loop.
+
+        connect() lama bersifat blocking ~5 dtk; di sini hanya dicoba
+        tiap MAV_RETRY_INTERVAL_S agar loop 25 Hz tak freeze. Sukses
+        sekali -> attach RC + GCS forward, selanjutnya tinggal poll().
+        Return True bila sudah connected.
+        """
+        if getattr(self, "mav", None) is not None and self.mav.connected:
+            return True
+        now = time.monotonic()
+        interval = float(getattr(self.config, "MAV_RETRY_INTERVAL_S", 5.0))
+        if now - getattr(self, "_mav_retry_mono", 0.0) < interval:
+            return False
+        self._mav_retry_mono = now
+        try:
+            self.mav = mavlink_mod.MavlinkTelemetry(
+                port=self.config.SERIAL_PORT, baud=self.config.BAUD_RATE)
+        except Exception:
+            return False
+        if not mavlink_mod.MAVLINK_AVAILABLE:
+            return False
+        ok = False
+        try:
+            ok = self.mav.connect(
+                timeout_s=float(getattr(self.config,
+                                        "MAV_CONNECT_TIMEOUT_S", 2.0)))
+        except Exception:
+            ok = False
+        if ok:
+            try:
+                self.manual_link.attach_mav(self.mav.master)
+            except Exception:
+                pass
+            if os.environ.get("GCS_FORWARD", "0") == "1":
+                try:
+                    self.mav.enable_gcs_forward(
+                        True,
+                        ip=os.environ.get("GCS_IP", "127.0.0.1"),
+                        port=int(os.environ.get("GCS_PORT", "14550")))
+                except Exception:
+                    pass
+            if self._mav_port_logged != self.mav.port:
+                self._mav_port_logged = self.mav.port
+                print(f"[MAV] Telemetri AKTIF via {self.mav.port} "
+                      "(histeresis: butuh fix stabil dulu).")
+        return ok
+
+    def _telem_decide_source(self, mav_has_data):
+        """Histeresis mock<->real; return True bila pakai data Pixhawk."""
+        need = int(getattr(self.config, "TELEM_HYSTERESIS_FRAMES", 5))
+        if mav_has_data:
+            self._telem_good_streak += 1
+            self._telem_bad_streak = 0
+            if not self._telem_use_real and self._telem_good_streak >= need:
+                self._telem_use_real = True
+                print("[MAV] Sumber telemetri: MOCK -> REAL (stabil).")
+        else:
+            self._telem_bad_streak += 1
+            self._telem_good_streak = 0
+            if self._telem_use_real and self._telem_bad_streak >= need:
+                self._telem_use_real = False
+                print("[MAV] Sumber telemetri: REAL -> MOCK (link putus).")
+        return self._telem_use_real
 
     # ------------------- Geolokasi mock -------------------
     def _update_mock_position(self, target_lat, target_lon, speed_mps=1.5):
@@ -402,32 +493,13 @@ class GroundSimNavigator:
         print("--- [SIM] GROUND SIMULATOR (kamera + YOLO asli) START ---")
         self.running = True
 
-        # --- Telemetri NYATA dari Pixhawk (kalau terhubung) ---
-        self.mav = mavlink_mod.MavlinkTelemetry(port=self.config.SERIAL_PORT,
-                                                baud=self.config.BAUD_RATE)
+        # --- Pixhawk: connect non-blocking + throttled (loop tak freeze) ---
+        # Sebelumnya connect(timeout 5 dtk) blocking di sini -> GUI freeze
+        # saat start; kini _mav_ensure_connected() dipanggil tiap loop.
+        self.mav = None
+        self._last_mav_log = 0.0
         if not mavlink_mod.MAVLINK_AVAILABLE:
             print("[SIM] pymavlink belum terpasang — attitude dari mock.")
-        elif self.mav.connect(timeout_s=5.0):
-            print("[SIM] Telemetri MAVLink AKTIF — roll/pitch/yaw dari Pixhawk.")
-            # Receiver RC dibaca Pixhawk via RCIN; NUC membaca RC_CHANNELS
-            # dari koneksi master yang SAMA (hardware failsafe tetap hidup).
-            try:
-                self.manual_link.attach_mav(self.mav.master)
-            except Exception:
-                pass
-            # Forward ke QGroundControl bila diminta (env GCS_FORWARD=1):
-            # Pixhawk --serial--> NUC (master) --udp--> QGC laptop.
-            if os.environ.get("GCS_FORWARD", "0") == "1":
-                try:
-                    self.mav.enable_gcs_forward(
-                        True,
-                        ip=os.environ.get("GCS_IP", "127.0.0.1"),
-                        port=int(os.environ.get("GCS_PORT", "14550")))
-                except Exception:
-                    pass
-        else:
-            print("[SIM] Pixhawk offline — roll/pitch/yaw dari mock.")
-        self._last_mav_log = 0.0
 
         # Worker YOLO asinkron: video loop jalan 30 fps terlepas dari
         # kecepatan inferensi (deteksi tersedia di saatnya).
@@ -439,20 +511,39 @@ class GroundSimNavigator:
         deadline = time.monotonic()
 
         while self.running:
-            # --- Baca frame kamera (None-safe bila kamera tidak ada) ---
-            if self.cap is not None:
-                ret, frame = self.cap.read()
+            # --- Pixhawk reconnect throttled (colok belakangan OK) ---
+            try:
+                self._mav_ensure_connected()
+            except Exception:
+                pass
+            # --- Baca frame NAV via manajer (reconnect otomatis) ---
+            _cam_st = "OK"
+            if self.cam is not None:
+                _ok, frame, _cam_st = self.cam.read_primary(
+                    self.config.FRAME_WIDTH, self.config.FRAME_HEIGHT)
+                self.cap = self.cam.cap  # alias kompat kode lama
+                if frame is None:
+                    _ok = False
+            elif self.cap is not None:
+                try:
+                    _ok, frame = self.cap.read()
+                except Exception:
+                    _ok, frame = False, None
             else:
-                ret, frame = False, None
-            if not ret or frame is None:
-                frame = np.zeros((self.config.FRAME_HEIGHT, self.config.FRAME_WIDTH, 3),
-                                 dtype=np.uint8)
-                cv2.putText(frame, "CAMERA ERROR", (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
-                            1, (0, 0, 255), 2)
-            else:
-                # Orientasi kamera (CAMERA_FLIP_MODE, default 1 = mirror):
-                # objek kanan kapal tampil kanan di GUI.
-                frame = flip_frame_if_needed(frame, self.config.CAMERA_FLIP_MODE)
+                _ok, frame = False, None
+            if frame is None or not _ok:
+                frame = make_fallback_frame(
+                    self.config.FRAME_WIDTH, self.config.FRAME_HEIGHT,
+                    text=("KAMERA TERPUTUS — mencoba lagi..."
+                          if _cam_st == "RETRY"
+                          else "KAMERA BELUM ADA — colok USB / Scan"))
+            # --- Baca frame BAWAH (downscale, None bila tak ada) ---
+            _sec_ok, _sec_frame = False, None
+            if self.cam is not None:
+                try:
+                    _sec_ok, _sec_frame, _ = self.cam.read_secondary()
+                except Exception:
+                    _sec_ok, _sec_frame = False, None
 
             elapsed = time.time() - self.state_timer
             status_txt = "Transit"
@@ -561,11 +652,15 @@ class GroundSimNavigator:
             else:
                 self.current_lat, self.current_lon = 0.0, 0.0
 
-            # --- Telemetri: utamakan data NYATA dari Pixhawk bila ada ---
+            # --- Telemetri: histeresis mock<->real (GUI tak lompat) ---
             if self.mav is not None:
-                self.mav.poll()
-            use_real = (self.mav is not None and self.mav.connected
+                try:
+                    self.mav.poll()
+                except Exception:
+                    pass
+            _mav_has = (self.mav is not None and self.mav.connected
                         and self.mav.has_attitude)
+            use_real = self._telem_decide_source(_mav_has)
             if use_real:
                 yaw_deg = self.mav.yaw_deg
                 pitch_deg = self.mav.pitch_deg
@@ -611,10 +706,17 @@ class GroundSimNavigator:
                 "state": self.current_state,
                 "target_wp_idx": self.current_waypoint_index,
                 "dist_to_wp_m": self.dist_to_wp,
-                "groundspeed": self.mav.groundspeed if use_real else self.current_groundspeed,
-                "mavlink_ok": bool(self.mav.connected) if self.mav else False,
-                "gps_fix": bool(self.mav.lat is not None) if use_real else True,
+                "groundspeed": (self.mav.groundspeed
+                                if (use_real and self.mav is not None)
+                                else self.current_groundspeed),
+                "mavlink_ok": bool(getattr(self.mav, "connected", False))
+                if self.mav else False,
+                "telem_source": "REAL" if use_real else "MOCK",
+                "gps_fix": (bool(self.mav.lat is not None)
+                            if (use_real and self.mav is not None) else True),
                 "frame": processed_frame,
+                "frame_secondary": _sec_frame if _sec_ok else None,
+                "cam_status": _cam_st,
                 "op_mode": op_mode,
                 "manual_active": bool(man.get("active", False)),
                 "manual_surge": float(man.get("surge", 0.0)),
@@ -650,9 +752,39 @@ class GroundSimNavigator:
         if yolo_worker is not None:
             yolo_worker.stop_and_wait()
         if getattr(self, 'mav', None):
-            self.mav.close()
-        if self.cap:
-            self.cap.release()
+            try:
+                self.mav.close()
+            except Exception:
+                pass
+        if getattr(self, "cam", None) is not None:
+            try:
+                self.cam.close()
+            except Exception:
+                pass
+        self.cap = None
+
+    # API GUI: Scan kamera + ganti index saat runtime (plug-and-play).
+    def rescan_cameras(self):
+        cam = getattr(self, "cam", None)
+        if cam is None:
+            try:
+                from .camera import list_cameras
+                return list_cameras()
+            except Exception:
+                return []
+        return cam.rescan()
+
+    def select_camera(self, role, index):
+        """Ganti kamera NAV/BAWAH saat runtime. Return True bila terbuka."""
+        cam = getattr(self, "cam", None)
+        if cam is None:
+            return False
+        role = str(role).upper()
+        if role in ("NAV", "PRIMARY", "UTAMA"):
+            ok = cam.select_primary(index)
+            self.cap = cam.cap
+            return ok
+        return cam.select_secondary(index)
 
 
 class GroundSimNavigatorThread(QThread):

@@ -132,6 +132,9 @@ TUNING_PARAM_KEYS = frozenset({
     "YOLO_FRAME_SKIP", "YOLO_INFERENCE_SIZE", "YOLO_RESULT_MAX_AGE_S",
     # uploader foto (lihat app/uploader.py)
     "UPLOAD_QUEUE_SIZE", "UPLOAD_MAX_RETRIES",
+    # P6-B: Pixhawk non-blocking + histeresis telemetri
+    "MAV_CONNECT_TIMEOUT_S", "MAV_RETRY_INTERVAL_S",
+    "TELEM_HYSTERESIS_FRAMES",
 })
 
 
@@ -166,7 +169,6 @@ class Config:
         self.BLUE_BOX_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best_blue_dark.pt')  # box biru (foto samping)
         self.RED_DOCK_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best_red_new.pt')  # docking box merah
         self.CAMERA_INDEX = 1                     # kamera navigasi (depan)
-        self.WAYPOINT_PHOTO_CAMERA_INDEX = 1       # kamera bawah air (foto WP 8)
         # Ukuran ini hanya *default* untuk frame sintetis (kamera mati).
         # Saat kamera dibuka dengan auto_highest=True, FRAME_WIDTH/HEIGHT
         # ditimpa oleh hasil negosiasi mode (lihat app/camera.py).
@@ -186,6 +188,18 @@ class Config:
         self.SERIAL_PORT = 'COM8'                  # Windows dev; di Pi pakai /dev/ttyACM0
         self.BAUD_RATE = 57600
         self.OFFBOARD_STREAM_RATE_HZ = 30
+        # P6-B: Pixhawk non-blocking + histeresis (GUI tak lompat).
+        # MAV_CONNECT_TIMEOUT_S: sekali coba connect (detik); loop tak freeze.
+        # MAV_RETRY_INTERVAL_S: jeda antar percobaan (detik).
+        # TELEM_HYSTERESIS_FRAMES: frame bagus/gagal beruntun sebelum
+        # sumber telemetri pindah MOCK<->REAL.
+        self.MAV_CONNECT_TIMEOUT_S = saved.get('MAV_CONNECT_TIMEOUT_S', 2.0)
+        self.MAV_RETRY_INTERVAL_S = saved.get('MAV_RETRY_INTERVAL_S', 5.0)
+        self.TELEM_HYSTERESIS_FRAMES = saved.get(
+            'TELEM_HYSTERESIS_FRAMES', 5)
+        # P6-C: kamera bawah air default index 2 (NAV=0/1 via negosiasi).
+        # Dulu dua-duanya 1 (konflik: rebutan 1 device).
+        self.WAYPOINT_PHOTO_CAMERA_INDEX = 2
 
         # ---------- Redis / web dashboard ----------
         self.REDIS_HOST = "localhost"

@@ -91,6 +91,15 @@ TUNING_PARAM_KEYS = frozenset({
     # adaptif deteksi jauh
     "BUOY_CONF_SMALL_THRESHOLD", "BUOY_SMALL_AREA_PX",
     "BUOY_TRACK_MATCH_PX", "BUOY_TRACK_BOOST",
+    # P4-A: threshold adaptif gelap/terang (global frame brightness)
+    "BUOY_ADAPTIVE_ENABLED", "BUOY_BRIGHTNESS_THRESHOLD",
+    "BUOY_ADAPTIVE_MIN_SATURATION", "BUOY_ADAPTIVE_MIN_VALUE",
+    "BUOY_ADAPTIVE_COLOR_FRACTION_MULT",
+    # P4-D: ambang per-class (hijau vs merah)
+    "BUOY_CONF_THRESHOLD_GREEN", "BUOY_CONF_SMALL_THRESHOLD_GREEN",
+    "BUOY_CONF_THRESHOLD_RED", "BUOY_CONF_SMALL_THRESHOLD_RED",
+    "BUOY_MIN_COLOR_FRACTION_GREEN", "BUOY_MIN_COLOR_FRACTION_RED",
+    "BUOY_MIN_SATURATION_GREEN", "BUOY_MIN_SATURATION_RED",
     "DETECTION_DEBUG",
     # filter & kontroler galat (lihat app/filtering.py == core C)
     "PID_KP", "PID_KI", "PID_KD", "PID_DEADBAND", "PID_OUTPUT_LIMIT",
@@ -219,6 +228,15 @@ class Config:
         self.BUOY_MIN_COLOR_FRACTION = saved.get('BUOY_MIN_COLOR_FRACTION', 0.05)
         self.BUOY_MIN_SATURATION = saved.get('BUOY_MIN_SATURATION', 0.35)
         self.BUOY_MAX_ASPECT_DEVIATION = saved.get('BUOY_MAX_ASPECT_DEVIATION', 0.5)
+        # P4-D: ambang per-class (hijau lebih longgar karena tenggelam duluan di gelap)
+        self.BUOY_CONF_THRESHOLD_GREEN = saved.get('BUOY_CONF_THRESHOLD_GREEN', 0.30)
+        self.BUOY_CONF_SMALL_THRESHOLD_GREEN = saved.get('BUOY_CONF_SMALL_THRESHOLD_GREEN', 0.15)
+        self.BUOY_MIN_COLOR_FRACTION_GREEN = saved.get('BUOY_MIN_COLOR_FRACTION_GREEN', 0.04)
+        self.BUOY_MIN_SATURATION_GREEN = saved.get('BUOY_MIN_SATURATION_GREEN', 0.30)
+        self.BUOY_CONF_THRESHOLD_RED = saved.get('BUOY_CONF_THRESHOLD_RED', 0.35)
+        self.BUOY_CONF_SMALL_THRESHOLD_RED = saved.get('BUOY_CONF_SMALL_THRESHOLD_RED', 0.20)
+        self.BUOY_MIN_COLOR_FRACTION_RED = saved.get('BUOY_MIN_COLOR_FRACTION_RED', 0.05)
+        self.BUOY_MIN_SATURATION_RED = saved.get('BUOY_MIN_SATURATION_RED', 0.35)
         # Adaptif deteksi jauh: conf & area minimum lebih longgar untuk box kecil
         self.BUOY_CONF_SMALL_THRESHOLD = saved.get('BUOY_CONF_SMALL_THRESHOLD', 0.20)
         self.BUOY_SMALL_AREA_PX = saved.get('BUOY_SMALL_AREA_PX', 80)
@@ -226,6 +244,16 @@ class Config:
         # atau membesar (mendekat) di-latch beberapa frame.
         self.BUOY_TRACK_MATCH_PX = saved.get('BUOY_TRACK_MATCH_PX', 30)
         self.BUOY_TRACK_BOOST = saved.get('BUOY_TRACK_BOOST', 1.5)
+        # P4-A: threshold adaptif gelap/terang (global frame brightness)
+        self.BUOY_ADAPTIVE_ENABLED = saved.get('BUOY_ADAPTIVE_ENABLED', True)
+        # Mean V (0..255) di bawah ini = frame "gelap" → longgarkan ambang
+        self.BUOY_BRIGHTNESS_THRESHOLD = saved.get('BUOY_BRIGHTNESS_THRESHOLD', 80)
+        # Saat gelap: turunkan ke nilai ini
+        self.BUOY_ADAPTIVE_MIN_SATURATION = saved.get('BUOY_ADAPTIVE_MIN_SATURATION', 0.20)
+        self.BUOY_ADAPTIVE_MIN_VALUE = saved.get('BUOY_ADAPTIVE_MIN_VALUE', 20)
+        # Pengali fraksi warna saat gelap (0.5 = setengah dari normal)
+        self.BUOY_ADAPTIVE_COLOR_FRACTION_MULT = saved.get(
+            'BUOY_ADAPTIVE_COLOR_FRACTION_MULT', 0.5)
 
         # Debug deteksi: cetak alasan buoy ditolak (maks 1x per detik) ke
         # konsol — berguna untuk tuning live lewat scripts/test_deteksi.py.
@@ -315,8 +343,8 @@ class Config:
             'FAILSAFE_LOW_BATT_HOLD_S', 3.0)
 
         # ---------- YOLO & video ----------
-        self.YOLO_FRAME_SKIP = saved.get('YOLO_FRAME_SKIP', 1)
-        self.YOLO_INFERENCE_SIZE = saved.get('YOLO_INFERENCE_SIZE', 320)
+        self.YOLO_FRAME_SKIP = saved.get('YOLO_FRAME_SKIP', 2)
+        self.YOLO_INFERENCE_SIZE = saved.get('YOLO_INFERENCE_SIZE', 256)
         # Umur maks hasil async (detik): hasil lebih tua dianggap basi dan
         # loop memakai cache terakhir / kosong. 0.5 s ~= 1-2 frame @ inferensi
         # lambat; cukup segar untuk kontrol, cukup longgar untuk CPU RPi.

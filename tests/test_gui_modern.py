@@ -66,24 +66,40 @@ class TestSlimMapWidget(unittest.TestCase):
         self.assertEqual(len(w._wps), 2)
         self.assertEqual(w._veh[2], 45.0)
 
-    def test_wp_moved_emit(self):
+    def test_monitoring_only_tak_ada_drag(self):
+        """Monitoring-only: klik tak mengubah WP (tanpa sinyal wpMoved)."""
         w = SlimMapWidget()
         w.resize(400, 400)
         w.set_waypoints([{'lat': -7.28, 'lon': 112.79}])
-        got = []
-        w.wpMoved.connect(lambda i, la, lo: got.append((i, la, lo)))
-        # Simulasi drag: panggil langsung jalur mouseRelease.
+        self.assertFalse(hasattr(w, 'wpMoved'),
+                         "Sinyal wpMoved harus dihapus (monitoring-only)")
+        sx, sy = 200, 200
         from PyQt5.QtCore import Qt
         from PyQt5.QtTest import QTest
         from PyQt5.QtCore import QPoint
-        sx, sy = w._latlon_to_screen(-7.28, 112.79)
         QTest.mousePress(w, Qt.LeftButton, Qt.NoModifier,
                          QPoint(int(sx), int(sy)))
         QTest.mouseMove(w, QPoint(int(sx) + 10, int(sy) + 10))
         QTest.mouseRelease(w, Qt.LeftButton, Qt.NoModifier,
                            QPoint(int(sx) + 10, int(sy) + 10))
-        self.assertEqual(len(got), 1)
-        self.assertEqual(got[0][0], 0)
+        # WP tetap (tak bergeser oleh drag).
+        self.assertEqual(len(w._wps), 1)
+        self.assertAlmostEqual(w._wps[0]['lat'], -7.28)
+
+    def test_no_gps_fix_awal(self):
+        """Peta awal: _center None -> tulis NO GPS FIX, bukan lokasi palsu."""
+        w = SlimMapWidget()
+        self.assertIsNone(w._center)
+        w.resize(300, 200)
+        w.show()
+        w.repaint()
+        w.close()
+
+    def test_no_gps_ignore_nol(self):
+        """update_vehicle(0,0) diabaikan (belum fix)."""
+        w = SlimMapWidget()
+        w.update_vehicle(0.0, 0.0, 0.0)
+        self.assertIsNone(w._center)
 
     def test_offline_tidak_crash(self):
         w = SlimMapWidget()

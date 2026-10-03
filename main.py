@@ -15,8 +15,7 @@ import time
 import cv2
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QSplitter, QFrame,
-                             QPushButton, QTabWidget, QProgressBar, QCheckBox,
-                             QComboBox)
+                             QPushButton, QTabWidget)
 from PyQt5.QtCore import QTimer, Qt, QLibraryInfo, QRect
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont
 
@@ -24,6 +23,10 @@ from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont
 os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = QLibraryInfo.location(
     QLibraryInfo.PluginsPath)
 os.environ.pop("QT_QPA_FONTDIR", None)
+# Bungkam spam TLS Qt (Qt .venv = OpenSSL 1.x vs OS 3.x): tile peta kini
+# diunduh via urllib Python (lihat app/slim_map.py), jadi peringatan
+# qt.network.ssl tak ada gunanya selain mengotori terminal.
+os.environ.setdefault("QT_LOGGING_RULES", "qt.network.ssl.warning=false")
 
 from app.simulator import NavigatorThread
 # from app.navigator import NavigatorThread
@@ -86,9 +89,7 @@ class HudOverlay(QWidget):
         font.setPointSize(11)
         painter.setFont(font)
         painter.setPen(accent)
-        painter.drawText(QRect(16, 12, 204, 22),
-                         Qt.AlignLeft | Qt.AlignVCenter,
-                         f"STATE: {self._state}")
+        painter.drawText(QRect(16, 12, 204, 22), Qt.AlignLeft | Qt.AlignVCenter, f"STATE: {self._state}")
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(0, 0, 0, 150))
         painter.drawRoundedRect(w - 272, 8, 264, 46, 8, 8)
@@ -96,8 +97,7 @@ class HudOverlay(QWidget):
                 f"{self._lat:.6f}, {self._lon:.6f}")
         painter.setFont(QFont("monospace", 10))
         painter.setPen(QColor(255, 255, 255))
-        painter.drawText(QRect(w - 264, 12, 248, 38),
-                         Qt.AlignLeft | Qt.AlignVCenter, info)
+        painter.drawText(QRect(w - 264, 12, 248, 38), Qt.AlignLeft | Qt.AlignVCenter, info)
         painter.end()
 
 
@@ -108,7 +108,7 @@ class VideoPanel(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.video_label = QLabel("Waiting for video feed...")
+        self.video_label = QLabel("")
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setStyleSheet(
             "background-color: #000; color: #FFF; border-radius: 14px;")
@@ -245,40 +245,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(center)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Toolbar peta: recorder kompak + follow.
-        toolbar = QHBoxLayout()
-        self.record_wp_btn = QPushButton("+ WP")
-        self.record_wp_btn.setProperty("class", "toolBtn")
-        self.save_wp_btn = QPushButton("Save")
-        self.save_wp_btn.setProperty("class", "toolBtn")
-        self.clear_wp_btn = QPushButton("Clear")
-        self.clear_wp_btn.setProperty("class", "toolBtn")
-        self.follow_btn = QPushButton("Follow: ON")
-        self.follow_btn.setProperty("class", "toolBtn")
-        self.follow_btn.setCheckable(True)
-        self.follow_btn.setChecked(True)
-        for b in (self.record_wp_btn, self.save_wp_btn, self.clear_wp_btn,
-                  self.follow_btn):
-            b.setStyleSheet("padding: 4px 10px; font-size: 12px;"
-                            " border-radius: 8px;")
-        self.record_wp_btn.clicked.connect(self.on_record_waypoint)
-        self.save_wp_btn.clicked.connect(self.on_save_waypoints)
-        self.clear_wp_btn.clicked.connect(self.on_clear_waypoints)
-        self.follow_btn.clicked.connect(self.on_follow_toggle)
-        toolbar.addWidget(self.record_wp_btn)
-        toolbar.addWidget(self.save_wp_btn)
-        toolbar.addWidget(self.clear_wp_btn)
-        toolbar.addStretch(1)
-        self.wp_status_label = QLabel("")
-        self.wp_status_label.setStyleSheet(
-            "font-style: italic; color: #8b949e; background: transparent;")
-        toolbar.addWidget(self.wp_status_label)
-        toolbar.addWidget(self.follow_btn)
-        layout.addLayout(toolbar)
-
         split = QSplitter(Qt.Vertical)
         self.slim_map = SlimMapWidget()
-        self.slim_map.wpMoved.connect(self.on_waypoint_dragged)
         self.video_panel = VideoPanel()
         self.video_label = self.video_panel.video_label
         self.hud_overlay = self.video_panel.hud
@@ -320,52 +288,6 @@ class MainWindow(QMainWindow):
         ml.addStretch(1)
         tabs.addTab(misi, "Misi")
 
-        # --- tab Manual ---
-        man = QWidget()
-        l = QVBoxLayout(man)
-        f, fl = _card("Kendali Manual")
-        hint = QLabel("MANUAL aktif hanya saat deadman ditahan.\n"
-                      "Prioritas: KILL > MANUAL > AUTO.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet(
-            "font-style: italic; color: #8b949e; background: transparent;")
-        fl.addWidget(hint)
-        self.manual_mode_label = QLabel("Mode: AUTO")
-        self.manual_mode_label.setStyleSheet(
-            "font-family: monospace; font-weight: bold; font-size: 15px;"
-            " background: transparent;")
-        fl.addWidget(self.manual_mode_label)
-        row = QHBoxLayout()
-        self.manual_gui_check = QCheckBox("Minta MANUAL (GUI)")
-        self.manual_gui_check.stateChanged.connect(self.on_manual_gui_toggle)
-        row.addWidget(self.manual_gui_check)
-        fl.addLayout(row)
-        gp_row = QHBoxLayout()
-        gp_row.addWidget(QLabel("Gamepad:"))
-        self.gamepad_combo = QComboBox()
-        self.gamepad_refresh_btn = QPushButton("Scan")
-        self.gamepad_refresh_btn.setProperty("class", "toolBtn")
-        self.gamepad_refresh_btn.clicked.connect(self.on_gamepad_scan)
-        gp_row.addWidget(self.gamepad_combo, 1)
-        gp_row.addWidget(self.gamepad_refresh_btn)
-        fl.addLayout(gp_row)
-        self.gamepad_combo.currentTextChanged.connect(self.on_gamepad_select)
-        self.bar_surge = QProgressBar()
-        self.bar_surge.setRange(-100, 100)
-        self.bar_surge.setFormat("Surge %v")
-        self.bar_yaw = QProgressBar()
-        self.bar_yaw.setRange(-100, 100)
-        self.bar_yaw.setFormat("Yaw %v")
-        fl.addWidget(self.bar_surge)
-        fl.addWidget(self.bar_yaw)
-        self.manual_status_label = QLabel("RC: -- | Stick: +0.00/+0.00")
-        self.manual_status_label.setStyleSheet("font-family: monospace;")
-        fl.addWidget(self.manual_status_label)
-        l.addWidget(f)
-        l.addStretch(1)
-        tabs.addTab(man, "Manual")
-
-        self.on_gamepad_scan()
         return tabs
 
     def _setup_status_bar(self):
@@ -408,60 +330,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def on_waypoint_dragged(self, index, new_lat, new_lon):
-        try:
-            if index < len(self.nav_thread.navigator.waypoints):
-                self.nav_thread.navigator.waypoints[index]['lat'] = new_lat
-                self.nav_thread.navigator.waypoints[index]['lon'] = new_lon
-                print(f"[GUI] Updated WP #{index+1} in memory.")
-        except Exception:
-            pass
-
-    def on_follow_toggle(self):
-        on = self.follow_btn.isChecked()
-        self.follow_btn.setText(f"Follow: {'ON' if on else 'OFF'}")
-        self.slim_map.set_follow(on)
-
-    # ------------------- recorder -------------------
-
-    def on_record_waypoint(self):
-        try:
-            nav = self.nav_thread.navigator
-            if (self.current_lat == 0.0 and self.current_lon == 0.0
-                    and getattr(nav, "current_state", "") != "NO_WAYPOINTS"):
-                self.wp_status_label.setText("No position yet.")
-                return
-            nav.waypoints.append({'lat': self.current_lat,
-                                  'lon': self.current_lon})
-            n = len(nav.waypoints)
-            self.wp_status_label.setText(f"WP #{n} added.")
-            self._refresh_map_waypoints()
-        except Exception as e:
-            self.wp_status_label.setText(f"Error: {e}")
-
-    def on_save_waypoints(self):
-        import csv as _csv
-        try:
-            wps = self.nav_thread.navigator.waypoints
-            with open(WAYPOINT_FILE, mode='w', newline='',
-                      encoding='utf-8') as f:
-                w = _csv.DictWriter(f, fieldnames=['lat', 'lon'])
-                w.writeheader()
-                w.writerows(wps)
-            self.wp_status_label.setText(f"Saved {len(wps)} WPs.")
-            self.nav_thread.update_waypoints(wps)
-            self._refresh_map_waypoints()
-        except Exception as e:
-            self.wp_status_label.setText(f"Error saving: {e}")
-
-    def on_clear_waypoints(self):
-        try:
-            self.nav_thread.navigator.waypoints = []
-            self.wp_status_label.setText("Cleared (in memory).")
-            self._refresh_map_waypoints()
-        except Exception:
-            pass
-
     # ------------------- settings -------------------
 
     def open_settings(self):
@@ -471,16 +339,6 @@ class MainWindow(QMainWindow):
         self._settings_dlg.raise_()
         self._settings_dlg.activateWindow()
 
-    # ------------------- manual -------------------
-
-    def on_manual_gui_toggle(self, state):
-        try:
-            n = self.nav_thread.navigator
-            if hasattr(n, "manual_gui_request"):
-                n.manual_gui_request = bool(state)
-        except Exception:
-            pass
-
     def on_manual_kill_toggle(self):
         on = self.kill_btn.isChecked()
         self.kill_btn.setText("⏹ KILL AKTIF" if on else "⏹ KILL")
@@ -488,28 +346,6 @@ class MainWindow(QMainWindow):
             n = self.nav_thread.navigator
             if hasattr(n, "manual_gui_request"):
                 n.manual_gui_request = bool(on)
-        except Exception:
-            pass
-
-    def on_gamepad_scan(self):
-        try:
-            from app.manual_link import ManualLink
-            devs = ManualLink.list_gamepads()
-        except Exception:
-            devs = []
-        self.gamepad_combo.blockSignals(True)
-        self.gamepad_combo.clear()
-        self.gamepad_combo.addItem("(mati)")
-        for d in devs:
-            self.gamepad_combo.addItem(d)
-        self.gamepad_combo.blockSignals(False)
-
-    def on_gamepad_select(self, text):
-        try:
-            n = self.nav_thread.navigator
-            link = getattr(n, "manual_link", None)
-            if link is not None and hasattr(link, "set_gamepad"):
-                link.set_gamepad("" if text == "(mati)" else text)
         except Exception:
             pass
 
@@ -667,19 +503,6 @@ class MainWindow(QMainWindow):
                        "%s%s%s" % (mode_txt, '*' if man_on else '',
                                    (" ^%d" % up_pending) if up_pending else ''),
                        mode_c)
-
-        # Tab Manual.
-        try:
-            self.manual_mode_label.setText(
-                f"Mode: {op_mode}" + (" (STICK AKTIF)" if man_on else ""))
-            self.bar_surge.setValue(
-                int(max(-1.0, min(1.0, m_surge)) * 100))
-            self.bar_yaw.setValue(int(max(-1.0, min(1.0, m_yaw)) * 100))
-            self.manual_status_label.setText(
-                f"RC: {'OK' if rc_ok else 'PUTUS'} | Stick: "
-                f"{m_surge:+.2f}/{m_yaw:+.2f}")
-        except Exception:
-            pass
 
     def closeEvent(self, event):  # noqa: N802 - API Qt
         print("Closing application...")

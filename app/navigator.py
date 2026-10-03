@@ -2,7 +2,7 @@ from . import settings as cfg
 from . import aterkia_core as core
 from .manual_link import ManualLink
 from .camera import open_camera, flip_frame_if_needed, pace_to_fps
-from .detection_validation import validate_buoy
+from .detection_validation import validate_buoy, frame_brightness
 from .yolo_async import YoloAsyncWorker
 from .uploader import UploadWorker
 from .logutil import get_logger, throttled
@@ -117,106 +117,62 @@ class VisionOffboardNavigator:
         try:
             log.info("Menghubungkan ke Redis di %s:%s...",
                      self.config.REDIS_HOST, self.config.REDIS_PORT)
-            self.redis_client = redis.Redis(host=self.config.REDIS_HOST, port=self.config.REDIS_PORT, decode_responses=True)
+            self.redis_client = redis.Redis(
+                host=self.config.REDIS_HOST,
+                port=self.config.REDIS_PORT,
+                decode_responses=True,
+                socket_connect_timeout=0.5)
             self.redis_client.ping()
             log.info("Berhasil terhubung ke Redis.")
         except Exception as e:
             log.warning("Gagal terhubung ke Redis: %s. Web dashboard tidak akan berfungsi.", e)
             self.redis_client = None
 
+        # Hanya model GATE (buoy) yang dimuat saat start — model lain
+        # dimuat lazy (thread latar) agar startup < 5 dtk.
         try:
             log.info("Memuat model GATE: %s...", self.config.MODEL_PATH)
             self.gate_model = YOLO(self.config.MODEL_PATH).to(self.config.YOLO_DEVICE)
         except Exception as e:
             raise FileNotFoundError(f"FATAL: Gagal memuat model GATE: {e}")
 
-        try:
-            log.info("Memuat model BOX HIJAU: %s...", self.config.BOX_MODEL_PATH)
-            self.box_model = YOLO(self.config.BOX_MODEL_PATH).to(self.config.YOLO_DEVICE)
-        except Exception as e:
-            log.warning("Gagal memuat model BOX HIJAU: %s. Misi foto tidak akan berfungsi.", e)
-            self.box_model = None
+        # 3 model lain: dimuat di thread latar saat loop pertama / misi butuh.
+        self.box_model = None
+        self.red_dock_model = None
+        self.blue_box_model = None
+        self._models_loading = False
+        self._models_loaded = False
 
-        try:
-            log.info("Memuat model BOX MERAH: %s...", self.config.RED_DOCK_MODEL_PATH)
-            self.red_dock_model = YOLO(self.config.RED_DOCK_MODEL_PATH).to(self.config.YOLO_DEVICE)
-        except Exception as e:
-            log.warning("Gagal memuat model BOX MERAH: %s. Misi docking tidak akan berfungsi.", e)
-            self.red_dock_model = None
+    def _load_models_async(self):
+        """Muat 3 model non-gate di thread latar."""
+        if self._models_loading or self._models_loaded:
+            return
+        self._models_loading = True
 
-        try:
-            log.info("Memuat model BOX BIRU: %s...", self.config.BLUE_BOX_MODEL_PATH)
-            self.blue_box_model = YOLO(self.config.BLUE_BOX_MODEL_PATH).to(self.config.YOLO_DEVICE)
-        except Exception as e:
-            log.warning("Gagal memuat model BOX BIRU: %s. Misi foto WP 8 tidak akan berfungsi.", e)
-            self.blue_box_model = None
+        def _loader():
+            try:
+                log.info("Memuat model BOX HIJAU (lazy)...")
+                self.box_model = YOLO(self.config.BOX_MODEL_PATH).to(self.config.YOLO_DEVICE)
+            except Exception as e:
+                log.warning("Gagal memuat model BOX HIJAU: %s. Misi foto tidak akan berfungsi.", e)
+            try:
+                log.info("Memuat model BOX MERAH (lazy)...")
+                self.red_dock_model = YOLO(self.config.RED_DOCK_MODEL_PATH).to(self.config.YOLO_DEVICE)
+            except Exception as e:
+                log.warning("Gagal memuat model BOX MERAH: %s. Misi docking tidak akan berfungsi.", e)
+            try:
+                log.info("Memuat model BOX BIRU (lazy)...")
+                self.blue_box_model = YOLO(self.config.BLUE_BOX_MODEL_PATH).to(self.config.YOLO_DEVICE)
+            except Exception as e:
+                log.warning("Gagal memuat model BOX BIRU: %s. Misi foto WP 8 tidak akan berfungsi.", e)
+            self._models_loaded = True
+            self._models_loading = False
+            log.info("Lazy-load model selesai.")
 
-        # Worker inferensi async + uploader berantrean: loop 30 Hz tak pernah
-        # menunggu YOLO maupun jaringan (lihat app/yolo_async.py,
-        # app/uploader.py).
-        self.yolo_worker = YoloAsyncWorker()
-        self.upload_worker = UploadWorker(
-            self.config.SERVER_UPLOAD_URL,
-            max_queue=getattr(self.config, "UPLOAD_QUEUE_SIZE", 3),
-            max_retries=getattr(self.config, "UPLOAD_MAX_RETRIES", 1))
+        threading.Thread(target=_loader, daemon=True, name="lazy-models").start()
 
-        log.info("Membuka kamera utama (Indeks %s)...", self.config.CAMERA_INDEX)
-        self.cap = open_camera(self.config.CAMERA_INDEX,
-                               target_fps=self.config.CAMERA_TARGET_FPS,
-                               auto_highest=True)
-
-        if self.cap is None:
-            raise IOError(f"FATAL: Tidak bisa membuka kamera utama di indeks {self.config.CAMERA_INDEX}.")
-
-        # Ukuran hasil negosiasi menimpa default (frame sintetis & tampilan
-        # video ikut konsisten dengan kamera asli).
-        real_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        real_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.config.FRAME_WIDTH = real_w
-        self.config.FRAME_HEIGHT = real_h
-        log.info("[CAM] Mode aktif kamera utama: %sx%s.", real_w, real_h)
-
-        log.info("Kamera utama terbuka. Melakukan 'warm-up'...")
-        start_warmup = time.time()
-        warmup_success = False
-        while time.time() - start_warmup < 3.0:
-            ret, _ = self.cap.read()
-            if ret:
-                warmup_success = True
-                break
-            time.sleep(0.1)
-        if not warmup_success:
-            log.warning("Kamera utama tidak mengirimkan frame.")
-        
-        log.info("Kamera foto WP (Indeks %s) akan dibuka nanti saat diperlukan.",
-                 self.config.WAYPOINT_PHOTO_CAMERA_INDEX)
-        self.wp_photo_cap = None
-
-        log.info("Menghubungkan ke PX4 di: %s...", self.config.SERIAL_PORT)
-        try:
-            self.master = mavutil.mavlink_connection(self.config.SERIAL_PORT, baud=self.config.BAUD_RATE, autoreconnect=True)
-            self.master.wait_heartbeat()
-            log.info("Heartbeat diterima.")
-            # Receiver RC dibaca Pixhawk via RCIN (hardware failsafe tetap
-            # hidup); NUC membaca RC_CHANNELS dari koneksi yang SAMA.
-            self.manual_link.attach_mav(self.master)
-        except Exception as e:
-            if self.cap and self.cap.isOpened(): self.cap.release()
-            if self.wp_photo_cap and self.wp_photo_cap.isOpened(): self.wp_photo_cap.release()
-            raise ConnectionError(f"FATAL: Gagal terhubung: {e}")
-
-        self.current_lat, self.current_lon, self.current_yaw_rad = None, None, None
-        # Cap waktu monotonic telemetri terakhir (ATTITUDE / GLOBAL_POSITION):
-        # dipakai failsafe stale-link (lihat _check_failsafe).
-        self._last_telem_mono = 0.0
-        
-        self.processing_width = 640
-        self.processing_height = 360
-        self.image_center_x = self.processing_width / 2.0 
-        self.image_center_y = self.processing_height / 2.0 
-        # Leg terakhir yang disapu GateSequencer (reset target saat ganti leg).
-        self._gate_last_leg = -1 
-        
+    def _init_hardware_dan_lanjut(self):
+        """Lanjutan __init__ (kamera, worker, dsb) — dipisah agar rapih."""
         self.roi_top_y_cutoff = int(self.processing_height * self.config.ROI_TOP_CUTOFF_PERCENT)
         if self.roi_top_y_cutoff > 0:
             log.info("ROI diaktifkan: Mengabaikan %s piksel teratas (%s%% dari %s)",
@@ -361,6 +317,9 @@ class VisionOffboardNavigator:
         # _cleanup (finally) agar tak ada thread nyangkut.
         self.yolo_worker.start()
         self.upload_worker.start()
+
+        # Lazy-load 3 model non-gate di thread latar (startup cepat).
+        self._load_models_async()
 
         self.running = True
 
@@ -1262,9 +1221,24 @@ class VisionOffboardNavigator:
         `validate_gate=True` (model gate): terapkan ambang conf adaptif +
         validate_buoy (warna/bentuk) — SATU panggilan per box (debug=True
         pun dipakai untuk keputusan, tanpa komputasi ganda).
+
+        P4-D: ambang conf/warna/saturasi PER-CLASS (hijau lebih longgar
+        karena tenggelam duluan di gelap); fallback ke ambang global bila
+        key baru belum ada di config lama.
+        P4-A: kecerahan frame diukur 1x (`_last_brightness`, via
+        frame_brightness) lalu ambang HSV dilonggarkan otomatis saat
+        gelap — lihat app/detection_validation.py.
         """
         detections = {}
         is_debug = bool(getattr(self.config, "DETECTION_DEBUG", False))
+        # Kecerahan 1x per panggilan (bukan per box): 64x64 thumbnail.
+        bright = None
+        if validate_gate and getattr(self.config, "BUOY_ADAPTIVE_ENABLED",
+                                     False):
+            try:
+                bright = frame_brightness(self._last_frame)
+            except Exception:
+                bright = None
         for cls, items in (raw or {}).items():
             for b in items:
                 try:
@@ -1277,19 +1251,59 @@ class VisionOffboardNavigator:
                 if validate_gate and cls in (
                         self.config.RED_BALL_CLASS_ID,
                         self.config.GREEN_BALL_CLASS_ID):
-                    # Ambang conf adaptif: box kecil (jauh) lebih longgar.
-                    conf_thresh = (self.config.BUOY_CONF_SMALL_THRESHOLD
+                    is_green = (cls == self.config.GREEN_BALL_CLASS_ID)
+                    # Ambang conf per-class + box kecil (jauh) lebih longgar.
+                    if is_green:
+                        conf_big = getattr(
+                            self.config, "BUOY_CONF_THRESHOLD_GREEN",
+                            self.config.BUOY_CONF_THRESHOLD)
+                        conf_small = getattr(
+                            self.config, "BUOY_CONF_SMALL_THRESHOLD_GREEN",
+                            self.config.BUOY_CONF_SMALL_THRESHOLD)
+                    else:
+                        conf_big = getattr(
+                            self.config, "BUOY_CONF_THRESHOLD_RED",
+                            self.config.BUOY_CONF_THRESHOLD)
+                        conf_small = getattr(
+                            self.config, "BUOY_CONF_SMALL_THRESHOLD_RED",
+                            self.config.BUOY_CONF_SMALL_THRESHOLD)
+                    conf_thresh = (conf_small
                                    if area < self.config.BUOY_SMALL_AREA_PX
-                                   else self.config.BUOY_CONF_THRESHOLD)
+                                   else conf_big)
                     if conf_val < conf_thresh:
                         continue
+                    if is_green:
+                        frac_cfg = getattr(
+                            self.config, "BUOY_MIN_COLOR_FRACTION_GREEN",
+                            self.config.BUOY_MIN_COLOR_FRACTION)
+                        sat_cfg = getattr(
+                            self.config, "BUOY_MIN_SATURATION_GREEN",
+                            self.config.BUOY_MIN_SATURATION)
+                    else:
+                        frac_cfg = getattr(
+                            self.config, "BUOY_MIN_COLOR_FRACTION_RED",
+                            self.config.BUOY_MIN_COLOR_FRACTION)
+                        sat_cfg = getattr(
+                            self.config, "BUOY_MIN_SATURATION_RED",
+                            self.config.BUOY_MIN_SATURATION)
                     ok, reasons = validate_buoy(
                         self._last_frame, cls, (x1, y1, x2, y2),
                         min_area=self.config.MIN_BUOY_AREA_PX,
-                        min_color_fraction=self.config.BUOY_MIN_COLOR_FRACTION,
-                        min_saturation=self.config.BUOY_MIN_SATURATION,
+                        min_color_fraction=frac_cfg,
+                        min_saturation=sat_cfg,
                         max_aspect_deviation=self.config.BUOY_MAX_ASPECT_DEVIATION,
-                        debug=True)
+                        debug=True,
+                        brightness=bright,
+                        adaptive_enabled=getattr(
+                            self.config, "BUOY_ADAPTIVE_ENABLED", False),
+                        brightness_threshold=getattr(
+                            self.config, "BUOY_BRIGHTNESS_THRESHOLD", 80),
+                        dark_saturation=getattr(
+                            self.config, "BUOY_ADAPTIVE_MIN_SATURATION",
+                            0.20),
+                        color_fraction_mult=getattr(
+                            self.config, "BUOY_ADAPTIVE_COLOR_FRACTION_MULT",
+                            0.5))
                     if not ok:
                         if is_debug and throttled("detect_dbg", 1.0):
                             log.info("[DETECT DEBUG] buoy cls=%s area=%s "
@@ -1951,6 +1965,29 @@ class NavigatorThread(QThread):
             'GATE_WIDTH_METERS': self.config.GATE_WIDTH_METERS,
             'MIN_BUOY_AREA_PX': self.config.MIN_BUOY_AREA_PX,
             'GATE_AREA_SIMILARITY_RATIO': self.config.GATE_AREA_SIMILARITY_RATIO,
+            'BUOY_CONF_THRESHOLD_GREEN': self.config.BUOY_CONF_THRESHOLD_GREEN,
+            'BUOY_CONF_SMALL_THRESHOLD_GREEN':
+                self.config.BUOY_CONF_SMALL_THRESHOLD_GREEN,
+            'BUOY_CONF_THRESHOLD_RED': self.config.BUOY_CONF_THRESHOLD_RED,
+            'BUOY_CONF_SMALL_THRESHOLD_RED':
+                self.config.BUOY_CONF_SMALL_THRESHOLD_RED,
+            'BUOY_MIN_COLOR_FRACTION_GREEN':
+                self.config.BUOY_MIN_COLOR_FRACTION_GREEN,
+            'BUOY_MIN_COLOR_FRACTION_RED':
+                self.config.BUOY_MIN_COLOR_FRACTION_RED,
+            'BUOY_MIN_SATURATION_GREEN':
+                self.config.BUOY_MIN_SATURATION_GREEN,
+            'BUOY_MIN_SATURATION_RED':
+                self.config.BUOY_MIN_SATURATION_RED,
+            'BUOY_ADAPTIVE_ENABLED': self.config.BUOY_ADAPTIVE_ENABLED,
+            'BUOY_BRIGHTNESS_THRESHOLD':
+                self.config.BUOY_BRIGHTNESS_THRESHOLD,
+            'BUOY_ADAPTIVE_MIN_SATURATION':
+                self.config.BUOY_ADAPTIVE_MIN_SATURATION,
+            'BUOY_ADAPTIVE_MIN_VALUE':
+                self.config.BUOY_ADAPTIVE_MIN_VALUE,
+            'BUOY_ADAPTIVE_COLOR_FRACTION_MULT':
+                self.config.BUOY_ADAPTIVE_COLOR_FRACTION_MULT,
             'STOP_AND_PHOTO_AT_WP': self.config.STOP_AND_PHOTO_AT_WP,
             'WAYPOINT_PHOTO_STOP_DURATION_S': self.config.WAYPOINT_PHOTO_STOP_DURATION_S,
             'SEARCH_THRUST': self.config.SEARCH_THRUST,

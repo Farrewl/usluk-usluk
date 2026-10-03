@@ -35,6 +35,10 @@ GREEN_HUE_MIN = 35      # hijau: hue 35..85
 GREEN_HUE_MAX = 85
 MIN_VALUE = 40          # value HSV di bawah ini = hitam/pudar, tak dihitung
 
+# P4-A: ukuran thumbnail untuk ukur kecerahan global (64x64 = 4096 piksel,
+# ~0.5% biaya satu frame 720p — nyaris gratis, dihitung 1x per frame).
+BRIGHTNESS_THUMB_PX = 64
+
 # Batas tepi sisi minimum — cerminan ambah di C (gv_buoy_fail). Dipakai HANYA
 # untuk menyusun pesan debug, bukan untuk memutuskan.
 DEBUG_MIN_SIDE_PX = 2
@@ -82,12 +86,15 @@ def _hue_ok_for_class(cls, hue):
     return None
 
 
-def color_fraction(frame, cls, xyxy, min_saturation):
+def color_fraction(frame, cls, xyxy, min_saturation, min_value=MIN_VALUE):
     """Fraksi piksel dalam kotak deteksi yang warnanya cocok dengan `cls`.
 
     Crop diambil dari kotak, dikonversi ke HSV; piksel hitam (value
     rendah) dikeluarkan agar kotak yang menutupi latar gelap tidak
     terhitung. Return float 0..1 terhadap luas kotak.
+
+    `min_value` default = MIN_VALUE (40) — kompatibel dengan pemanggil
+    lama; P4-A mengoper nilai yang lebih longgar saat frame gelap.
     """
     x1, y1, x2, y2 = [int(v) for v in xyxy]
     roi = frame[y1:y2, x1:x2]
@@ -101,15 +108,66 @@ def color_fraction(frame, cls, xyxy, min_saturation):
     if hue_ok is None:
         return 0.0
     sat_min = int(min_saturation * 255.0)
-    mask = hue_ok & (sat >= sat_min) & (val >= MIN_VALUE)
+    mask = hue_ok & (sat >= sat_min) & (val >= int(min_value))
     return float(mask.mean())
+
+
+def frame_brightness(frame):
+    """Kecerahan global frame: mean channel V (0..255) dari thumbnail.
+
+    Dihitung dari thumbnail 64x64 (1x per frame, ~4096 piksel) — cukup
+    untuk memutuskan terang/gelap tanpa biaya berarti. Dipakai P4-A
+    (adaptive threshold) dan calon P4-B (preprocessing saat gelap).
+    """
+    if frame is None or getattr(frame, "size", 0) == 0:
+        return 255.0  # frame rusak -> anggap terang (jalur normal, aman)
+    small = cv2.resize(frame, (BRIGHTNESS_THUMB_PX, BRIGHTNESS_THUMB_PX),
+                       interpolation=cv2.INTER_AREA)
+    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+    return float(hsv[:, :, 2].mean())
+
+
+def adaptive_thresholds(brightness, brightness_threshold=80,
+                        base_saturation=0.35,
+                        dark_saturation=0.20,
+                        color_fraction_mult=0.5):
+    """Ambang HSV efektif untuk kecerahan `brightness` (P4-A).
+
+    Aturan: terang (>= threshold) -> ambang normal (siang, wajah tetap
+    tertolak); gelap (< threshold) -> saturasi turun ke `dark_saturation`
+    dan fraksi warna dikali `color_fraction_mult`. Interpolasi linear
+    halus di zona gelap supaya transisi sore->malam tak melompat:
+
+      sat_eff  = base - (base - dark) * (1 - brightness/threshold)
+      frac_mult = 1 - (1 - mult) * (1 - brightness/threshold)
+
+    Return (sat_eff, frac_mult, is_dark). MIN_VALUE adaptif dihitung
+    pemanggil: gelap penuh -> 20, terang -> 40 (linear, sama rumusnya).
+    """
+    if brightness >= brightness_threshold:
+        return base_saturation, 1.0, False
+    gelap = 1.0 - (brightness / max(brightness_threshold, 1.0))
+    sat_eff = base_saturation - (base_saturation - dark_saturation) * gelap
+    frac_mult = 1.0 - (1.0 - color_fraction_mult) * gelap
+    return sat_eff, frac_mult, True
+
+
+def adaptive_min_value(brightness, brightness_threshold=80,
+                       base_value=MIN_VALUE, dark_value=20):
+    """Batas value HSV efektif (P4-A): 40 saat terang -> 20 saat gelap."""
+    if brightness >= brightness_threshold:
+        return base_value
+    gelap = 1.0 - (brightness / max(brightness_threshold, 1.0))
+    return base_value - (base_value - dark_value) * gelap
 
 
 def validate_buoy(frame, cls, xyxy, min_area,
                   min_color_fraction=0.05,
                   min_saturation=0.35,
                   max_aspect_deviation=0.50,
-                  debug=False):
+                  debug=False, min_value=MIN_VALUE, brightness=None,
+                  adaptive_enabled=False, brightness_threshold=80,
+                  dark_saturation=0.20, color_fraction_mult=0.5):
     """Loloskan kotak deteksi hanya bila benar-benar mirip buoy.
 
     Kembalikan True bila SEMUA syarat terpenuhi:
@@ -124,6 +182,12 @@ def validate_buoy(frame, cls, xyxy, min_area,
     0.35 / aspek 0.50 / area 16) supaya buoy ASLI tetap lolos walau lighting
     buruk; wajah operator tetap tertolak karena hue kulit adalah oranye/kuning,
     bukan merah ATAU hijau.
+
+    P4-A (adaptif gelap): bila `adaptive_enabled=True`, kecerahan frame
+    diukur 1x (`brightness` = hasil frame_brightness, atau dihitung bila
+    None) lalu ambang saturasi/value/fraksi dilonggarkan otomatis saat
+    gelap (lihat adaptive_thresholds). Siang hari: perilaku IDENTIK dengan
+    jalur lama (is_dark=False -> ambang utuh).
 
     Catatan arsitektur: kriteria GEOMETRI (w/h, area, rasio aspek) diputuskan
     di C (gv_buoy_fail via app/aterkia_core.py) — rumus tunggal, tanpa
@@ -150,23 +214,38 @@ def validate_buoy(frame, cls, xyxy, min_area,
             return False, reasons
         return False
 
+    eff_saturation = min_saturation
+    eff_value = min_value
     # Box kecil (jauh) → statistik warna tidak stabil → turunkan ambang 2×
     is_small = area < SMALL_BOX_AREA_PX
     eff_color_frac = min_color_fraction * (0.5 if is_small else 1.0)
+    gelap_info = ""
+    if adaptive_enabled:
+        bright = frame_brightness(frame) if brightness is None else brightness
+        sat_eff, frac_mult, is_dark = adaptive_thresholds(
+            bright, brightness_threshold, min_saturation, dark_saturation,
+            color_fraction_mult)
+        if is_dark:
+            eff_saturation = sat_eff
+            eff_value = adaptive_min_value(bright, brightness_threshold,
+                                           min_value, 20)
+            eff_color_frac = eff_color_frac * frac_mult
+            gelap_info = f" [gelap V={bright:.0f}]"
 
-    frac = color_fraction(frame, cls, xyxy, min_saturation)
+    frac = color_fraction(frame, cls, xyxy, eff_saturation, eff_value)
     if frac < eff_color_frac:
         if debug:
             reasons.append(
                 f"fraksi warna cocok {frac:.3f} < {eff_color_frac:.3f} "
                 f"(warna bukan {('hijau' if cls == 0 else 'merah')} pekat)"
-                f"{' [box kecil]' if is_small else ''}")
+                f"{' [box kecil]' if is_small else ''}{gelap_info}")
             return False, reasons
         return False
 
     if debug:
         reasons.append(f"LOLOS (area {area} px, aspek {w / h:.2f}, "
-                       f"warna {frac:.3f}{' [box kecil]' if is_small else ''})")
+                       f"warna {frac:.3f}{' [box kecil]' if is_small else ''}"
+                       f"{gelap_info})")
         return True, reasons
     return True
 

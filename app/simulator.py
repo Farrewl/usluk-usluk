@@ -177,8 +177,9 @@ class GroundSimNavigator:
         self.running = False
 
         # --- MOCK TELEMETRY ---
-        self.current_lat = -7.282356
-        self.current_lon = 112.794925
+        # Posisi mock: None sampai misi punya WP (tanpa pin palsu ITS).
+        self.current_lat = None
+        self.current_lon = None
         self.current_yaw_rad = 0.0
         self.current_groundspeed = 0.0
         self.dist_to_wp = 0.0
@@ -204,12 +205,17 @@ class GroundSimNavigator:
         if YOLO_AVAILABLE:
             try:
                 self.gate_model = YOLO(self.config.MODEL_PATH, task='detect')
-                self.box_model = YOLO(self.config.BOX_MODEL_PATH, task='detect')
-                self.blue_box_model = YOLO(self.config.BLUE_BOX_MODEL_PATH, task='detect')
-                self.red_dock_model = YOLO(self.config.RED_DOCK_MODEL_PATH, task='detect')
-                print("[SIM] Semua model YOLO berhasil dimuat!")
+                print("[SIM] Model GATE dimuat!")
             except Exception as e:
-                print(f"[SIM][ERROR] Gagal memuat model YOLO: {e}")
+                print(f"[SIM][ERROR] Gagal memuat model GATE: {e}")
+                self.gate_model = None
+
+            # 3 model lain: lazy-load di thread latar
+            self.box_model = None
+            self.blue_box_model = None
+            self.red_dock_model = None
+            self._models_loading = False
+            self._models_loaded = False
         else:
             self.gate_model = self.box_model = None
             self.blue_box_model = self.red_dock_model = None
@@ -220,11 +226,42 @@ class GroundSimNavigator:
             try:
                 self.redis_client = redis.Redis(host=self.config.REDIS_HOST,
                                                 port=self.config.REDIS_PORT,
-                                                decode_responses=True)
+                                                decode_responses=True,
+                                                socket_connect_timeout=0.5)
                 self.redis_client.ping()
             except Exception:
                 print("[SIM] Redis tidak bisa dihubungi — fitur publikasi dimatikan.")
 
+    def _load_models_async(self):
+        """Muat 3 model non-gate di thread latar."""
+        if self._models_loading or self._models_loaded or self.gate_model is None:
+            return
+        self._models_loading = True
+
+        def _loader():
+            try:
+                print("[SIM] Memuat model BOX HIJAU (lazy)...")
+                self.box_model = YOLO(self.config.BOX_MODEL_PATH, task='detect')
+            except Exception as e:
+                print(f"[SIM][WARN] Gagal memuat model BOX HIJAU: {e}")
+            try:
+                print("[SIM] Memuat model BOX BIRU (lazy)...")
+                self.blue_box_model = YOLO(self.config.BLUE_BOX_MODEL_PATH, task='detect')
+            except Exception as e:
+                print(f"[SIM][WARN] Gagal memuat model BOX BIRU: {e}")
+            try:
+                print("[SIM] Memuat model BOX MERAH (lazy)...")
+                self.red_dock_model = YOLO(self.config.RED_DOCK_MODEL_PATH, task='detect')
+            except Exception as e:
+                print(f"[SIM][WARN] Gagal memuat model BOX MERAH: {e}")
+            self._models_loaded = True
+            self._models_loading = False
+            print("[SIM] Lazy-load model selesai.")
+
+        threading.Thread(target=_loader, daemon=True, name="lazy-models").start()
+
+    def _reset_state_awal(self):
+        """State awal loop GroundSim (dipanggil usai lazy-loader dibuat)."""
         self.state_timer = time.time()
         self.sim_step = 1
         self._loop_start = time.time()
@@ -232,7 +269,7 @@ class GroundSimNavigator:
         self._last_detection = {}   # id(model) -> (detected, annotated)
         # Jembatan manual RC/gamepad (hitung di C) — dipasang ke master
         # MAVLink setelah konek; GUI bisa minta manual via flag ini.
-        self.manual_link = ManualLink(config)
+        self.manual_link = ManualLink(self.config)
         self.manual_gui_request = False
         self.manual_last = {"surge": 0.0, "yaw": 0.0, "active": False,
                             "mode": 0, "mode_name": "AUTO", "rc_ok": False,
@@ -397,6 +434,8 @@ class GroundSimNavigator:
         self._yolo_worker = _YoloWorker(self.config)
         self._yolo_worker.bind_gate_model(self.gate_model)
         self._yolo_worker.start()
+        self._load_models_async()
+        self._reset_state_awal()
         deadline = time.monotonic()
 
         while self.running:
@@ -509,12 +548,18 @@ class GroundSimNavigator:
                     self.current_state = "MISSION_COMPLETE"
                     print("[SIM] MISI SELESAI!")
 
-            # mock gerakan ke waypoint aktif
-            target = (self.waypoints[min(self.current_waypoint_index, len(self.waypoints) - 1)]
-                      if self.waypoints
-                      else {'lat': self.current_lat, 'lon': self.current_lon})
-            speed = 1.5 if self.sim_step in (1, 3, 5) else 0.2
-            self._update_mock_position(target['lat'], target['lon'], speed_mps=speed)
+            # mock gerakan ke waypoint aktif (mulai dari WP1 bila ada WP)
+            if self.waypoints:
+                if self.current_lat is None:
+                    self.current_lat = self.waypoints[0]['lat']
+                    self.current_lon = self.waypoints[0]['lon']
+                target = self.waypoints[min(self.current_waypoint_index,
+                                            len(self.waypoints) - 1)]
+                speed = 1.5 if self.sim_step in (1, 3, 5) else 0.2
+                self._update_mock_position(target['lat'], target['lon'],
+                                           speed_mps=speed)
+            else:
+                self.current_lat, self.current_lon = 0.0, 0.0
 
             # --- Telemetri: utamakan data NYATA dari Pixhawk bila ada ---
             if self.mav is not None:
@@ -658,8 +703,8 @@ class MockSimNavigator:
         self.current_waypoint_index = 0
         self.running = False
 
-        self.current_lat = -7.0476989
-        self.current_lon = 110.4419256
+        self.current_lat = None
+        self.current_lon = None
         self.current_yaw_rad = 0.0
         self.current_groundspeed = 5.0
 
@@ -676,7 +721,8 @@ class MockSimNavigator:
             try:
                 self.redis_client = redis.Redis(host=self.config.REDIS_HOST,
                                                 port=self.config.REDIS_PORT,
-                                                decode_responses=True)
+                                                decode_responses=True,
+                                                socket_connect_timeout=0.5)
             except Exception:
                 pass
 

@@ -154,6 +154,34 @@ class SettingsDialog(QDialog):
                       "BUOY_CONF_SMALL_THRESHOLD", 0.0, 1.0, 0.05)
         self._add_row(f, "BUOY_SMALL_AREA_PX:", "BUOY_SMALL_AREA_PX",
                       0, 1000, 10, is_int=True)
+        self._add_header(f, "Ambang per-Class (P4-D: hijau lebih longgar)")
+        self._add_row(f, "CONF_GREEN:", "BUOY_CONF_THRESHOLD_GREEN",
+                      0.0, 1.0, 0.05)
+        self._add_row(f, "CONF_SMALL_GREEN:",
+                      "BUOY_CONF_SMALL_THRESHOLD_GREEN", 0.0, 1.0, 0.05)
+        self._add_row(f, "CONF_RED:", "BUOY_CONF_THRESHOLD_RED",
+                      0.0, 1.0, 0.05)
+        self._add_row(f, "CONF_SMALL_RED:",
+                      "BUOY_CONF_SMALL_THRESHOLD_RED", 0.0, 1.0, 0.05)
+        self._add_row(f, "COLOR_FRAC_GREEN:",
+                      "BUOY_MIN_COLOR_FRACTION_GREEN", 0.0, 1.0, 0.01)
+        self._add_row(f, "COLOR_FRAC_RED:",
+                      "BUOY_MIN_COLOR_FRACTION_RED", 0.0, 1.0, 0.01)
+        self._add_row(f, "SAT_GREEN:", "BUOY_MIN_SATURATION_GREEN",
+                      0.0, 1.0, 0.05)
+        self._add_row(f, "SAT_RED:", "BUOY_MIN_SATURATION_RED",
+                      0.0, 1.0, 0.05)
+        self._add_header(f, "Adaptif Gelap (P4-A: longgar otomatis)")
+        self._add_row(f, "ADAPTIVE_ENABLED:", "BUOY_ADAPTIVE_ENABLED",
+                      0, 1, 1, is_int=True)
+        self._add_row(f, "BRIGHTNESS_THRESHOLD:",
+                      "BUOY_BRIGHTNESS_THRESHOLD", 20, 200, 5)
+        self._add_row(f, "ADAPTIVE_MIN_SATURATION:",
+                      "BUOY_ADAPTIVE_MIN_SATURATION", 0.0, 1.0, 0.05)
+        self._add_row(f, "ADAPTIVE_MIN_VALUE:",
+                      "BUOY_ADAPTIVE_MIN_VALUE", 5, 60, 1)
+        self._add_row(f, "ADAPTIVE_FRAC_MULT:",
+                      "BUOY_ADAPTIVE_COLOR_FRACTION_MULT", 0.1, 1.0, 0.1)
 
         f = self._form_page("Misi")
         self._add_header(f, "Misi Foto Box Hijau")

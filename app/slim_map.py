@@ -21,11 +21,12 @@ Kontrak gambar (slippy-map OSM):
 
 import math
 import os
+import threading
+import urllib.request
 
-from PyQt5.QtCore import Qt, pyqtSignal, QPointF, QUrl
+from PyQt5.QtCore import Qt, pyqtSignal, QPointF
 from PyQt5.QtGui import QPainter, QColor, QPen, QPixmap, QFont
 from PyQt5.QtWidgets import QWidget
-from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(APP_DIR)
@@ -36,6 +37,11 @@ DEFAULT_ZOOM = 18
 MIN_ZOOM = 3
 MAX_ZOOM = 19
 TILE_PX = 256
+# Unduhan tile via Python (urllib pakai OpenSSL sistem 3.x — jalan normal),
+# bukan via Qt Network (Qt di .venv di-build lawan OpenSSL 1.x sehingga
+# tiap request HTTPS gagal TLS + spam puluhan baris QSslSocket).
+TILE_TIMEOUT_S = 8
+TILE_MAX_FAILS = 3  # gagal beruntun segini -> mode offline sesi ini
 
 
 def latlon_to_tile_float(lat, lon, zoom):
@@ -57,27 +63,23 @@ def tile_to_latlon(xt, yt, zoom):
 
 
 class SlimMapWidget(QWidget):
-    """Widget peta ringan: tile + rute + WP draggable + panah kapal."""
-
-    wpMoved = pyqtSignal(int, float, float)
+    """Widget peta ringan: tile + rute + panah kapal (monitoring saja)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumHeight(220)
         self._zoom = DEFAULT_ZOOM
-        # Pusat peta (lat/lon); None = belum ada data -> default Semarang.
-        self._center = (-6.9834, 110.4098)
+        # Pusat peta (lat/lon); None = belum ada data GPS/WP -> tampil
+        # "NO GPS FIX" (tanpa pin palsu ke lokasi mana pun).
+        self._center = None
         self._wps = []
         self._vision_legs = set()
         self._veh = None  # (lat, lon, yaw_deg)
         self._follow = True
         self._tiles = {}  # (z,x,y) -> QPixmap | None(sedang diunduh)
-        self._net = QNetworkAccessManager(self)
-        self._net.finished.connect(self._on_tile_done)
-        self._pending = {}  # QNetworkReply -> (z,x,y,path)
-        self._drag_wp = -1
-        self._panning = False
-        self._last_mouse = None
+        self._downloading = set()  # kunci yang antre di thread unduh
+        self._tile_fails = 0  # gagal beruntun; >= MAX -> offline sesi ini
+        self._tile_offline = False
         os.makedirs(TILE_DIR, exist_ok=True)
 
     # ------------------- API publik (dipakai main.py) -------------------
@@ -86,7 +88,7 @@ class SlimMapWidget(QWidget):
         """Ganti daftar waypoint [{'lat','lon'}]; recenters bila follow."""
         self._wps = [{'lat': float(w['lat']), 'lon': float(w['lon'])}
                      for w in (wps or [])]
-        if self._follow and self._wps:
+        if self._follow and self._wps and self._center is None:
             self._center = (self._wps[0]['lat'], self._wps[0]['lon'])
         self.update()
 
@@ -103,6 +105,9 @@ class SlimMapWidget(QWidget):
         try:
             self._veh = (float(lat), float(lon), float(yaw_deg))
         except (TypeError, ValueError):
+            return
+        # Abaikan posisi nol (belum ada fix) agar tak jadi pin palsu.
+        if self._veh[0] == 0.0 and self._veh[1] == 0.0:
             return
         if self._follow:
             self._center = (float(lat), float(lon))
@@ -126,39 +131,53 @@ class SlimMapWidget(QWidget):
             if not pm.isNull():
                 self._tiles[key] = pm
                 return pm
-        # Antre unduh sekali saja.
+        # Antre unduh sekali saja via thread Python (urllib, bukan Qt).
+        # Gagal beruntun >= TILE_MAX_FAILS -> berhenti sesi ini (hemat CPU
+        # + tak spam log; peta tetap tampil sebagai grid offline).
         self._tiles[key] = None
-        try:
-            req = QNetworkRequest(QUrl(TILE_URL.format(z=z, x=x, y=y)))
-            req.setRawHeader(b"User-Agent", b"AterkiaASV/1.0")
-            reply = self._net.get(req)
-            self._pending[reply] = (z, x, y, path)
-        except Exception:
-            pass
+        if not self._tile_offline and key not in self._downloading:
+            self._downloading.add(key)
+            t = threading.Thread(target=self._download_tile,
+                                 args=(z, x, y, path), daemon=True)
+            t.start()
         return None
 
-    def _on_tile_done(self, reply):
-        info = self._pending.pop(reply, None)
+    def _download_tile(self, z, x, y, path):
+        """Unduh satu tile di thread latar; aman Qt (tanpa QNetwork)."""
         try:
-            if info is not None and not reply.error():
-                z, x, y, path = info
-                data = reply.readAll()
-                pm = QPixmap()
-                if pm.loadFromData(data):
-                    try:
-                        os.makedirs(os.path.dirname(path), exist_ok=True)
-                        with open(path, "wb") as f:
-                            f.write(bytes(data))
-                        self._prune_cache()
-                    except Exception:
-                        pass
-                    self._tiles[(z, x, y)] = pm
+            req = urllib.request.Request(
+                TILE_URL.format(z=z, x=x, y=y),
+                headers={"User-Agent": "AterkiaASV/1.0"})
+            with urllib.request.urlopen(req,
+                                        timeout=TILE_TIMEOUT_S) as resp:
+                data = resp.read()
+            pm = QPixmap()
+            if data and pm.loadFromData(data):
+                try:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "wb") as f:
+                        f.write(data)
+                    self._prune_cache()
+                except Exception:
+                    pass
+                self._tiles[(z, x, y)] = pm
+                self._tile_fails = 0
+                try:
                     self.update()
+                except Exception:
+                    pass
+            else:
+                self._note_tile_fail()
+        except Exception:
+            self._note_tile_fail()
         finally:
-            try:
-                reply.deleteLater()
-            except Exception:
-                pass
+            self._downloading.discard((z, x, y))
+
+    def _note_tile_fail(self):
+        """Catat 1 kegagalan; matikan unduhan sesi ini bila sering gagal."""
+        self._tile_fails += 1
+        if self._tile_fails >= TILE_MAX_FAILS:
+            self._tile_offline = True
 
     def _prune_cache(self):
         """Batasi jumlah file tile agar hemat storage."""
@@ -188,14 +207,8 @@ class SlimMapWidget(QWidget):
         except Exception:
             pass
 
-    # ------------------- interaksi mouse -------------------
-
-    def _screen_to_latlon(self, px, py):
-        cx, cy = latlon_to_tile_float(*self._center, self._zoom)
-        w, h = max(1, self.width()), max(1, self.height())
-        xt = cx + (px - w / 2.0) / TILE_PX
-        yt = cy + (py - h / 2.0) / TILE_PX
-        return tile_to_latlon(xt, yt, self._zoom)
+    # ------------------- interaksi mouse (lihat saja) -------------------
+    # WP tak bisa digeser — monitoring-only (WP diatur via config/plan.csv).
 
     def _latlon_to_screen(self, lat, lon):
         cx, cy = latlon_to_tile_float(*self._center, self._zoom)
@@ -204,51 +217,16 @@ class SlimMapWidget(QWidget):
         return ((xt - cx) * TILE_PX + w / 2.0,
                 (yt - cy) * TILE_PX + h / 2.0)
 
-    def _wp_at(self, px, py, radius=12):
-        for i, wp in enumerate(self._wps):
-            sx, sy = self._latlon_to_screen(wp['lat'], wp['lon'])
-            if abs(sx - px) <= radius and abs(sy - py) <= radius:
-                return i
-        return -1
-
     def mousePressEvent(self, event):
+        # Monitoring-only: klik tak mengubah apa pun (WP via config/plan.csv).
         if event.button() == Qt.LeftButton:
-            idx = self._wp_at(event.x(), event.y())
-            if idx >= 0:
-                self._drag_wp = idx
-                self._follow = False
-            else:
-                self._panning = True
-            self._last_mouse = (event.x(), event.y())
             event.accept()
 
     def mouseMoveEvent(self, event):
-        if self._drag_wp >= 0:
-            lat, lon = self._screen_to_latlon(event.x(), event.y())
-            self._wps[self._drag_wp] = {'lat': lat, 'lon': lon}
-            self.update()
-            event.accept()
-        elif self._panning and self._last_mouse is not None:
-            dx = event.x() - self._last_mouse[0]
-            dy = event.y() - self._last_mouse[1]
-            self._last_mouse = (event.x(), event.y())
-            cx, cy = latlon_to_tile_float(*self._center, self._zoom)
-            cx -= dx / TILE_PX
-            cy -= dy / TILE_PX
-            self._center = tile_to_latlon(cx, cy, self._zoom)
-            self._follow = False
-            self.update()
-            event.accept()
+        event.ignore()
 
     def mouseReleaseEvent(self, event):
-        if self._drag_wp >= 0 and event.button() == Qt.LeftButton:
-            idx = self._drag_wp
-            self._drag_wp = -1
-            wp = self._wps[idx]
-            self.wpMoved.emit(idx, float(wp['lat']), float(wp['lon']))
-            event.accept()
-        self._panning = False
-        self._last_mouse = None
+        event.ignore()
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
@@ -267,6 +245,18 @@ class SlimMapWidget(QWidget):
         painter = QPainter(self)
         w, h = max(1, self.width()), max(1, self.height())
         painter.fillRect(0, 0, w, h, QColor("#0e1113"))
+
+        if self._center is None:
+            # Belum ada GPS/WP: jangan tampilkan lokasi palsu.
+            painter.setPen(QPen(QColor(60, 70, 80), 1))
+            for gx in range(0, w, 40):
+                painter.drawLine(gx, 0, gx, h)
+            for gy in range(0, h, 40):
+                painter.drawLine(0, gy, w, gy)
+            painter.setPen(QColor("#8b949e"))
+            painter.setFont(QFont("sans-serif", 10))
+            painter.drawText(12, 24, "NO GPS FIX")
+            return
 
         cx, cy = latlon_to_tile_float(*self._center, self._zoom)
         x0 = int(cx - w / 2.0 / TILE_PX) - 1

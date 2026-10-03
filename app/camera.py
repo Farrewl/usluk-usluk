@@ -12,11 +12,77 @@ Selalu kembalikan VideoCapture yang SUDAH terbuka, atau None (pemanggil
 harus siap menangani kamera None -> fallback frame sintetis).
 """
 
+import json
 import os
 import platform
 import time
 
 import cv2
+
+# Cache file untuk mode kamera (index, fourcc, width, height, fps).
+# Hanya negosiasi penuh bila file hilang / index berubah / force=True.
+CAM_MODE_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "..", "data", "cam_mode.json")
+
+# Level log OpenCV yang tersimpan (None = belum dibungkam sesi ini).
+_OPENCV_LOG_LEVEL_SAVED = None
+
+
+def _load_cam_cache():
+    """Baca cache mode kamera dari file JSON."""
+    try:
+        with open(CAM_MODE_CACHE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _save_cam_cache(index, fourcc_val, width, height, fps):
+    """Simpan mode kamera ke file JSON."""
+    try:
+        os.makedirs(os.path.dirname(CAM_MODE_CACHE), exist_ok=True)
+        data = {
+            "index": int(index),
+            "fourcc": int(fourcc_val),
+            "width": int(width),
+            "height": int(height),
+            "fps": float(fps),
+        }
+        with open(CAM_MODE_CACHE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def _silence_opencv_warns():
+    """Bungkam WARN V4L2 saat probing (spam 'can't open camera by index').
+
+    OpenCV mencetak WARN langsung dari C++ ke stderr — tak lewat logger
+    Python — sehingga tiap VideoCapture() gagal memuntahkan 2 baris.
+    Fungsi ini menurunkan level ke ERROR sekali per sesi; WARN asli tetap
+    bisa dilihat bila level dikembalikan via _restore_opencv_logs().
+    """
+    global _OPENCV_LOG_LEVEL_SAVED
+    if _OPENCV_LOG_LEVEL_SAVED is not None:
+        return
+    try:
+        _OPENCV_LOG_LEVEL_SAVED = cv2.utils.logging.getLogLevel()
+        cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+    except Exception:
+        _OPENCV_LOG_LEVEL_SAVED = -1  # cv2 tanpa utils.logging: tandai saja
+
+
+def _restore_opencv_logs():
+    """Kembalikan level log OpenCV ke semula (dipanggil usai negosiasi)."""
+    global _OPENCV_LOG_LEVEL_SAVED
+    if _OPENCV_LOG_LEVEL_SAVED in (None, -1):
+        return
+    try:
+        cv2.utils.logging.setLogLevel(_OPENCV_LOG_LEVEL_SAVED)
+    except Exception:
+        pass
+    finally:
+        _OPENCV_LOG_LEVEL_SAVED = None
 
 
 # Kandidat resolusi saat negosiasi otomatis (diurutkan dari tertinggi).
@@ -42,6 +108,7 @@ def _platform_backends():
 
 def _make_capture(index, backend):
     """VideoCapture dengan backend tertentu; None bila gagal total."""
+    _silence_opencv_warns()  # bungkam WARN C++ "can't open by index"
     try:
         return cv2.VideoCapture(int(index), backend)
     except Exception:  # pragma: no cover - variasi build cv2
@@ -115,8 +182,8 @@ def _probe_mode(index, fourcc_val, width, height, target_fps, probe_seconds,
 
 
 def negotiate_camera(index, target_fps=30, max_width=1920, max_height=1080,
-                     min_fps=25.0, probe_seconds=0.6):
-    """Cari mode terbaik: resolusi tertinggi yang tetap ≥ `min_fps` fps.
+                     min_fps=25.0, probe_seconds=0.4):
+    """Cari mode terbaik: resolusi tertinggi yang tetap >= `min_fps` fps.
 
     Mencoba kandidat resolusi dari tertinggi, masing-masing dengan codec
     MJPG lalu YUYV, sampai menemukan yang terbuka DAN fps-nya memenuhi.
@@ -172,7 +239,7 @@ def _probe_index_quality(index, target_fps):
     native = (_platform_backends()[0],)
     fourcc_val = cv2.VideoWriter_fourcc(*"MJPG")
     cap, fps = _probe_mode(int(index), fourcc_val, 1280, 720,
-                           target_fps, 0.5, backends=native)
+                           target_fps, 0.4, backends=native)
     if cap is None:
         # Kamera tanpa MJPG (mis. YUYV saja): buka default native sekali.
         for backend in native:
@@ -191,7 +258,8 @@ def _probe_index_quality(index, target_fps):
 
 
 def negotiate_best_camera(preferred, target_fps=30, max_width=1920,
-                          max_height=1080, min_fps=25.0, max_index=4):
+                          max_height=1080, min_fps=25.0, max_index=4,
+                          force_renegotiate=False):
     """Pilih kamera terbaik sekaligus mode terbaiknya.
 
     `preferred` dicoba lebih dulu; selanjutnya index 0..max_index lain
@@ -199,8 +267,25 @@ def negotiate_best_camera(preferred, target_fps=30, max_width=1920,
     `_probe_index_quality`), lalu hanya index dengan luas piksel terbesar
     yang di-negosiasi penuh. Seri diputuskan fps, lalu index (preferen).
 
+    Cache: simpan/baca hasil negosiasi ke `data/cam_mode.json`.
+    `force_renegotiate=True` paksa negosiasi ulang (bila kamera ganti).
+
     Return: (index_terpilih, fourcc_val, width, height, fps) atau None.
     """
+    # Coba cache dulu (hanya bila index sama & tidak force).
+    if not force_renegotiate:
+        cache = _load_cam_cache()
+        if (cache and cache.get("index") == int(preferred)
+                and cache.get("width", 0) <= int(max_width)
+                and cache.get("height", 0) <= int(max_height)):
+            fourcc_val = cache.get("fourcc")
+            width = cache.get("width")
+            height = cache.get("height")
+            fps = cache.get("fps", 0.0)
+            print(f"[CAM] Mode cache index={preferred}: {width}x{height} "
+                  f"{fps:.0f} fps.")
+            return (int(preferred), fourcc_val, width, height, fps)
+
     order = [int(preferred)]
     for i in range(int(max_index) + 1):
         if i not in order and _index_may_exist(i):
@@ -233,6 +318,8 @@ def negotiate_best_camera(preferred, target_fps=30, max_width=1920,
     if best_idx != int(preferred):
         print(f"[CAM] Kamera {int(preferred)} resolusinya lebih kecil; "
               f"pakai index {best_idx} (area terbesar).")
+    # Simpan cache untuk start berikutnya.
+    _save_cam_cache(best_idx, mode[0], mode[1], mode[2], mode[3])
     return (best_idx, mode[0], mode[1], mode[2], mode[3])
 
 
@@ -278,11 +365,13 @@ def open_camera(index, width=None, height=None, target_fps=None,
     """
     if auto_highest:
         cap = _open_auto_negotiated(index, target_fps)
+        _restore_opencv_logs()  # negosiasi selesai -> WARN normal kembali
         if cap is not None:
             return cap
         print(f"[CAM] Negosiasi mode gagal untuk index={index}, "
               "lanjut ke mode lama.")
 
+    _silence_opencv_warns()  # jalur lama juga probing -> tetap bungkam WARN
     last_error = None
     for backend in _platform_backends():
         try:
@@ -299,11 +388,13 @@ def open_camera(index, width=None, height=None, target_fps=None,
             if target_fps:
                 cap.set(cv2.CAP_PROP_FPS, float(target_fps))
             _calibrate_exposure(cap)
+            _restore_opencv_logs()
             return cap
         cap.release()
 
     print(f"[CAM] Semua backend gagal membuka kamera index={index} "
           f"(terakhir: {last_error})")
+    _restore_opencv_logs()
     return None
 
 
@@ -365,7 +456,9 @@ def find_working_camera(preferred=None, max_index=4, width=None, height=None):
             if idx != preferred:
                 print(f"[CAM] Kamera index {preferred} tidak tersedia, "
                       f"pakai index {idx}.")
+            _restore_opencv_logs()
             return cap
+    _restore_opencv_logs()
     return None
 
 

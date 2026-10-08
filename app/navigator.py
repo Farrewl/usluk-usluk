@@ -26,7 +26,7 @@ import json
 log = get_logger()
 
 # Hitungan navigasi (PID/EKF/komplementer/geodesi/fuzzy) berjalan di C via
-# app/aterkia_core.py (core/libaterkia.so). Modul Python app/filtering.py,
+# app/aterkia_core.py (core/libaterkia.so Linux | aterkia_core.dll Windows). Modul Python app/filtering.py,
 # app/geo.py & app/fuzzy.py dipertahankan HANYA sebagai referensi uji
 # (tests/test_*.py cross-check bit-per-bit) — jalur produksi di file ini
 # TIDAK mengimpornya langsung.

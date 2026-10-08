@@ -1,12 +1,15 @@
 # ============================================================
 # Dependensi Python ASV — resep MINIMAL produksi (Opsi B).
 # Install:
-#   python3 -m venv .venv
-#   .venv/bin/pip install -r requirements.txt
-#   .venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu \
+#   Linux  : python3 -m venv .venv
+#   Windows: python  -m venv .venv
+#   .venv/.../pip install -r requirements.txt
+#   .venv/.../pip install --index-url https://download.pytorch.org/whl/cpu \
 #       torch==2.14.0+cpu torchvision==0.29.0+cpu
+#   (atau pakai scripts/setup_minimal.sh | setup_minimal.ps1 — lebih
+#    aman: urutan + prune + verifikasi otomatis)
 # Verifikasi:
-#   .venv/bin/python -m unittest discover -s tests
+#   .venv/.../python -m unittest discover -s tests
 #
 # Rincian per paket + alasan ada di requirements-minimal.txt.
 # Paket yang DIHAPUS vs versi lama (tak ada import di kode):

@@ -4,9 +4,38 @@
  * Protokol js (/dev/input/js*): header 8 byte [time(4, LE), value(2, LE
  * signed), type(1), number(1)]. type & 0x7F: 0x01 = tombol, 0x02 = axis.
  * bit 0x80 = event inisialisasi (state awal saat open — tetap dipakai).
+ *
+ * Portabilitas: protokol js + evdev hanya ada di Linux. Di Windows
+ * (_WIN32) API-nya TETAP ada (supaya link ctypes tidak patah) tapi
+ * selalu gagal halus (return -1) — caller manual_link.py otomatis
+ * fallback ke RC Pixhawk / tombol GUI. Tidak ada jalur khusus.
  */
 
 #include "gamepad_input.hpp"
+
+#if defined(_WIN32)
+/* ---- Windows: stub "tidak ada gamepad" (API kompatibel, selalu gagal) --- */
+int gamepad_open(const char *path) {
+    (void)path;
+    return -1;
+}
+
+int gamepad_poll(int fd, double *surge, double *yaw, int *deadman) {
+    (void)fd;
+    if (surge == 0 || yaw == 0 || deadman == 0) {
+        return -1;
+    }
+    *surge = 0.0;
+    *yaw = 0.0;
+    *deadman = 0;
+    return -1;
+}
+
+void gamepad_close(int fd) {
+    (void)fd;
+}
+
+#else  /* ---- Linux/POSIX: baca /dev/input/js* sungguhan ---- */
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -122,3 +151,5 @@ void gamepad_close(int fd) {
         ::close(fd);
     }
 }
+
+#endif /* !_WIN32 */

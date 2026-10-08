@@ -22,10 +22,19 @@ _GAMEPAD_PATH = ""
 
 
 def _gamepad_lib():
-    """Muat lib gamepad C++ (build CMake) bila ada; None bila tidak."""
+    """Muat lib gamepad C++ (build CMake) bila ada; None bila tidak.
+
+    Linux: libasv_gamepad_input.a/.so; Windows: stub tanpa evdev
+    (selalu return None -> caller fallback RC Pixhawk / tombol GUI).
+    """
     global _GAMEPAD_LIB
     if _GAMEPAD_LIB is not None:
-        return _GAMEPAD_LIB
+        # False = sentinel "sudah diketahui tak tersedia" -> None ke caller.
+        return None if _GAMEPAD_LIB is False else _GAMEPAD_LIB
+    if os.name == "nt":
+        # evdev /dev/input/js* tidak ada di Windows; jangan muat apa pun.
+        _GAMEPAD_LIB = False
+        return None
     try:
         import ctypes
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -94,7 +103,13 @@ class ManualLink:
 
     @staticmethod
     def list_gamepads():
-        """Daftar joystick USB yang ada (/dev/input/js*)."""
+        """Daftar joystick USB yang ada (/dev/input/js*). Linux saja.
+
+        Windows: evdev tidak ada -> daftar kosong (GUI menampilkan
+        'tanpa gamepad'; kontrol manual via tombol GUI / RC Pixhawk).
+        """
+        if os.name == "nt":
+            return []
         return sorted(glob.glob("/dev/input/js*"))
 
     def _poll_mav_rc(self):

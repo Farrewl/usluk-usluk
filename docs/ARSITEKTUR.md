@@ -74,8 +74,9 @@ Semua modul C diverifikasi **bit-per-bit** vs Python via `tests/test_core_*.py` 
 ## Build & Test
 
 ```bash
-# Build C library (sekali saja)
-gcc -shared -fPIC -Icore/include core/src/*.c -o core/libaterkia.so
+# Build C library (sekali saja) — Linux:
+make -C core linux        # -> core/libaterkia.so (atau: gcc -shared -fPIC -Icore/include core/src/*.c -o core/libaterkia.so)
+# Windows (MinGW): mingw32-make -C core windows -> core/aterkia_core.dll
 
 # Test Python (termasuk ctypes cross-check C vs Python)
 python3 -m unittest discover -s tests -v

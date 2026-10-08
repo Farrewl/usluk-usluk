@@ -44,4 +44,5 @@ Thumbs.db
 
 # Build artifacts (lokal, beda tiap mesin)
 *.so
+*.dll
 core/build/

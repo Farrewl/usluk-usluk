@@ -57,7 +57,7 @@ sudah di GitHub). Yang dilakukan:
 
 1. `git rm --cached` semua `*.pt`, `*.jpg`, `*.pyc`, `temp_map.html`.
 2. `.gitignore` baru mencegah file itu kembali.
-3. Weights diunduh via `scripts/download_weights.sh` (bukan dari git).
+3. Weights diunduh via `scripts/download_weights.sh` (Linux) atau `scripts/download_weights.ps1` (Windows) — bukan dari git.
 4. (Opsional nanti) slim history dengan `git filter-repo` setelah semua stabil.
 
 ## Peta Konversi Python → C/C++ (Tahap 2)

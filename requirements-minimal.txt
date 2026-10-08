@@ -1,14 +1,17 @@
 # ============================================================
 # requirements-minimal.txt — resep .venv minimal ASV (Opsi B).
 # Dipin ke versi yang TERBUKTI jalan (dari freeze .venv lama).
-# Install TERBAIK:  ./scripts/setup_minimal.sh   (urutan penting!)
+# Install TERBAIK (urutan penting!):
+#   Linux  : ./scripts/setup_minimal.sh
+#   Windows: powershell -File scripts\setup_minimal.ps1
 # Manual (urut):    python3 -m venv .venv
 #   .venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu \
 #       torch==2.14.0+cpu torchvision==0.29.0+cpu
 #   .venv/bin/pip install -r requirements-minimal.txt
 #   .venv/bin/pip install --no-deps ultralytics==8.4.160
-# Catatan: torch CPU-only (hemat ~1 GB vs CUDA). Jangan ganti opencv
-# headless -> opencv-python biasa (duplikat .so Qt).
+# Catatan: torch CPU-only (hemat ~1 GB vs CUDA) — wheel Linux & Windows
+# sama-sama bertanda +cpu di index CPU. Jangan ganti opencv headless
+# -> opencv-python biasa (duplikat .so Qt).
 # ============================================================
 
 # --- GUI dashboard (slim_map murni Qt; TANPA webengine/folium) ---
@@ -20,9 +23,9 @@ PyQt5_sip==12.19.0
 opencv-python-headless==5.0.0.93
 numpy==2.5.3
 # ultralytics SENDIRIAN dipasang terpisah dengan --no-deps (lihat
-# scripts/setup_minimal.sh) supaya tak menarik matplotlib/polars/
-# opencv-python/torch-CUDA yang membengkakan storage ±600 MB.
-# Deps runtime-nya yang benar-benar dipakai semua ada di file ini.
+# scripts/setup_minimal.sh / setup_minimal.ps1) supaya tak menarik
+# matplotlib/polars/opencv-python/torch-CUDA yang membengkakan storage
+# ±600 MB. Deps runtime-nya yang benar-benar dipakai semua ada di file ini.
 
 # --- torch CPU-only (WAJIB pakai index CPU, bukan PyPI biasa!) ---
 # Install manual:

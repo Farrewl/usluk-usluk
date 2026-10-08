@@ -30,7 +30,37 @@ python3 main.py
 ./scripts/test_deteksi.py --flip 0 --debug --imgsz 640
 ```
 
-**Windows**: `run.bat` atau `python main.py` (pastikan `.venv` aktif).
+**Windows** (PowerShell, dari root repo):
+
+```powershell
+# 1. Bikin .venv minimal + torch CPU + verifikasi inferensi (1 perintah)
+powershell -ExecutionPolicy Bypass -File scripts\setup_minimal.ps1
+
+# 2. Ambil model YOLO
+$env:WEIGHTS_SOURCE = "\\server\bersama\weights"   # folder atau .tar.gz
+.\scripts\download_weights.ps1
+
+# 3. Isi waypoint (config/plan.csv) lalu jalankan GUI
+.venv\Scripts\python.exe main.py
+```
+
+---
+
+## Dukungan Lintas OS
+
+Kode dirancang jalan di **Linux (x86_64/ARM Raspberry Pi) dan Windows 10/11**:
+
+| Komponen | Linux | Windows | Catatan |
+|---|---|---|---|
+| GUI PyQt (`main.py`) | ✅ | ✅ | sama persis |
+| YOLO 4 model (.pt) | ✅ | ✅ | torch CPU, wheel tersedia di index PyTorch |
+| Setup `.venv` | ✅ `setup_minimal.sh` | ✅ `setup_minimal.ps1` | kunci penghematan identik |
+| Model YOLO | ✅ `download_weights.sh` | ✅ `download_weights.ps1` | butuh `tar` (bawaan Win 10+) |
+| Telemetri Pixhawk | ✅ `/dev/ttyACM*` | ✅ `COM3–9` | deteksi otomatis di `app/mavlink_telemetry.py` |
+| Kamera | ✅ UID by-id (`/dev/serial/by-id`) | ✅ index angka | plug-and-play tetap, label Windows = "Kamera N" |
+| Library C (`aterkia`) | ✅ `make -C core linux` | ✅ `make -C core windows` (MinGW) | tanpa build: `C_AVAILABLE=False`, gagal eksplisit |
+| Gamepad USB | ✅ `/dev/input/js*` | ⛔ stub "tidak ada" | Windows: RC Pixhawk / tombol GUI |
+| Unit test (194) | ✅ | ✅ | tanpa `gcc` → tes C otomatis skip |
 
 ---
 
@@ -59,7 +89,7 @@ aterkia-asv/
 │   ├── filtering.py        # Referensi Python PID/Complementary/EKF (fallback C)
 │   ├── fuzzy.py            # Referensi uji Fuzzy Sugeno (produksi -> C)
 │   ├── gate_sequencer.py   # REFERENSI UJI saja (produksi -> gate_vision.c)
-│   ├── aterkia_core.py     # ctypes wrapper tipis ke core/libaterkia.so
+│   ├── aterkia_core.py     # ctypes wrapper tipis ke core/ (libaterkia.so | aterkia_core.dll)
 │   └── gateway.py          # Relay Redis ↔ WebSocket (opsional)
 ├── core/                   # Inti C/C++ (komputasi deterministik)
 │   ├── include/*.h         # Header publik
@@ -120,7 +150,9 @@ python3 -m unittest discover -s tests -v
 QT_QPA_PLATFORM=offscreen timeout 10 python main.py
 
 # Rebuild C library (kalau ubah core/src/*.c)
-gcc -shared -fPIC -Icore/include core/src/*.c -o core/libaterkia.so
+make -C core linux        # -> core/libaterkia.so
+make -C core check        # verifikasi ketat -Wall -Wextra -Werror
+# (Windows/MinGW: mingw32-make -C core windows -> aterkia_core.dll)
 ```
 
 ---

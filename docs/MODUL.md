@@ -16,7 +16,7 @@
 | `fuzzy.py` | Fuzzy Sugeno singleton gate & docking gain | navigator |
 | `gate_sequencer.py` | `GateSequencer` + `collect_gate_pairs` (pure, testable) | navigator |
 | `state_machine.py` | Referensi Python state machine (fallback C) | tests |
-| `aterkia_core.py` | **Tipis** ctypes wrapper ke `core/libaterkia.so` (tanpa logika) | navigator (opsional) |
+| `aterkia_core.py` | **Tipis** ctypes wrapper ke `core/libaterkia.so` (Linux) / `aterkia_core.dll` (Windows), tanpa logika | navigator (opsional) |
 | `scripts/` | (hapus — tool lama diganti `scripts/test_deteksi.py`) | — |
 
 ## `core/` — Inti C/C++ (komputasi deterministik)
@@ -31,7 +31,7 @@
 | `src/thruster_mixer.c` | `thruster_mixer.h` | Differential drive surge+yaw→PWM |
 | `src/ecu_link.c` | `ecu_link.h` | UART STM32 8-byte frame + checksum |
 | `src/arbitrator.c` | `arbitrator.h` | Prioritas KILL > MANUAL > AUTO |
-| `libaterkia.so` | — | Shared library (build lokal, di-ignore git) |
+| `libaterkia.so` / `aterkia_core.dll` | — | Shared library (build lokal via `core/Makefile`, di-ignore git) |
 
 ## `config/`
 
@@ -53,7 +53,7 @@
 | File | Fungsi |
 |------|--------|
 | `test_deteksi.py` | Live kamera + deteksi (`--flip 0-3 --debug --imgsz 640`) |
-| `download_weights.sh` | Unduh model YOLO ke `weights/` |
+| `download_weights.sh` / `.ps1` | Unduh model YOLO ke `weights/` (Linux / Windows) |
 | `run_gui.sh` | Jalankan GUI Linux (pakai `.venv`) |
 | `run.bat` / `runweb.bat` | Wrapper Windows |
 

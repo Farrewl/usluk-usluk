@@ -1,22 +1,43 @@
 """Lapisan tipis Python -> C (ctypes only, TANPA logika hitung).
 
 Semua hitungan (PID, EKF, nav, fuzzy, RC, manual, mixer, arbitrator,
-gate-vision) dijalankan fungsi C di core/libaterkia.so. Python hanya
-meneruskan angka & struct — tidak ada rumus yang diduplikasi di sini.
+gate-vision) dijalankan fungsi C di core/libaterkia.so (Linux) atau
+core/aterkia_core.dll (Windows). Python hanya meneruskan angka & struct
+— tidak ada rumus yang diduplikasi di sini.
 
-Build: gcc -shared -fPIC -O2 -Icore/include core/src/*.c -o core/libaterkia.so -lm
-(gamepad_input.cpp hanya dipakai via CMake static lib, bukan .so ini.)
+Build (lihat core/Makefile):
+  Linux  : make -C core linux
+           gcc -shared -fPIC -O2 -Icore/include core/src/*.c \
+               -o core/libaterkia.so -lm
+  Windows: mingw32-make -C core windows  (MinGW: menghasilkan
+           core/aterkia_core.dll dari source yang sama)
+(gamepad_input.cpp hanya dipakai via CMake static lib, bukan lib ini.)
 
-Bila .so belum ada: C_AVAILABLE=False, pemanggil WAJIB gagal eksplisit
-(jangan fallback diam-diam ke logika Python ganda).
+Bila library belum ada: C_AVAILABLE=False, pemanggil WAJIB gagal
+eksplisit (jangan fallback diam-diam ke logika Python ganda).
 """
 
 import ctypes
 import os
+import platform
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(APP_DIR)
-LIB_PATH = os.path.join(ROOT_DIR, "core", "libaterkia.so")
+
+# Nama library beda per OS: Linux gcc -> libaterkia.so,
+# Windows (MinGW) -> aterkia_core.dll. Lihat core/Makefile.
+if platform.system() == "Windows":
+    _LIB_NAME = "aterkia_core.dll"
+    _BUILD_HINT = (
+        "aterkia_core.dll belum di-build. Jalankan (MinGW): "
+        "mingw32-make -C core windows  — atau lihat core/Makefile.")
+else:
+    _LIB_NAME = "libaterkia.so"
+    _BUILD_HINT = (
+        "libaterkia.so belum di-build. Jalankan: "
+        "gcc -shared -fPIC -O2 -Icore/include core/src/*.c "
+        "-o core/libaterkia.so -lm")
+LIB_PATH = os.path.join(ROOT_DIR, "core", _LIB_NAME)
 
 C_AVAILABLE = False
 _lib = None
@@ -32,10 +53,7 @@ except Exception:
 
 def _need_lib():
     if not C_AVAILABLE or _lib is None:
-        raise RuntimeError(
-            "libaterkia.so belum di-build. Jalankan: "
-            "gcc -shared -fPIC -O2 -Icore/include core/src/*.c "
-            "-o core/libaterkia.so -lm")
+        raise RuntimeError(_BUILD_HINT)
 
 
 _D = ctypes.c_double

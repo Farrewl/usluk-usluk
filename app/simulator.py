@@ -129,6 +129,7 @@ class _YoloWorker(QThread):
                 mid, model, frame, conf = self._jobs.get(timeout=0.2)
             except queue.Empty:
                 continue
+            keep = []
             try:
                 results = model(frame, verbose=False, conf=conf,
                                 imgsz=self.config.YOLO_INFERENCE_SIZE)
@@ -162,7 +163,34 @@ class _YoloWorker(QThread):
                 print(f"[YOLO-W] Inferensi gagal: {exc}")
                 detected, annotated = False, frame
             with self._lock:
-                self._latest[mid] = (detected, annotated)
+                self._latest[mid] = (detected, annotated, list(keep),
+                                     time.monotonic())
+
+    def latest_boxes_any(self, max_age_s=0.5):
+        """Kotak deteksi (cls, conf, xyxy) dari hasil TERBARU semua model.
+
+        Dipakai hindar-rintangan reaktif: hasil lebih tua dari `max_age_s`
+        dianggap basi -> []. Return list kosong bila worker belum pernah
+        selesai atau semuanya basi (jangan menggerakkan avoid dgn data lama).
+        """
+        with self._lock:
+            now = time.monotonic()
+            newest = None
+            for item in self._latest.values():
+                try:
+                    _det, _ann, boxes, ts = item
+                except Exception:
+                    continue
+                if not boxes:
+                    continue
+                if newest is None or ts > newest[0]:
+                    newest = (ts, boxes)
+        if newest is None:
+            return []
+        ts, boxes = newest
+        if now - ts > max_age_s:
+            return []
+        return list(boxes)
 
     def stop_and_wait(self):
         """Hentikan loop worker dan tunggu sampai threadnya selesai."""
@@ -308,6 +336,10 @@ class GroundSimNavigator:
         self.pixhawk_check = "menunggu MAVLink"
         threading.Thread(target=self._pixhawk_param_check_worker,
                          daemon=True).start()
+        # Hindar-rintangan reaktif (C, core/src/avoidance.c): state bias yaw
+        # + cap waktu frame untuk decay memori.
+        self.avoid_state = {"yaw_bias": 0.0, "memory_s": 0.0}
+        self._avoid_last_mono = time.monotonic()
         self.manual_last = {"surge": 0.0, "yaw": 0.0, "active": False,
                             "mode": 0, "mode_name": "AUTO", "rc_ok": False,
                             "source": "AUTO"}
@@ -381,15 +413,19 @@ class GroundSimNavigator:
         return self._telem_use_real
 
     # ------------------- Geolokasi mock -------------------
-    def _update_mock_position(self, target_lat, target_lon, speed_mps=1.5):
+    def _update_mock_position(self, target_lat, target_lon, speed_mps=1.5,
+                              yaw_bias_norm=0.0):
         """Geser posisi mock mendekati target; True jika sudah tiba (<2 m).
 
         Geodesi dihitung di C (nav_math via aterkia_core); app/geo.py hanya
-        referensi uji.
+        referensi uji. `yaw_bias_norm` [-1..1] dari hindar-rintangan reaktif:
+        menggeser heading mock maks 25° (belok menjauh, HUD ikut terlihat).
         """
         dist, bearing = core.nav_distance_bearing(
             self.current_lat, self.current_lon, target_lat, target_lon)
         self.dist_to_wp = dist
+        if yaw_bias_norm:
+            bearing = bearing + yaw_bias_norm * math.radians(25.0)
         self.current_yaw_rad = bearing
         if dist > 2.0:
             delta = speed_mps * 0.1
@@ -422,7 +458,7 @@ class GroundSimNavigator:
         result = self._yolo_worker.latest(model)
         if result is None:
             return self._last_detection.get(id(model), (False, frame))
-        detected, annotated = result
+        detected, annotated, _boxes, _ts = result
         self._last_detection[id(model)] = (detected, annotated)
         return detected, annotated
 
@@ -576,6 +612,48 @@ class GroundSimNavigator:
                 return
             time.sleep(0.5)
         self.pixhawk_check = "MAVLink tidak tersambung (cek dilewati)"
+
+    def _avoidance_scan(self):
+        """Hindar-rintangan reaktif: objek besar di jalur -> bias yaw menjauh.
+
+        Box diambil dari hasil YOLO TERBARU semua model (basi > 0.5 s
+        dibuang). Non-target bermakna = lebar >= 25% lebar frame dalam
+        ±80% sumbu frame (dekat/besar). Geometri + decay memori dihitung
+        di C (core/src/avoidance.c via core.avoid_update). Return dict
+        {yaw_bias, memory_s, active} + perbarui self.avoid_state.
+        """
+        boxes = []
+        try:
+            boxes = self._yolo_worker.latest_boxes_any(max_age_s=0.5)
+        except Exception:
+            boxes = []
+        w = float(getattr(self.config, "FRAME_WIDTH", 640) or 640.0)
+        det = None
+        if boxes and w > 0:
+            best = None
+            for _cls, _conf, xyxy in boxes:
+                try:
+                    x1, y1, x2, y2 = (float(v) for v in xyxy)
+                    if x2 <= x1 or y2 <= y1:
+                        continue
+                    w_norm = (x2 - x1) / w
+                    cx_norm = ((x1 + x2) / 2.0 - w / 2.0) / (w / 2.0)
+                    if w_norm >= 0.25 and -0.8 <= cx_norm <= 0.8:
+                        if best is None or w_norm > best[0]:
+                            best = (w_norm, cx_norm)
+                except Exception:
+                    continue
+            if best is not None:
+                det = (best[1], best[0])   # (cx_norm, w_norm)
+        now = time.monotonic()
+        dt_s = max(1e-3, now - self._avoid_last_mono)
+        self._avoid_last_mono = now
+        try:
+            if det is not None:
+                return core.avoid_update(self.avoid_state, det[0], det[1], dt_s)
+            return core.avoid_update(self.avoid_state, 0.0, 0.0, dt_s)
+        except Exception:
+            return {"yaw_bias": 0.0, "memory_s": 0.0, "active": False}
 
     def _check_failsafe(self):
         """Evaluasi failsafe tiap frame. Return "" bila aman, atau string
@@ -778,6 +856,11 @@ class GroundSimNavigator:
                     self.current_state = "MISSION_COMPLETE"
                     print("[SIM] MISI SELESAI!")
 
+            # Hindar-rintangan reaktif (C): bias yaw menjauh dari objek
+            # besar di jalur. Dihitung dulu agar heading mock ikut berbelok
+            # pada frame yang sama.
+            avoid = self._avoidance_scan()
+
             # mock gerakan ke waypoint aktif (mulai dari WP1 bila ada WP)
             if self.waypoints:
                 if self.current_lat is None:
@@ -789,7 +872,9 @@ class GroundSimNavigator:
                 if self.failsafe_active:
                     speed = 0.0   # failsafe: mock tidak boleh maju
                 self._update_mock_position(target['lat'], target['lon'],
-                                           speed_mps=speed)
+                                           speed_mps=speed,
+                                           yaw_bias_norm=self.avoid_state.get(
+                                               "yaw_bias", 0.0))
             else:
                 self.current_lat, self.current_lon = 0.0, 0.0
 
@@ -883,6 +968,12 @@ class GroundSimNavigator:
             # KILL GUI: kirim DISARM best-effort (throttled di dalam).
             self._send_disarm()
 
+            # Label hindar-rintangan (hanya saat kendali AUTO, biar tak
+            # menutupi status manual/kill/failsafe).
+            if avoid.get("active") and op_mode == "AUTO":
+                arah = "KIRI" if avoid.get("yaw_bias", 0.0) < 0 else "KANAN"
+                status_txt = f"{status_txt} (AVOID-{arah})"
+
             # Simpan sementara agar bisa dimodifikasi sebelum emit.
             _pkt = {
                 "lat": lat, "lon": lon,
@@ -912,6 +1003,8 @@ class GroundSimNavigator:
                 "failsafe_active": bool(self.failsafe_active),
                 "failsafe_reason": str(self.failsafe_reason),
                 "pixhawk_check": str(getattr(self, "pixhawk_check", "N/A")),
+                "avoid_active": bool(self.avoid_state.get("active", False)),
+                "avoid_bias": float(self.avoid_state.get("yaw_bias", 0.0)),
             }
             # Baterai dari Pixhawk (SYS_STATUS/BATTERY_STATUS) bila terhubung.
             if self.mav and self.mav.has_battery:

@@ -458,6 +458,37 @@ class ModeState:
 
 
 # ---------------------------------------------------------------------------
+# avoidance.h — hindar-rintangan reaktif (bias yaw menjauh, hitung di C)
+# ---------------------------------------------------------------------------
+
+# Urutan field = struct avoid_state_t (C).
+class _AvoidStateC(ctypes.Structure):
+    _fields_ = [("yaw_bias", _D), ("memory_s", _D)]
+
+
+def avoid_update(state, det_cx_norm, det_w_norm, dt_s):
+    """Bias yaw menjauh dari rintangan besar di tengah frame (C).
+
+    `state` dict {yaw_bias, memory_s} diupdate IN-PLACE dan dikembalikan.
+    Input:
+      det_cx_norm: pusat objek dinormalisasi [-1..1]; 0 = tengah frame
+      det_w_norm : lebar objek dinormalisasi [0..1];  1 = selebar frame
+      dt_s       : delta waktu frame (decay memori)
+    Return dict {yaw_bias, memory_s, active} — active = |bias| >= 0.05.
+    """
+    fn = _sig("avoid_update",
+              [ctypes.POINTER(_AvoidStateC), _D, _D, _D], None)
+    s = _AvoidStateC(float(state.get("yaw_bias", 0.0)),
+                     float(state.get("memory_s", 0.0)))
+    fn(ctypes.byref(s), float(det_cx_norm), float(det_w_norm), float(dt_s))
+    out = {"yaw_bias": float(s.yaw_bias), "memory_s": float(s.memory_s),
+           "active": abs(float(s.yaw_bias)) >= 0.05}
+    state.clear()
+    state.update(out)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # gate_vision.h — koleksi pasangan + jarak pinhole + kriteria geometri buoy
 # + sequencer latch (pengganti app/gate_sequencer.py di jalur produksi).
 # Warna HSV tetap di Python (butuh citra); modul ini hanya geometri.

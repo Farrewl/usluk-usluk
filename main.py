@@ -29,7 +29,6 @@ os.environ.pop("QT_QPA_FONTDIR", None)
 os.environ.setdefault("QT_LOGGING_RULES", "qt.network.ssl.warning=false")
 
 from app.simulator import NavigatorThread
-# from app.navigator import NavigatorThread
 from app.slim_map import SlimMapWidget
 from app.settings_dialog import SettingsDialog
 from app import gui_theme as theme

@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 import unittest
 
-from app.fuzzy import docking_p_gain, gate_p_gain
+from _ref.fuzzy import docking_p_gain, gate_p_gain
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_C = os.path.join(REPO, "core", "src", "fuzzy.c")

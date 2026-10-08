@@ -12,7 +12,7 @@ Jalankan:  python3 -m unittest discover -s tests -v
 import random
 import unittest
 
-from app.fuzzy import (
+from _ref.fuzzy import (
     GATE_RULES,
     DOCKING_RULES,
     _trapmf,

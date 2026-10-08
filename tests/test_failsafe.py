@@ -1,6 +1,6 @@
 """Test failsafe navigator (tanpa hardware): stale-link & low-batt.
 
-VisionOffboardNavigator.__new__ dipakai agar tanpa YOLO/kamera/MAVLink —
+GroundSimNavigator.__new__ dipakai agar tanpa YOLO/kamera/MAVLink —
 hanya state + config + _check_failsafe/_request_rtl yang diuji. Master
 MAVLink diganti stub (command_long_send tercatat, tak ada I/O).
 
@@ -12,7 +12,7 @@ import unittest
 from types import SimpleNamespace
 
 from app import settings as cfg
-from app.navigator import VisionOffboardNavigator
+from app.simulator import GroundSimNavigator
 
 
 class _MavStub:
@@ -35,7 +35,7 @@ class _MavStub:
 
 def _nav_bare():
     """Navigator tanpa __init__ (tanpa hardware), state failsafe default."""
-    nav = VisionOffboardNavigator.__new__(VisionOffboardNavigator)
+    nav = GroundSimNavigator.__new__(GroundSimNavigator)
     nav.config = cfg.Config()
     nav.failsafe_active = False
     nav.failsafe_reason = ""

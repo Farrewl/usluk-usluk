@@ -20,10 +20,10 @@ import subprocess
 import tempfile
 import unittest
 
-from app.state_machine import (
+from _ref.state_machine import (
     ALL_STATES,
 )
-from app.state_machine import (
+from _ref.state_machine import (
     APPROACH_BLUE_BOX_ALIGN,
     APPROACH_BLUE_BOX_SEARCH,
     APPROACH_BOX_ALIGN,

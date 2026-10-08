@@ -20,7 +20,7 @@ state-nya eksplisit lewat atribut) sehingga mudah diuji deterministik.
 
 import math
 
-from . import geo
+from app import geo
 
 # Batas dt yang masuk akal (detik) untuk melindungi pembagian saat loop
 # menghasilkan dt=0 (mis. kondisi telemetri kosong).

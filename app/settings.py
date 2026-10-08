@@ -132,8 +132,6 @@ TUNING_PARAM_KEYS = frozenset({
     "FAILSAFE_LOW_BATT_HOLD_S",
     # YOLO async (lihat app/yolo_async.py)
     "YOLO_FRAME_SKIP", "YOLO_INFERENCE_SIZE", "YOLO_RESULT_MAX_AGE_S",
-    # uploader foto (lihat app/uploader.py)
-    "UPLOAD_QUEUE_SIZE", "UPLOAD_MAX_RETRIES",
     # P6-B: Pixhawk non-blocking + histeresis telemetri
     "MAV_CONNECT_TIMEOUT_S", "MAV_RETRY_INTERVAL_S",
     "TELEM_HYSTERESIS_FRAMES",
@@ -202,15 +200,6 @@ class Config:
         # P6-C: kamera bawah air default index 2 (NAV=0/1 via negosiasi).
         # Dulu dua-duanya 1 (konflik: rebutan 1 device).
         self.WAYPOINT_PHOTO_CAMERA_INDEX = 2
-
-        # ---------- Redis / web dashboard ----------
-        self.REDIS_HOST = "localhost"
-        self.REDIS_PORT = 6379
-        self.TELEMETRY_CHANNEL = "asv_telemetry"
-        self.VISION_CHANNEL = "asv_vision"
-        self.MISSION_CHANNEL = "asv_mission"
-        self.NGROK_HOST = "dashboardaterolas.app"
-        self.SERVER_UPLOAD_URL = f"https://{self.NGROK_HOST}/api/images/upload"
 
         # ---------- Navigasi umum ----------
         self.ACCEPTANCE_RADIUS_M = saved.get('ACCEPTANCE_RADIUS_M', 2.0)
@@ -369,10 +358,6 @@ class Config:
         # loop memakai cache terakhir / kosong. 0.5 s ~= 1-2 frame @ inferensi
         # lambat; cukup segar untuk kontrol, cukup longgar untuk CPU RPi.
         self.YOLO_RESULT_MAX_AGE_S = saved.get('YOLO_RESULT_MAX_AGE_S', 0.5)
-        # Antrean upload foto: penuh -> foto terlama dibuang (baru menang).
-        self.UPLOAD_QUEUE_SIZE = saved.get('UPLOAD_QUEUE_SIZE', 3)
-        # Coba ulang upload per foto bila gagal (total = 1 + nilai ini).
-        self.UPLOAD_MAX_RETRIES = saved.get('UPLOAD_MAX_RETRIES', 1)
         self.YOLO_HALF_PRECISION = False           # CPU tidak mendukung half precision
         self.YOLO_DEVICE = 'cpu'                   # paksa jalan di CPU
         self.RED_BALL_CLASS_ID = 1

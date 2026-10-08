@@ -32,6 +32,13 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 from . import settings as cfg
 from . import aterkia_core as core
+
+try:
+    from pymavlink import mavutil
+    MAVLINK_IMPORT_OK = True
+except ImportError:  # pragma: no cover - mesin tanpa pymavlink
+    mavutil = None
+    MAVLINK_IMPORT_OK = False
 from .manual_link import ManualLink
 from .qgc_offboard import QgcOffboard
 from .camera import pace_to_fps
@@ -56,12 +63,6 @@ except ImportError:
     CAMERA_MANAGER_OK = False
 
 from . import mavlink_telemetry as mavlink_mod
-
-try:
-    import redis
-    REDIS_AVAILABLE = True
-except ImportError:
-    REDIS_AVAILABLE = False
 
 # skfuzzy TIDAK dipakai di jalur produksi (fuzzy jalan di C via aterkia_core).
 # Blok import dipertahankan agar mesin lama tanpa C tetap bisa jalan dengan
@@ -239,17 +240,14 @@ class GroundSimNavigator:
             self.gate_model = self.box_model = None
             self.blue_box_model = self.red_dock_model = None
 
-        # --- REDIS (opsional) ---
-        self.redis_client = None
-        if REDIS_AVAILABLE:
-            try:
-                self.redis_client = redis.Redis(host=self.config.REDIS_HOST,
-                                                port=self.config.REDIS_PORT,
-                                                decode_responses=True,
-                                                socket_connect_timeout=0.5)
-                self.redis_client.ping()
-            except Exception:
-                print("[SIM] Redis tidak bisa dihubungi — fitur publikasi dimatikan.")
+        # --- Failsafe otomatis (stale-link + low-batt) — port dari
+        # navigator.py lama; dipanggil tiap frame sebelum emit status.
+        # Field dibaca test_failsafe.py, jangan ganti nama atribut.
+        self.failsafe_active = False
+        self.failsafe_reason = ""
+        self._lowbatt_since = None
+        self._rtl_sent_mono = 0.0
+        self._last_telem_mono = 0.0
 
     def _load_models_async(self):
         """Muat 3 model non-gate di thread latar."""
@@ -446,9 +444,6 @@ class GroundSimNavigator:
                     os.makedirs(cfg.CAPTURES_DIR, exist_ok=True)
                     path = os.path.join(cfg.CAPTURES_DIR, f"WP8_RealTest_{int(time.time())}.jpg")
                     cv2.imwrite(path, frame)
-                    threading.Thread(target=self._upload_snapshot_to_server,
-                                     args=(path, os.path.basename(path)),
-                                     daemon=True).start()
                     time.sleep(1.0)
                     break
         if cam_bawah:
@@ -463,36 +458,100 @@ class GroundSimNavigator:
             self.config.FRAME_WIDTH = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             self.config.FRAME_HEIGHT = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # ------------------- Redis / upload -------------------
-    def _upload_snapshot_to_server(self, file_path, filename):
-        """Kirim foto ke dashboard web (Laravel/Ngrok) via HTTP POST."""
-        if not os.path.exists(file_path):
-            print(f"[UPLOAD] Gagal: {filename} tidak ditemukan.")
-            return
-        try:
-            import requests
-            with open(file_path, 'rb') as f:
-                resp = requests.post(self.config.SERVER_UPLOAD_URL,
-                                     files={'file': (filename, f, 'image/jpeg')}, timeout=10)
-            print(f"[UPLOAD] {'Sukses' if resp.status_code == 200 else 'Gagal'} ({resp.status_code})")
-        except Exception as e:
-            print(f"[UPLOAD] Error koneksi (pastikan gateway jalan): {e}")
+    # ------------------- Failsafe otomatis (port dari navigator.py) ---
+    # ID mode RTL ArduPilot Rover; jeda antar percobaan kirim RTL.
+    _ROVER_RTL_MODE = 11
+    _RTL_RETRY_INTERVAL_S = 5.0
 
-    def _publish_redis(self, frame, state, nav_status):
-        if not self.redis_client:
+    def _battery_fields(self):
+        """Baca baterai: dari Pixhawk (mav) bila terhubung, else atribut mock."""
+        mav = getattr(self, "mav", None)
+        if mav is not None and mav.has_battery:
+            return {"battery_pct": mav.battery_pct,
+                    "voltage_v": mav.voltage_v,
+                    "current_a": mav.current_a}
+        return {"battery_pct": getattr(self, "current_battery_pct", None),
+                "voltage_v": getattr(self, "current_voltage", None),
+                "current_a": getattr(self, "current_current", None)}
+
+    def _request_rtl(self):
+        """Minta mode RTL via MAV_CMD_DO_SET_MODE (best-effort, throttled).
+
+        Pixhawk TETAP pemegang failsafe utama (RCIN + geofence bawaan);
+        perintah ini hanya usaha tambahan, maks 1x per _RTL_RETRY_INTERVAL_S
+        agar tak membanjiri link MAVLink yang sedang bermasalah.
+        """
+        now = time.monotonic()
+        if now - self._rtl_sent_mono < self._RTL_RETRY_INTERVAL_S:
             return
+        self._rtl_sent_mono = now
         try:
-            import base64
-            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
-            payload_vis = {
-                "type": "vision_update",
-                "frame_base64": base64.b64encode(buffer).decode('utf-8'),
-                "buoy_counts": {"red": 0, "green": 0},
-                "info": {"state": state, "nav_status": nav_status, "p_gain": "SIM-REAL-YOLO"},
-            }
-            self.redis_client.publish(self.config.VISION_CHANNEL, json.dumps(payload_vis))
-        except Exception:
-            pass
+            master = (getattr(self, "master", None)
+                      or (self.mav.master if getattr(self, "mav", None)
+                          is not None else None))
+            if master is None or mavutil is None:
+                return
+            master.mav.command_long_send(
+                master.target_system, master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_SET_MODE, 0,
+                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                self._ROVER_RTL_MODE, 0, 0, 0, 0, 0)
+            print("[FAILSAFE] Perintah RTL dikirim (best-effort).")
+        except Exception as e:
+            print(f"[FAILSAFE] Gagal kirim RTL: {e}")
+
+    def _check_failsafe(self):
+        """Evaluasi failsafe tiap frame. Return "" bila aman, atau string
+        alasan bila aktif — caller mematikan gerak + menimpa status.
+
+        Pemicu (ambang di Config, tab Failsafe di Settings):
+          1. stale-link: tak ada ATTITUDE/GLOBAL_POSITION > timeout_s;
+          2. low-batt: persen ATAU tegangan di bawah ambang, DITAHAN selama
+             hold agar spike sesaat tidak memicu RTL palsu.
+        Pulih otomatis bila kondisi normal kembali.
+        """
+        if not getattr(self.config, "FAILSAFE_ENABLED", True):
+            if self.failsafe_active:
+                self.failsafe_active = False
+                self.failsafe_reason = ""
+            return ""
+        now = time.monotonic()
+        reason = ""
+        timeout = float(getattr(self.config, "FAILSAFE_TELEM_TIMEOUT_S", 2.0))
+        last = float(getattr(self, "_last_telem_mono", 0.0) or 0.0)
+        if last > 0.0 and (now - last) > timeout:
+            reason = f"telemetri basi {now - last:.1f}s"
+        if not reason:
+            fields = self._battery_fields()
+            pct = fields.get("battery_pct")
+            volt = fields.get("voltage_v")
+            low_pct = float(getattr(self.config, "FAILSAFE_LOW_BATT_PCT", 20.0))
+            low_v = float(getattr(self.config, "FAILSAFE_LOW_VOLT_V", 13.2))
+            hold = float(getattr(self.config, "FAILSAFE_LOW_BATT_HOLD_S", 3.0))
+            low = ((pct is not None and pct < low_pct)
+                   or (volt is not None and volt < low_v))
+            if low:
+                if self._lowbatt_since is None:
+                    self._lowbatt_since = now
+                elif now - self._lowbatt_since >= hold:
+                    detail = (f"{pct:.0f}%" if pct is not None
+                              else f"{volt:.1f}V")
+                    reason = f"baterai rendah {detail}"
+            else:
+                self._lowbatt_since = None
+        if reason:
+            if not self.failsafe_active:
+                print(f"[FAILSAFE] AKTIF: {reason} — gerak dihentikan "
+                      "dan coba RTL.")
+            self.failsafe_active = True
+            self.failsafe_reason = reason
+            self._request_rtl()
+            return reason
+        if self.failsafe_active:
+            print("[FAILSAFE] Pulih: kondisi normal kembali.")
+        self.failsafe_active = False
+        self.failsafe_reason = ""
+        return ""
 
     # ------------------- Loop utama -------------------
     def run(self, data_signal):
@@ -620,9 +679,6 @@ class GroundSimNavigator:
                         path = os.path.join(cfg.CAPTURES_DIR,
                                             f"WP6_GreenBox_{int(time.time())}.jpg")
                         cv2.imwrite(path, processed_frame)
-                        threading.Thread(target=self._upload_snapshot_to_server,
-                                         args=(path, os.path.basename(path)),
-                                         daemon=True).start()
                         self.sim_step = 8
                         self.state_timer = time.time()
                 else:
@@ -653,6 +709,8 @@ class GroundSimNavigator:
                 target = self.waypoints[min(self.current_waypoint_index,
                                             len(self.waypoints) - 1)]
                 speed = 1.5 if self.sim_step in (1, 3, 5) else 0.2
+                if self.failsafe_active:
+                    speed = 0.0   # failsafe: mock tidak boleh maju
                 self._update_mock_position(target['lat'], target['lon'],
                                            speed_mps=speed)
             else:
@@ -666,6 +724,9 @@ class GroundSimNavigator:
                     pass
             _mav_has = (self.mav is not None and self.mav.connected
                         and self.mav.has_attitude)
+            # Stamp umur telemetri untuk failsafe stale-link (port navigator).
+            if _mav_has:
+                self._last_telem_mono = time.monotonic()
             use_real = self._telem_decide_source(_mav_has)
             if use_real:
                 yaw_deg = self.mav.yaw_deg
@@ -736,6 +797,13 @@ class GroundSimNavigator:
             elif op_mode == "KILL":
                 status_txt = "KILL (E-stop)"
 
+            # --- Failsafe otomatis (stale-link + low-batt) — prioritas
+            # TERTINGGI: menimpa status apa pun sebelum dikirim ke GUI.
+            fs_reason = self._check_failsafe()
+            if fs_reason:
+                status_txt = f"FAILSAFE ({fs_reason})"
+                op_mode = "FAILSAFE"
+
             # Simpan sementara agar bisa dimodifikasi sebelum emit.
             _pkt = {
                 "lat": lat, "lon": lon,
@@ -762,6 +830,8 @@ class GroundSimNavigator:
                 "rc_ok": bool(man.get("rc_ok", False)),
                 "manual_source": str(man.get("source", "AUTO")),
                 "gcs_forward": bool(getattr(self.mav, "gcs_active", False)),
+                "failsafe_active": bool(self.failsafe_active),
+                "failsafe_reason": str(self.failsafe_reason),
             }
             # Baterai dari Pixhawk (SYS_STATUS/BATTERY_STATUS) bila terhubung.
             if self.mav and self.mav.has_battery:
@@ -886,16 +956,6 @@ class MockSimNavigator:
         self.image_center_x = config.FRAME_WIDTH / 2.0
         self.mock_box = None
         self.fuzzy_ctrl = self._create_fuzzy_controller()
-
-        self.redis_client = None
-        if REDIS_AVAILABLE:
-            try:
-                self.redis_client = redis.Redis(host=self.config.REDIS_HOST,
-                                                port=self.config.REDIS_PORT,
-                                                decode_responses=True,
-                                                socket_connect_timeout=0.5)
-            except Exception:
-                pass
 
     def _create_fuzzy_controller(self):
         # DIHAPUS dari jalur produksi: fuzzy Sugeno jalan di C

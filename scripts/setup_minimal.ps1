@@ -67,7 +67,7 @@ Invoke-Step @($Vpy, "-m", "pip", "install", "-q",
     "torch==2.14.0+cpu", "torchvision==0.29.0+cpu")
 
 Write-Host "[3/5] Install resep minimal + ultralytics tanpa deps borosnya..."
-Invoke-Step @($Vpy, "-m", "pip", "install", "-q", "-r", "requirements-minimal.txt")
+Invoke-Step @($Vpy, "-m", "pip", "install", "-q", "-r", "requirements.txt")
 Invoke-Step @($Vpy, "-m", "pip", "install", "-q", "--no-deps", "ultralytics==8.4.160")
 
 Write-Host "[4/5] Pangkas folder test/include torch..."

@@ -1,17 +1,32 @@
 # ============================================================
-# Dependensi Python ASV — resep MINIMAL produksi (Opsi B).
-# Install:
-#   Linux  : python3 -m venv .venv
-#   Windows: python  -m venv .venv
-#   .venv/.../pip install -r requirements.txt
-#   .venv/.../pip install --index-url https://download.pytorch.org/whl/cpu \
-#       torch==2.14.0+cpu torchvision==0.29.0+cpu
-#   (atau pakai scripts/setup_minimal.sh | setup_minimal.ps1 — lebih
-#    aman: urutan + prune + verifikasi otomatis)
-# Verifikasi:
-#   .venv/.../python -m unittest discover -s tests
+# requirements.txt — SATU-SATUNYA resep dependensi ASV (Opsi B).
+# Freeze 41 paket yang TERBUKTI jalan (GUI, YOLO 4 model, MAVLink,
+# Redis/upload) — dipin versi persis.
 #
-# Rincian per paket + alasan ada di requirements-minimal.txt.
+# Install TERBAIK (urutan penting!):
+#   Linux  : ./scripts/setup_minimal.sh
+#   Windows: powershell -File scripts\setup_minimal.ps1
+# Manual (urut):
+#   python3 -m venv .venv
+#   .venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu \
+#       torch==2.14.0+cpu torchvision==0.29.0+cpu
+#   .venv/bin/pip install -r requirements.txt
+#   .venv/bin/pip install --no-deps ultralytics==8.4.160
+# Verifikasi:
+#   .venv/bin/python -m unittest discover -s tests
+#
+# KUNCI penghematan (.venv 2,2 GB -> 1,3 GB; build 2026-10-08):
+#  1. torch WAJIB dari index CPU — dari PyPI default ia menarik
+#     CUDA+nvidia-*+triton (≈3,6 GB membengkak). Wheel Linux & Windows
+#     sama-sama bertanda +cpu di index itu.
+#  2. ultralytics dipasang --no-deps — deps bawaannya menarik
+#     matplotlib+polars+opencv-python non-headless (≈600 MB) yang
+#     TIDAK PERNAH di-import eager saat inferensi (sudah dibuktikan).
+#     Deps runtime aslinya yang benar-benar dipakai semua ada di file ini.
+#  3. Folder test/include/bin-test di dalam torch (≈200 MB) aman
+#     dibuang — runtime YOLO tidak memakainya.
+# Jangan ganti opencv headless -> opencv-python biasa (duplikat .so Qt).
+#
 # Paket yang DIHAPUS vs versi lama (tak ada import di kode):
 #   pyqtwebengine, folium   -> peta sudah app/slim_map.py murni Qt
 #   scipy, scikit-fuzzy     -> fuzzy jalan di C (core/src/fuzzy.c)
@@ -21,20 +36,68 @@
 #   polars                  -> hanya lazy import ekspor CSV YOLO
 # ============================================================
 
-# --- GUI dashboard (peta slim_map murni PyQt5, tanpa WebEngine) ---
-pyqt5
+# --- GUI dashboard (slim_map murni Qt; TANPA webengine/folium) ---
+PyQt5==5.15.11
+PyQt5-Qt5==5.15.19
+PyQt5_sip==12.19.0
 
-# --- Komputer vision (YOLO tetap Python + .pt) ---
-opencv-python-headless
-ultralytics
-numpy
+# --- Komputer vision (YOLO .pt tetap Python; headless saja) ---
+opencv-python-headless==5.0.0.93
+numpy==2.5.3
+# ultralytics SENDIRIAN dipasang terpisah dengan --no-deps (lihat
+# scripts/setup_minimal.sh / setup_minimal.ps1) supaya tak menarik
+# matplotlib/polars/opencv-python/torch-CUDA yang membengkakan storage
+# ±600 MB. Deps runtime-nya yang benar-benar dipakai semua ada di file ini.
+
+# --- torch CPU-only (WAJIB pakai index CPU, bukan PyPI biasa!) ---
+# Install manual:
+#   .venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu \
+#       torch==2.14.0+cpu torchvision==0.29.0+cpu
+# (Sengaja TIDAK ditulis tanpa --index-url supaya tak ketarik versi CUDA.)
 
 # --- Telemetri & hardware ---
-pymavlink
-pyserial
+pymavlink==2.4.49
+pyserial==3.5
 
-# --- Komunikasi web ---
-redis
-requests
+# --- Komunikasi web (dipakai uploader/redis/gateway) ---
+redis==8.1.0
+requests==2.34.2
 
-# --- torch CPU-only: install terpisah dari index PyTorch (lihat atas) ---
+# --- Dependensi tak langsung yang TERBUKTI dibutuhkan ---
+# (jangan dibuang tanpa risiko rusak import)
+pillow==12.3.0            # ultralytics Annotator + torchvision
+PyYAML==6.0.3             # ultralytics config
+psutil==7.2.2             # ultralytics system info
+lxml==6.1.3               # Required-by pymavlink
+fastcrc==0.5.0            # Required-by pymavlink
+sympy==1.14.0             # rantai torchvision -> torch._dynamo
+networkx==3.7             # Requires torch
+mpmath==1.3.0             # Requires sympy
+filelock==3.32.3          # torch + ultralytics
+fsspec==2026.7.0          # torch
+Jinja2==3.1.6             # torch
+MarkupSafe==3.0.3         # Jinja2
+typing_extensions==4.16.0 # torch
+packaging==26.3           # ultralytics checks
+cloudpickle==3.1.2        # ultralytics
+nvidia-ml-py==13.610.43   # ultralytics (kecil, biar tak warning)
+ultralytics-platform==0.1.54
+ultralytics-thop==2.1.6
+httpx==0.28.1             # ultralytics-platform
+httpcore==1.0.9
+h11==0.16.0
+anyio==4.15.1
+idna==3.20
+certifi==2026.7.22
+charset-normalizer==3.5.1
+urllib3==2.8.0
+six==1.17.0
+
+# --- SENGAJA DIBUANG (tak ada import di main.py/app/scripts/tests) ---
+# pyqtwebengine, folium, branca, xyzservices (peta sudah slim_map)
+# scipy, scikit-fuzzy (fuzzy murni numpy/C)
+# matplotlib + turunan (contourpy/cycler/fonttools/kiwisolver/pyparsing/python-dateutil)
+#   -> lazy import YOLO tak pernah kepanggil saat inferensi
+# polars + polars-runtime-32 (lazy import tak kepanggil)
+# keyboard (tak terinstall, tak dipakai)
+# opencv-python (duplikat headless)

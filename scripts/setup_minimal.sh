@@ -15,7 +15,7 @@
 #  2. ultralytics dipasang --no-deps — deps bawaannya menarik
 #     matplotlib+polars+opencv-python non-headless (≈600 MB) yang
 #     TIDAK PERNAH di-import eager saat inferensi (sudah dibuktikan).
-#     Deps runtime aslinya semua tercantum di requirements-minimal.txt.
+#     Deps runtime aslinya semua tercantum di requirements.txt.
 #  3. Folder test/include/bin-test di dalam torch (≈200 MB) aman
 #     dibuang — runtime YOLO tidak memakainya.
 # ============================================================
@@ -42,7 +42,7 @@ echo "[2/5] Install torch+torchvision CPU-ONLY (index PyTorch, bukan PyPI!)..."
     torch==2.14.0+cpu torchvision==0.29.0+cpu
 
 echo "[3/5] Install resep minimal + ultralytics tanpa deps borosnya..."
-.venv/bin/pip install -q -r requirements-minimal.txt
+.venv/bin/pip install -q -r requirements.txt
 .venv/bin/pip install -q --no-deps ultralytics==8.4.160
 
 echo "[4/5] Pangkas folder test/include/bin-test torch (±200 MB)..."

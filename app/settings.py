@@ -124,6 +124,8 @@ TUNING_PARAM_KEYS = frozenset({
     "MANUAL_DEADBAND", "MANUAL_EXPO", "MANUAL_RATE_LIMIT",
     "RC_TIMEOUT_MS", "RC_CH_THROTTLE", "RC_CH_YAW", "RC_CH_MODE",
     "RC_CH_DEADMAN", "MANUAL_LOST_HOLD_S",
+    # manual dari QGC (app/qgc_offboard.py — Xbox via MAVLink)
+    "QGC_MANUAL_TIMEOUT_S",
     # failsafe otomatis (lihat app/navigator.py _check_failsafe)
     "FAILSAFE_ENABLED", "FAILSAFE_TELEM_TIMEOUT_S",
     "FAILSAFE_LOW_BATT_PCT", "FAILSAFE_LOW_VOLT_V",
@@ -340,6 +342,10 @@ class Config:
         self.RC_CH_MODE = saved.get('RC_CH_MODE', 5)
         self.RC_CH_DEADMAN = saved.get('RC_CH_DEADMAN', 7)
         self.MANUAL_LOST_HOLD_S = saved.get('MANUAL_LOST_HOLD_S', 1.0)
+
+        # Failsafe manual QGC: paket MANUAL_CONTROL basi > ini = lepas
+        # kendali -> netral (lihat app/qgc_offboard.py).
+        self.QGC_MANUAL_TIMEOUT_S = saved.get('QGC_MANUAL_TIMEOUT_S', 0.5)
 
         # ---------- Failsafe otomatis (lihat _check_failsafe) ----------
         # Telemetri stale (tak ada ATTITUDE/GLOBAL_POSITION > batas) ATAU

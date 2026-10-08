@@ -39,8 +39,30 @@ typedef struct {
  */
 void arb_select(int kill_active, int manual_active,
                 double manual_surge, double manual_yaw,
-                double auto_surge, double auto_yaw,
+                double auto_surge, double auto_yaw, 
                 arb_out_t *out);
+
+/* --- Dua sumber manual: QGC (Xbox via MAVLink) vs lokal (RC/gamepad) ---
+ *
+ * Keduanya boleh aktif bergantian; BILA BERSAMAAN = konflik kendali ->
+ * output dipaksa netral (0,0) + conflict=1 (caller tampilkan peringatan).
+ * Inilah pengaman "rebutan stik" antara QGC di laptop dan RC/RPi di kapal.
+ */
+#define ARB_MANUAL_NONE     0   /* tak ada yang aktif (netral, senyap) */
+#define ARB_MANUAL_QGC      1   /* menang: sumber QGC (MANUAL_CONTROL) */
+#define ARB_MANUAL_LOCAL    2   /* menang: sumber lokal (RC/gamepad) */
+#define ARB_MANUAL_CONFLICT 3   /* dua-duanya aktif -> netral + warning */
+
+typedef struct {
+    double surge;    /* -1.0 .. 1.0 (netral saat konflik/none) */
+    double yaw;      /* -1.0 .. 1.0 */
+    int    source;   /* ARB_MANUAL_* */
+    int    conflict; /* 1 = konflik -> output dipaksa netral */
+} arb_manual_t;
+
+void arb_manual2(int qgc_active, double qgc_surge, double qgc_yaw,
+                 int loc_active, double loc_surge, double loc_yaw,
+                 arb_manual_t *out);
 
 #ifdef __cplusplus
 }

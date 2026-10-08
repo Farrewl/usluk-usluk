@@ -33,6 +33,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from . import settings as cfg
 from . import aterkia_core as core
 from .manual_link import ManualLink
+from .qgc_offboard import QgcOffboard
 from .camera import pace_to_fps
 
 try:
@@ -296,10 +297,14 @@ class GroundSimNavigator:
         # Jembatan manual RC/gamepad (hitung di C) — dipasang ke master
         # MAVLink setelah konek; GUI bisa minta manual via flag ini.
         self.manual_link = ManualLink(self.config)
+        # Sumber manual QGC (Xbox di laptop -> QGC -> MAVLink MANUAL_CONTROL).
+        # Adu dengan sumber lokal via core.arb_manual2 (konflik -> netral).
+        self.qgc_link = QgcOffboard(self.config)
         self.manual_gui_request = False
         self.manual_last = {"surge": 0.0, "yaw": 0.0, "active": False,
                             "mode": 0, "mode_name": "AUTO", "rc_ok": False,
                             "source": "AUTO"}
+        self.qgc_last = dict(self.manual_last)
         self._last_loop_t = time.time()
 
     def _mav_ensure_connected(self):
@@ -334,6 +339,7 @@ class GroundSimNavigator:
         if ok:
             try:
                 self.manual_link.attach_mav(self.mav.master)
+                self.qgc_link.attach_mav(self.mav.master)
             except Exception:
                 pass
             if os.environ.get("GCS_FORWARD", "0") == "1":
@@ -688,11 +694,43 @@ class GroundSimNavigator:
                 self.manual_last = self.manual_link.update(
                     dt=dt_man, kill=False,
                     gui_manual=self.manual_gui_request)
+                # Sumber manual QGC (Xbox via MAVLink) — poll non-blocking.
+                self.qgc_last = self.qgc_link.poll(dt=dt_man)
             except Exception:
                 pass
             man = getattr(self, "manual_last", {}) or {}
+            qgc = getattr(self, "qgc_last", {}) or {}
+
+            # --- Adu dua sumber manual: QGC (Xbox laptop) vs lokal
+            # (RC/gamepad kapal). Hitung di C (arb_manual2): keduanya
+            # aktif = KONFLIK kendali -> netral + warning, TANPA memilih.
+            try:
+                arb2 = core.arb_manual2(
+                    bool(qgc.get("active")),
+                    float(qgc.get("surge", 0.0)), float(qgc.get("yaw", 0.0)),
+                    bool(man.get("active")),
+                    float(man.get("surge", 0.0)), float(man.get("yaw", 0.0)))
+            except Exception:
+                arb2 = {"surge": 0.0, "yaw": 0.0, "source": 0,
+                        "source_name": "?", "conflict": False}
+
             op_mode = man.get("mode_name", "AUTO")
-            if op_mode == "MANUAL" and man.get("active"):
+            if arb2.get("conflict"):
+                # Dua operator memegang bersamaan -> paksa netral dulu.
+                man = dict(man, active=True, surge=0.0, yaw=0.0)
+                op_mode = "MANUAL"
+                status_txt = "KONFLIK manual (QGC + lokal) -> NETRAL"
+            elif qgc.get("active"):
+                # QGC menang (sumber lokal tidak aktif).
+                man = dict(man, active=True, mode_name="MANUAL",
+                           surge=float(arb2.get("surge", 0.0)),
+                           yaw=float(arb2.get("yaw", 0.0)),
+                           rc_ok=bool(qgc.get("rc_ok", False)),
+                           source="QGC")
+                op_mode = "MANUAL"
+                status_txt = (f"MANUAL-QGC (surge {float(arb2.get('surge', 0.0)):+.2f} "
+                              f"yaw {float(arb2.get('yaw', 0.0)):+.2f})")
+            elif op_mode == "MANUAL" and man.get("active"):
                 status_txt = (f"MANUAL (surge {float(man.get('surge', 0.0)):+.2f} "
                               f"yaw {float(man.get('yaw', 0.0)):+.2f})")
             elif op_mode == "KILL":
@@ -722,6 +760,7 @@ class GroundSimNavigator:
                 "manual_surge": float(man.get("surge", 0.0)),
                 "manual_yaw": float(man.get("yaw", 0.0)),
                 "rc_ok": bool(man.get("rc_ok", False)),
+                "manual_source": str(man.get("source", "AUTO")),
                 "gcs_forward": bool(getattr(self.mav, "gcs_active", False)),
             }
             # Baterai dari Pixhawk (SYS_STATUS/BATTERY_STATUS) bila terhubung.

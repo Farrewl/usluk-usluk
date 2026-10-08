@@ -173,6 +173,45 @@ def arbitrate(kill_active, manual_active,
     }
 
 
+# Nama sumber manual ganda — sama dengan ARB_MANUAL_* di arbitrator.h.
+MANUAL_NONE = 0
+MANUAL_QGC = 1
+MANUAL_LOCAL = 2
+MANUAL_CONFLICT = 3
+MANUAL2_NAMES = {0: "NONE", 1: "QGC", 2: "LOKAL", 3: "KONFLIK"}
+
+
+class _ArbManualC(ctypes.Structure):
+    _fields_ = [
+        ("surge", ctypes.c_double),
+        ("yaw", ctypes.c_double),
+        ("source", ctypes.c_int),
+        ("conflict", ctypes.c_int),
+    ]
+
+
+def arb_manual2(qgc_active, qgc_surge, qgc_yaw,
+                loc_active, loc_surge, loc_yaw):
+    """Pilih di antara 2 sumber manual QGC vs lokal (C).
+
+    Return dict surge/yaw/source/source_name/conflict. Dua-duanya aktif
+    = konflik kendali -> output netral (0,0) + conflict=True.
+    """
+    fn = _sig("arb_manual2", [_I, _D, _D, _I, _D, _D,
+                              ctypes.POINTER(_ArbManualC)], None)
+    out = _ArbManualC()
+    fn(int(bool(qgc_active)), float(qgc_surge), float(qgc_yaw),
+       int(bool(loc_active)), float(loc_surge), float(loc_yaw),
+       ctypes.byref(out))
+    return {
+        "surge": float(out.surge),
+        "yaw": float(out.yaw),
+        "source": int(out.source),
+        "source_name": MANUAL2_NAMES.get(int(out.source), "?"),
+        "conflict": bool(out.conflict),
+    }
+
+
 # ---------------------------------------------------------------------------
 # control_filters.h — PID + complementary + EKF (pengganti app/filtering.py)
 # ---------------------------------------------------------------------------

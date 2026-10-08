@@ -135,6 +135,7 @@ aterkia-asv/
 - **Gate Sequencer**: Kumpulkan semua pasang plausibel → latch target → switch cepat lewat midpoint (`GATE_VERTICAL_ALIGN_PX=75px`).
 - **Filter C Core**: PID+deadband/anti-windup, Complementary, EKF 1-D heading — bit-per-bit sama Python.
 - **Hardware Abstraction**: `thruster_mixer` (differential drive), `ecu_link` (STM32 UART), `arbitrator` (KILL>MANUAL>AUTO).
+- **Manual dari QGC**: Xbox di laptop → QGC → MAVLink `MANUAL_CONTROL` (via router 14550/14540) → `app/qgc_offboard.py` konversi ke (v, w); failsafe paket basi > `QGC_MANUAL_TIMEOUT_S` (0.5 dtk) → netral + HOLD. Arbitrasi QGC vs lokal (RC/gamepad) di C (`arb_manual2`): **dua-duanya aktif = konflik → netral + warning**, tidak ada rebutan diam-diam. Catatan: output servo/ESC tetap dari Pixhawk — companion memantau & mengarbitrasi, bukan penggerak PWM.
 - **Baterai GUI**: Chip status bar + panel monitoring — hijau ≥50%, kuning 20-50%, merah <20%, abu=no data (LiPO 4S 16.8→12.8 V).
 
 ---
@@ -144,7 +145,7 @@ aterkia-asv/
 ```bash
 # Unit test lengkap (termasuk cross-check C vs Python)
 python3 -m unittest discover -s tests -v
-# Target: 104 passed, 1 skipped
+# Target: 209 tests, 1 skipped
 
 # GUI headless (CI / server tanpa display)
 QT_QPA_PLATFORM=offscreen timeout 10 python main.py

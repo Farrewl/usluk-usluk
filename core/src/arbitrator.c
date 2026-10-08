@@ -34,3 +34,34 @@ void arb_select(int kill_active, int manual_active,
     out->yaw = arb_clamp1(auto_yaw);
     out->source = ARB_SRC_AUTO;
 }
+
+void arb_manual2(int qgc_active, double qgc_surge, double qgc_yaw,
+                 int loc_active, double loc_surge, double loc_yaw,
+                 arb_manual_t *out) {
+    if (out == 0) return;
+
+    /* Konflik: dua operator memegang bersamaan -> netral, jangan pilih. */
+    if (qgc_active && loc_active) {
+        out->surge = 0.0;
+        out->yaw = 0.0;
+        out->source = ARB_MANUAL_CONFLICT;
+        out->conflict = 1;
+        return;
+    }
+    out->conflict = 0;
+    if (qgc_active) {
+        out->surge = arb_clamp1(qgc_surge);
+        out->yaw = arb_clamp1(qgc_yaw);
+        out->source = ARB_MANUAL_QGC;
+        return;
+    }
+    if (loc_active) {
+        out->surge = arb_clamp1(loc_surge);
+        out->yaw = arb_clamp1(loc_yaw);
+        out->source = ARB_MANUAL_LOCAL;
+        return;
+    }
+    out->surge = 0.0;
+    out->yaw = 0.0;
+    out->source = ARB_MANUAL_NONE;
+}

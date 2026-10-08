@@ -252,6 +252,15 @@ class MainWindow(QMainWindow):
         l.addWidget(self.side_volt)
         layout.addWidget(f)
 
+        f, l = _card("Param Pixhawk")
+        self.side_param = QLabel("menunggu MAVLink")
+        self.side_param.setWordWrap(True)
+        self.side_param.setStyleSheet(
+            "font-family: monospace; font-size: 12px; color: #8b949e;"
+            " background: transparent;")
+        l.addWidget(self.side_param)
+        layout.addWidget(f)
+
         self.kill_btn = QPushButton("⏹ KILL")
         self.kill_btn.setObjectName("killBtn")
         self.kill_btn.setCheckable(True)
@@ -418,12 +427,17 @@ class MainWindow(QMainWindow):
         self._settings_dlg.activateWindow()
 
     def on_manual_kill_toggle(self):
+        """KILL / Estop dari GUI: masuk jalur C (mode_manager KILL) +
+        kirim DISARM Pixhawk. BUKAN mode manual — ini penghenti darurat."""
         on = self.kill_btn.isChecked()
         self.kill_btn.setText("⏹ KILL AKTIF" if on else "⏹ KILL")
         try:
             n = self.nav_thread.navigator
-            if hasattr(n, "manual_gui_request"):
-                n.manual_gui_request = bool(on)
+            if hasattr(n, "kill_request"):
+                if on:
+                    print("[KILL] Tombol KILL ditekan — gerak dihentikan, "
+                          "kirim DISARM ke Pixhawk (best-effort).")
+                n.kill_request = bool(on)
         except Exception:
             pass
 
@@ -605,6 +619,15 @@ class MainWindow(QMainWindow):
         fs_on = bool(data.get('failsafe_active', False))
         fs_reason = str(data.get('failsafe_reason', '') or '')
         up_pending = int(data.get('upload_pending', 0) or 0)
+        pc = str(data.get('pixhawk_check', '') or '')
+        if pc and self.side_param.text() != pc:
+            self.side_param.setText(pc)
+            pc_c = (theme.COLOR_OK if pc == "OK"
+                    else theme.COLOR_BAD if "KRITIS" in pc
+                    else theme.COLOR_WARN)
+            self.side_param.setStyleSheet(
+                "font-family: monospace; font-size: 12px;"
+                f" color: {pc_c}; background: transparent;")
         mode_c = (theme.COLOR_BAD if (op_mode == "KILL" or fs_on)
                   else theme.COLOR_WARN if op_mode in ("MANUAL", "HOLD")
                   else theme.COLOR_OK)

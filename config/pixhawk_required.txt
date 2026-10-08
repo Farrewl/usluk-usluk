@@ -1,0 +1,21 @@
+# Parameter failsafe WAJIB ArduPilot Rover — dibaca otomatis saat startup
+# oleh app/pixhawk_check.py (lihat juga tests/test_pixhawk_check.py).
+#
+# Format per baris (habis '#' = komentar):
+#     NAMA_PARAM  MIN  MAX  KRITIS(y/n)
+#     MIN/MAX '-' = tanpa batas. Nilai parameter di luar [MIN..MAX] = pelanggaran.
+#
+# Penting: cek HANYA MEMBACA (PARAM_REQUEST_READ) dan MELAPORKAN. Tidak pernah
+# menulis/mengubah parameter. Bila muncul pelanggaran, ubah lewat QGC / Mission
+# Planner lalu ulangi cek.
+#
+# 'y' (kritis)  = wajib benar sebelum berangkat — kalau melanggar, JANGAN uji air.
+# 'n' (advisory) = rekomendasi; perlu disesuaikan dengan baterai/tipe liputan.
+
+FS_GCS_ENABLE   1  1   y   # GCS/link hilang -> failsafe aktif (RTL). 0 = tanpa proteksi link
+FS_THR_ENABLE   1  1   y   # Throttle failsafe aktif (RC lost). 0 = ESC bisa terus jalan sendirian
+FS_CRASH_CHECK  1  1   y   # Deteksi tabrakan -> hold + matikan output. 0 = tabrakan tidak terdeteksi
+ARMING_CHECK   1  255 y   # Pre-arm check hidup. 0 = semua safety check dimatikan (BAHAYA)
+FS_EKF_THRESH  0.6 2.0  n  # Ambang error EKF; makin kecil makin sensitif. Jangan < 0.6
+BATT_LOW_VOLT  11.0 15.0 n # Low-batt sesuai baterai; contoh 3S=11.1V, 4S=14.8V
+BATT_CRT_VOLT  10.5 14.5 n # Critical: harus >= BATT_LOW_VOLT (cek sinkron keduanya)

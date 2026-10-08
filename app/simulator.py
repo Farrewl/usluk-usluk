@@ -299,6 +299,15 @@ class GroundSimNavigator:
         # Adu dengan sumber lokal via core.arb_manual2 (konflik -> netral).
         self.qgc_link = QgcOffboard(self.config)
         self.manual_gui_request = False
+        # KILL dari tombol GUI: masuk jalur C (mode_manager KILL) + kirim
+        # DISARM ke Pixhawk (lihat _send_disarm).
+        self.kill_request = False
+        self._disarm_sent_mono = 0.0
+        # Hasil cek param failsafe Pixhawk saat startup (thread daemon,
+        # lihat _pixhawk_param_check_worker). Dibaca GUI via data_signal.
+        self.pixhawk_check = "menunggu MAVLink"
+        threading.Thread(target=self._pixhawk_param_check_worker,
+                         daemon=True).start()
         self.manual_last = {"surge": 0.0, "yaw": 0.0, "active": False,
                             "mode": 0, "mode_name": "AUTO", "rc_ok": False,
                             "source": "AUTO"}
@@ -499,6 +508,74 @@ class GroundSimNavigator:
             print("[FAILSAFE] Perintah RTL dikirim (best-effort).")
         except Exception as e:
             print(f"[FAILSAFE] Gagal kirim RTL: {e}")
+
+    def _send_disarm(self):
+        """KILL dari tombol GUI: minta Pixhawk DISARM (best-effort).
+
+        MAV_CMD_COMPONENT_ARM_DISARM param1=0. Throttled 1x per 2 detik agar
+        tak membanjiri link. Pixhawk TETAP pemegang keselamatan utama (RCIN +
+        failsafe bawaan); perintah ini pelengkap agar ESC/ESC benar mati.
+        """
+        if not getattr(self, "kill_request", False):
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_disarm_sent_mono", 0.0) < 2.0:
+            return
+        self._disarm_sent_mono = now
+        try:
+            master = (getattr(self, "master", None)
+                      or (self.mav.master if getattr(self, "mav", None)
+                          is not None else None))
+            if master is None or mavutil is None:
+                return
+            master.mav.command_long_send(
+                master.target_system, master.target_component,
+                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0,
+                0, 0, 0, 0, 0, 0, 0)
+            print("[KILL] Disarm dikirim ke Pixhawk (best-effort).")
+        except Exception as e:
+            print(f"[KILL] Gagal kirim disarm: {e}")
+
+    def _pixhawk_param_check_worker(self):
+        """Cek parameter failsafe wajib sekali saat mav tersambung.
+
+        HANYA MEMBACA (PARAM_REQUEST_READ). Hasil disimpan di
+        self.pixhawk_check ('OK' / daftar pelanggaran) + dicetak.
+        Tidak memblokir loop utama (thread daemon).
+        """
+        from .pixhawk_check import load_spec, check_params, summarize
+        try:
+            spec = load_spec()
+        except Exception as e:
+            self.pixhawk_check = f"spec gagal dibaca ({e})"
+            print(f"[PIXHAWK-CHECK] {self.pixhawk_check}")
+            return
+        deadline = time.time() + 10.0
+        while time.time() < deadline:
+            mav = getattr(self, "mav", None)
+            master = (getattr(self, "master", None)
+                      or (mav.master if mav is not None else None))
+            if master is not None and mav is not None \
+                    and getattr(mav, "connected", False):
+                try:
+                    results = check_params(master, spec)
+                except Exception as e:
+                    self.pixhawk_check = f"gagal ({e})"
+                    print(f"[PIXHAWK-CHECK] {self.pixhawk_check}")
+                    return
+                self.pixhawk_check = summarize(results)
+                print(f"[PIXHAWK-CHECK] {self.pixhawk_check}")
+                for r in results:
+                    if r["status"] != "ok":
+                        tag = "KRITIS" if r["critical"] else "advisory"
+                        if r["status"] == "unread":
+                            print(f"  - {r['name']}: TIDAK DIJAWAB ({tag})")
+                        else:
+                            print(f"  - {r['name']}={r['value']} "
+                                  f"luar [{r['min']}..{r['max']}] ({tag})")
+                return
+            time.sleep(0.5)
+        self.pixhawk_check = "MAVLink tidak tersambung (cek dilewati)"
 
     def _check_failsafe(self):
         """Evaluasi failsafe tiap frame. Return "" bila aman, atau string
@@ -753,7 +830,7 @@ class GroundSimNavigator:
                 dt_man = max(1e-4, now_man - self._last_loop_t)
                 self._last_loop_t = now_man
                 self.manual_last = self.manual_link.update(
-                    dt=dt_man, kill=False,
+                    dt=dt_man, kill=self.kill_request,
                     gui_manual=self.manual_gui_request)
                 # Sumber manual QGC (Xbox via MAVLink) — poll non-blocking.
                 self.qgc_last = self.qgc_link.poll(dt=dt_man)
@@ -803,6 +880,8 @@ class GroundSimNavigator:
             if fs_reason:
                 status_txt = f"FAILSAFE ({fs_reason})"
                 op_mode = "FAILSAFE"
+            # KILL GUI: kirim DISARM best-effort (throttled di dalam).
+            self._send_disarm()
 
             # Simpan sementara agar bisa dimodifikasi sebelum emit.
             _pkt = {
@@ -832,6 +911,7 @@ class GroundSimNavigator:
                 "gcs_forward": bool(getattr(self.mav, "gcs_active", False)),
                 "failsafe_active": bool(self.failsafe_active),
                 "failsafe_reason": str(self.failsafe_reason),
+                "pixhawk_check": str(getattr(self, "pixhawk_check", "N/A")),
             }
             # Baterai dari Pixhawk (SYS_STATUS/BATTERY_STATUS) bila terhubung.
             if self.mav and self.mav.has_battery:

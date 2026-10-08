@@ -1,30 +1,37 @@
 # ============================================================
-# Dependensi Python ASV — bagi-bagi 3 grup agar jelas.
-# Install:  pip install -r requirements.txt
+# Dependensi Python ASV — resep MINIMAL produksi (Opsi B).
+# Install:
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r requirements.txt
+#   .venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu \
+#       torch==2.14.0+cpu torchvision==0.29.0+cpu
+# Verifikasi:
+#   .venv/bin/python -m unittest discover -s tests
+#
+# Rincian per paket + alasan ada di requirements-minimal.txt.
+# Paket yang DIHAPUS vs versi lama (tak ada import di kode):
+#   pyqtwebengine, folium   -> peta sudah app/slim_map.py murni Qt
+#   scipy, scikit-fuzzy     -> fuzzy jalan di C (core/src/fuzzy.c)
+#   keyboard                -> tak pernah terinstall/tak dipakai
+#   opencv-python (duplikat)-> cukup headless (GUI pakai Qt, bukan cv2 GUI)
+#   matplotlib & turunan    -> hanya lazy import training/plot YOLO
+#   polars                  -> hanya lazy import ekspor CSV YOLO
 # ============================================================
 
-# --- GUI dashboard ---
+# --- GUI dashboard (peta slim_map murni PyQt5, tanpa WebEngine) ---
 pyqt5
-pyqtwebengine
-folium
 
-# --- Komputer vision ---
-opencv-python-headless      # tidak butuh GUI window (kepala Pi)
-ultralytics                 # training & inferensi YOLO (untuk sekarang)
+# --- Komputer vision (YOLO tetap Python + .pt) ---
+opencv-python-headless
+ultralytics
 numpy
 
 # --- Telemetri & hardware ---
-pymavlink                   # MAVLink UART ke Pixhawk
+pymavlink
 pyserial
-scipy                       # dipakai scikit-fuzzy di belakang layar
-
-# --- Kecerdasan kontrol ---
-scikit-fuzzy                # fuzzy Sugeno untuk gate & docking
 
 # --- Komunikasi web ---
 redis
-websockets
 requests
 
-# --- Tooling ---
-keyboard                    # shortcut dev (opsional)
+# --- torch CPU-only: install terpisah dari index PyTorch (lihat atas) ---

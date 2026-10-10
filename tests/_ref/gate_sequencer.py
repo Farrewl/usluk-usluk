@@ -1,5 +1,5 @@
 """
-app/gate_sequencer.py — Urutan target gate (tengah merah-hijau) yang cepat.
+tests/_ref/gate_sequencer.py — Urutan target gate (tengah merah-hijau) yang cepat.
 
 Masalah yang dipecahkan: navigator lama hanya "memikirkan" SATU gate tiap
 frame (`_find_best_gate` = pasangan paling dekat). Begitu kapal melewati

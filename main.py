@@ -1,12 +1,3 @@
-"""main.py — Dashboard modern ASV (sidebar + video + tab, tema gelap).
-
-Layout gaya OpenCode: sidebar kiri (info kritis + KILL), tengah
-(video besar + peta ringan), kanan bertab (Misi/Manual), status bar
-4 chip. Tuning pindah ke dialog Settings (lazy-load).
-
-Throttle agar ringan: video tiap paket (25 Hz), teks telemetri 5 Hz,
-peta 1 Hz, chip FPS 1 Hz. Tanpa setStyleSheet per-frame (cache warna).
-"""
 import sys
 import os
 import csv
@@ -28,7 +19,15 @@ os.environ.pop("QT_QPA_FONTDIR", None)
 # qt.network.ssl tak ada gunanya selain mengotori terminal.
 os.environ.setdefault("QT_LOGGING_RULES", "qt.network.ssl.warning=false")
 
-from app.simulator import NavigatorThread
+# Pilih backend: ASV_BACKEND=nav (default, kapal produksi via Pixhawk) atau
+# ASV_BACKEND=sim (ground simulator darat, kamera+YOLO asli, posisi mock).
+_ASV_BACKEND = os.environ.get("ASV_BACKEND", "nav").strip().lower()
+if _ASV_BACKEND in ("sim", "simulator", "ground"):
+    from app.simulator import GroundSimNavigatorThread as NavigatorThread
+else:
+    from app.navigator import NavigatorThread
+    _ASV_BACKEND = "nav"
+
 from app.slim_map import SlimMapWidget
 from app.settings_dialog import SettingsDialog
 from app import gui_theme as theme
@@ -293,6 +292,7 @@ class MainWindow(QMainWindow):
         vid_split.setSizes([700, 260])
         self.video_panel_bawah.hide()  # muncul bila frame bawah ada
         self._bawah_shown = False
+        self._last_sec_obj = None      # cache identitas frame bawah (anti re-render)
         split.addWidget(vid_split)
         split.addWidget(self.slim_map)
         split.setSizes([560, 300])
@@ -539,13 +539,19 @@ class MainWindow(QMainWindow):
         try:
             sec = data.get('frame_secondary')
             if sec is not None:
-                if not self._bawah_shown:
-                    self.video_panel_bawah.show()
-                    self._bawah_shown = True
-                self.video_panel_bawah.set_frame(sec)
+                # Frame bawah di-cache di navigator (dibaca 10 Hz); hanya
+                # render ulang bila objeknya BERUBAH — hemat konversi QImage
+                # yang mahal di tiap paket 25 Hz.
+                if sec is not self._last_sec_obj:
+                    self._last_sec_obj = sec
+                    if not self._bawah_shown:
+                        self.video_panel_bawah.show()
+                        self._bawah_shown = True
+                    self.video_panel_bawah.set_frame(sec)
             elif self._bawah_shown:
                 self.video_panel_bawah.hide()
                 self._bawah_shown = False
+                self._last_sec_obj = None
         except Exception:
             pass
         # --- status kamera + sumber telemetri (chip jujur P6-A/B) ---

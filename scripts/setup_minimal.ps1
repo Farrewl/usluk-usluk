@@ -3,7 +3,7 @@
 #
 # Padanan scripts/setup_minimal.sh (urut & kunci penghematan SAMA):
 # Hasil: .venv ±1,3 GB dengan seluruh fungsi produksi jalan:
-# GUI PyQt, YOLO 4 model (.pt), MAVLink, Redis/upload.
+# GUI PyQt, YOLO 4 model (.pt), MAVLink.
 #
 # Pakai (PowerShell, dari root repo):
 #   powershell -ExecutionPolicy Bypass -File scripts\setup_minimal.ps1
@@ -90,7 +90,7 @@ if (-not (Test-Path (Join-Path "weights" "buoy.pt"))) {
 import numpy as np
 import torch
 assert torch.version.cuda is None, f"KECETOT varian CUDA: {torch.__version__}"
-import cv2, redis, serial
+import cv2, serial
 from PyQt5.QtWidgets import QApplication
 from pymavlink import mavutil
 print(f"torch {torch.__version__} | cv2 {cv2.__version__} | import OK")

@@ -1,5 +1,5 @@
 """
-app/geo.py — Utilitas geodetik murni (tanpa dependensi eksternal).
+tests/_ref/geo.py — Utilitas geodetik murni (tanpa dependensi eksternal).
 
 Dipakai oleh app/navigator.py dan app/simulator.py agar rumus matematika
 navigasi TIDAK terduplikasi di tiga tempat seperti sebelumnya.

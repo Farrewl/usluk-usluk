@@ -3,7 +3,7 @@
 # scripts/setup_minimal.sh — install .venv minimal ASV (Opsi B).
 #
 # Hasil: .venv ±1,3 GB (vs ±2,2 GB resep lama) dengan seluruh fungsi
-# produksi jalan: GUI PyQt, YOLO 4 model (.pt), MAVLink, Redis/upload.
+# produksi jalan: GUI PyQt, YOLO 4 model (.pt), MAVLink.
 #
 # Pakai:
 #   ./scripts/setup_minimal.sh
@@ -60,7 +60,7 @@ echo "[5/5] Verifikasi import inti + inferensi YOLO..."
 import numpy as np
 import torch
 assert torch.__version__.endswith("+cpu"), f"KECETOT varian non-CPU: {torch.__version__}"
-import cv2, redis, serial
+import cv2, serial
 from PyQt5.QtWidgets import QApplication
 from ultralytics import YOLO
 from pymavlink import mavutil

@@ -22,10 +22,8 @@ Kontrak antarmuka thread (wajib ada, dipakai panel tuning main.py):
 
 import math
 import os
-import json
 import time
 import random
-import queue
 import threading
 
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -33,15 +31,12 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from . import settings as cfg
 from . import aterkia_core as core
 
-try:
-    from pymavlink import mavutil
-    MAVLINK_IMPORT_OK = True
-except ImportError:  # pragma: no cover - mesin tanpa pymavlink
-    mavutil = None
-    MAVLINK_IMPORT_OK = False
 from .manual_link import ManualLink
 from .qgc_offboard import QgcOffboard
 from .camera import pace_to_fps
+from .output_link import OutputLink
+from .safety import SafetyManager
+from .yolo_worker import YoloWorker
 
 try:
     import numpy as np
@@ -80,122 +75,6 @@ try:
     VALIDATION_AVAILABLE = True
 except ImportError:  # cv2/numpy tidak ada -> fallback ke plot() bawaan YOLO
     VALIDATION_AVAILABLE = False
-
-
-# ---------------------------------------------------------------------------
-# _YoloWorker — inferensi YOLO paralel (video loop tak pernah menunggu)
-# ---------------------------------------------------------------------------
-class _YoloWorker(QThread):
-    """Jalankan inferensi YOLO di thread terpisah.
-
-    Loop video menyerahkan frame ke worker lalu langsung melanjutkan
-    (tidak menunggu). Hasil terbaru per model diambil lewat `latest()`.
-    Dengan begitu, biarpun inferensi lambat di CPU, capture & tampilan
-    kamera tetap stabil di ~30 fps (frame-skip hanya mengatur seberapa
-    sering frame diserahkan ke worker).
-    """
-
-    def __init__(self, config, parent=None):
-        super().__init__(parent)
-        self.config = config
-        self._jobs = queue.Queue(maxsize=2)  # job lama dibuang, yang baru penting
-        self._latest = {}                    # id(model) -> (detected, annotated)
-        self._gate_model = None
-        self._lock = threading.Lock()
-        self._stop_event = threading.Event()
-
-    def bind_gate_model(self, model):
-        """Tandai model gate: hasilnya butuh >= 2 objek (2 buoy)."""
-        self._gate_model = model
-
-    def submit(self, model, frame, conf):
-        """Serahkan frame untuk di-infer. Antrean lama di-geser bila penuh."""
-        if model is None:
-            return
-        try:
-            self._jobs.get_nowait()
-        except queue.Empty:
-            pass
-        self._jobs.put_nowait((id(model), model, frame, conf))
-
-    def latest(self, model):
-        """Hasil terbaru untuk `model`; None bila belum pernah selesai."""
-        with self._lock:
-            return self._latest.get(id(model))
-
-    def run(self):
-        while not self._stop_event.is_set():
-            try:
-                mid, model, frame, conf = self._jobs.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            keep = []
-            try:
-                results = model(frame, verbose=False, conf=conf,
-                                imgsz=self.config.YOLO_INFERENCE_SIZE)
-                keep = []
-                for b in results[0].boxes:
-                    cls = int(b.cls[0])
-                    xyxy = b.xyxy[0].tolist()
-                    if model is self._gate_model and self._gate_model is not None:
-                        if cls in (self.config.RED_BALL_CLASS_ID,
-                                   self.config.GREEN_BALL_CLASS_ID):
-                            # Filter pasca-YOLO: warna + bentuk + area.
-                            # Objek mirip bola tapi bukan buoy (mis. wajah
-                            # operator) tidak lolos -> tidak ditampilkan.
-                            if not VALIDATION_AVAILABLE or not validate_buoy(
-                                    frame, cls, xyxy,
-                                    min_area=self.config.MIN_BUOY_AREA_PX,
-                                    min_color_fraction=self.config.BUOY_MIN_COLOR_FRACTION,
-                                    min_saturation=self.config.BUOY_MIN_SATURATION,
-                                    max_aspect_deviation=self.config.BUOY_MAX_ASPECT_DEVIATION):
-                                continue
-                    keep.append((cls, float(b.conf[0]), xyxy))
-                if VALIDATION_AVAILABLE:
-                    annotated = draw_validated_boxes(frame, keep,
-                                                     results[0].names)
-                else:
-                    annotated = results[0].plot()
-                detected = len(keep) > 0
-                if model is self._gate_model and self._gate_model is not None:
-                    detected = len(keep) >= 2  # gate butuh 2 buoy
-            except Exception as exc:  # model rusak / frame tak terduga
-                print(f"[YOLO-W] Inferensi gagal: {exc}")
-                detected, annotated = False, frame
-            with self._lock:
-                self._latest[mid] = (detected, annotated, list(keep),
-                                     time.monotonic())
-
-    def latest_boxes_any(self, max_age_s=0.5):
-        """Kotak deteksi (cls, conf, xyxy) dari hasil TERBARU semua model.
-
-        Dipakai hindar-rintangan reaktif: hasil lebih tua dari `max_age_s`
-        dianggap basi -> []. Return list kosong bila worker belum pernah
-        selesai atau semuanya basi (jangan menggerakkan avoid dgn data lama).
-        """
-        with self._lock:
-            now = time.monotonic()
-            newest = None
-            for item in self._latest.values():
-                try:
-                    _det, _ann, boxes, ts = item
-                except Exception:
-                    continue
-                if not boxes:
-                    continue
-                if newest is None or ts > newest[0]:
-                    newest = (ts, boxes)
-        if newest is None:
-            return []
-        ts, boxes = newest
-        if now - ts > max_age_s:
-            return []
-        return list(boxes)
-
-    def stop_and_wait(self):
-        """Hentikan loop worker dan tunggu sampai threadnya selesai."""
-        self._stop_event.set()
-        self.wait(3000)
 
 
 # ---------------------------------------------------------------------------
@@ -268,14 +147,11 @@ class GroundSimNavigator:
             self.gate_model = self.box_model = None
             self.blue_box_model = self.red_dock_model = None
 
-        # --- Failsafe otomatis (stale-link + low-batt) — port dari
-        # navigator.py lama; dipanggil tiap frame sebelum emit status.
-        # Field dibaca test_failsafe.py, jangan ganti nama atribut.
-        self.failsafe_active = False
-        self.failsafe_reason = ""
-        self._lowbatt_since = None
-        self._rtl_sent_mono = 0.0
-        self._last_telem_mono = 0.0
+        # --- Failsafe otomatis (stale-link + low-batt). Logika bersama ada
+        # di app/safety.py; perintah RTL/disarm lewat app/output_link.py
+        # (dipakai bersama app/navigator.py — satu sumber logika).
+        self.output = OutputLink(self.config)
+        self.safety = SafetyManager(self.config, link=self.output)
 
     def _load_models_async(self):
         """Muat 3 model non-gate di thread latar."""
@@ -312,6 +188,8 @@ class GroundSimNavigator:
         self._loop_start = time.time()
         self._yolo_subcount = 0
         self._last_detection = {}   # id(model) -> (detected, annotated)
+        self._sec_seq = 0           # throttle baca kamera bawah (preview)
+        self._last_sec_frame = None
         # Histeresis telemetri mock->real: butuh N frame bagus beruntun
         # sebelum pindah (hindari GUI lompat saat Pixhawk baru dicolok /
         # heartbeat sesaat). Mundur ke mock juga butuh N gagal beruntun.
@@ -328,9 +206,8 @@ class GroundSimNavigator:
         self.qgc_link = QgcOffboard(self.config)
         self.manual_gui_request = False
         # KILL dari tombol GUI: masuk jalur C (mode_manager KILL) + kirim
-        # DISARM ke Pixhawk (lihat _send_disarm).
+        # DISARM ke Pixhawk (lihat self.output.send_disarm).
         self.kill_request = False
-        self._disarm_sent_mono = 0.0
         # Hasil cek param failsafe Pixhawk saat startup (thread daemon,
         # lihat _pixhawk_param_check_worker). Dibaca GUI via data_signal.
         self.pixhawk_check = "menunggu MAVLink"
@@ -379,6 +256,7 @@ class GroundSimNavigator:
             try:
                 self.manual_link.attach_mav(self.mav.master)
                 self.qgc_link.attach_mav(self.mav.master)
+                self.output.attach_mav(self.mav.master)
             except Exception:
                 pass
             if os.environ.get("GCS_FORWARD", "0") == "1":
@@ -417,7 +295,7 @@ class GroundSimNavigator:
                               yaw_bias_norm=0.0):
         """Geser posisi mock mendekati target; True jika sudah tiba (<2 m).
 
-        Geodesi dihitung di C (nav_math via aterkia_core); app/geo.py hanya
+        Geodesi dihitung di C (nav_math via aterkia_core); tests/_ref/geo.py hanya
         referensi uji. `yaw_bias_norm` [-1..1] dari hindar-rintangan reaktif:
         menggeser heading mock maks 25° (belok menjauh, HUD ikut terlihat).
         """
@@ -440,13 +318,15 @@ class GroundSimNavigator:
     def _run_yolo_detection(self, model, frame, run_now=True):
         """Inferensi YOLO ASINKRON — loop video tidak pernah menunggu.
 
-        `run_now=True` menyerahkan frame terbaru ke `_YoloWorker`.
-        Hasil yang sudah siap dipakai untuk update status; saat belum ada
-        hasil baru, hasil terakhir model yang sama dipakai. Dengan ini
-        capture & tampilan kamera tetap ~30 fps walaupun inferensi lambat.
+        `run_now=True` menyerahkan frame terbaru ke `YoloWorker` (worker
+        bersama, sama seperti app/navigator.py). Hasil yang sudah siap
+        dipakai untuk update status; saat belum ada hasil baru, hasil
+        terakhir model yang sama dipakai. Dengan ini capture & tampilan
+        kamera tetap ~30 fps walaupun inferensi lambat.
         """
         if model is None or not YOLO_AVAILABLE:
             return False, frame
+        mid = id(model)
         if run_now:
             conf = 0.5
             if model is self.gate_model:
@@ -454,12 +334,12 @@ class GroundSimNavigator:
                 # sebagai buoy — confidence-nya dinaikkan lewat config
                 # (BUOY_CONF_THRESHOLD) + validasi warna/bentuk di worker.
                 conf = self.config.BUOY_CONF_THRESHOLD
-            self._yolo_worker.submit(model, frame.copy(), conf)
-        result = self._yolo_worker.latest(model)
+            self._yolo_worker.submit(mid, model, frame.copy(), conf)
+        result = self._yolo_worker.latest_status(mid)
         if result is None:
-            return self._last_detection.get(id(model), (False, frame))
+            return self._last_detection.get(mid, (False, frame))
         detected, annotated, _boxes, _ts = result
-        self._last_detection[id(model)] = (detected, annotated)
+        self._last_detection[mid] = (detected, annotated)
         return detected, annotated
 
     # ------------------- Foto bawah air (WP 8) -------------------
@@ -503,10 +383,17 @@ class GroundSimNavigator:
             self.config.FRAME_WIDTH = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             self.config.FRAME_HEIGHT = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # ------------------- Failsafe otomatis (port dari navigator.py) ---
-    # ID mode RTL ArduPilot Rover; jeda antar percobaan kirim RTL.
-    _ROVER_RTL_MODE = 11
-    _RTL_RETRY_INTERVAL_S = 5.0
+    # ------------------- Failsafe otomatis (logika bersama) ----------
+    # Implementasi ada di app/safety.py + app/output_link.py (dipakai
+    # bersama app/navigator.py). Di sini hanya adaptor sumber baterai
+    # (mock vs Pixhawk) supaya atribut GUI tetap kompatibel.
+    @property
+    def failsafe_active(self):
+        return self.safety.failsafe_active
+
+    @property
+    def failsafe_reason(self):
+        return self.safety.failsafe_reason
 
     def _battery_fields(self):
         """Baca baterai: dari Pixhawk (mav) bila terhubung, else atribut mock."""
@@ -520,57 +407,14 @@ class GroundSimNavigator:
                 "current_a": getattr(self, "current_current", None)}
 
     def _request_rtl(self):
-        """Minta mode RTL via MAV_CMD_DO_SET_MODE (best-effort, throttled).
-
-        Pixhawk TETAP pemegang failsafe utama (RCIN + geofence bawaan);
-        perintah ini hanya usaha tambahan, maks 1x per _RTL_RETRY_INTERVAL_S
-        agar tak membanjiri link MAVLink yang sedang bermasalah.
-        """
-        now = time.monotonic()
-        if now - self._rtl_sent_mono < self._RTL_RETRY_INTERVAL_S:
-            return
-        self._rtl_sent_mono = now
-        try:
-            master = (getattr(self, "master", None)
-                      or (self.mav.master if getattr(self, "mav", None)
-                          is not None else None))
-            if master is None or mavutil is None:
-                return
-            master.mav.command_long_send(
-                master.target_system, master.target_component,
-                mavutil.mavlink.MAV_CMD_DO_SET_MODE, 0,
-                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                self._ROVER_RTL_MODE, 0, 0, 0, 0, 0)
-            print("[FAILSAFE] Perintah RTL dikirim (best-effort).")
-        except Exception as e:
-            print(f"[FAILSAFE] Gagal kirim RTL: {e}")
+        """Minta mode RTL (best-effort, throttled) via OutputLink bersama."""
+        self.output.request_rtl()
 
     def _send_disarm(self):
-        """KILL dari tombol GUI: minta Pixhawk DISARM (best-effort).
-
-        MAV_CMD_COMPONENT_ARM_DISARM param1=0. Throttled 1x per 2 detik agar
-        tak membanjiri link. Pixhawk TETAP pemegang keselamatan utama (RCIN +
-        failsafe bawaan); perintah ini pelengkap agar ESC/ESC benar mati.
-        """
+        """KILL dari tombol GUI: minta Pixhawk DISARM via OutputLink bersama."""
         if not getattr(self, "kill_request", False):
             return
-        now = time.monotonic()
-        if now - getattr(self, "_disarm_sent_mono", 0.0) < 2.0:
-            return
-        self._disarm_sent_mono = now
-        try:
-            master = (getattr(self, "master", None)
-                      or (self.mav.master if getattr(self, "mav", None)
-                          is not None else None))
-            if master is None or mavutil is None:
-                return
-            master.mav.command_long_send(
-                master.target_system, master.target_component,
-                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0,
-                0, 0, 0, 0, 0, 0, 0)
-            print("[KILL] Disarm dikirim ke Pixhawk (best-effort).")
-        except Exception as e:
-            print(f"[KILL] Gagal kirim disarm: {e}")
+        self.output.send_disarm()
 
     def _pixhawk_param_check_worker(self):
         """Cek parameter failsafe wajib sekali saat mav tersambung.
@@ -656,57 +500,16 @@ class GroundSimNavigator:
             return {"yaw_bias": 0.0, "memory_s": 0.0, "active": False}
 
     def _check_failsafe(self):
-        """Evaluasi failsafe tiap frame. Return "" bila aman, atau string
-        alasan bila aktif — caller mematikan gerak + menimpa status.
+        """Evaluasi failsafe tiap frame (logika bersama di app/safety.py).
 
-        Pemicu (ambang di Config, tab Failsafe di Settings):
-          1. stale-link: tak ada ATTITUDE/GLOBAL_POSITION > timeout_s;
-          2. low-batt: persen ATAU tegangan di bawah ambang, DITAHAN selama
-             hold agar spike sesaat tidak memicu RTL palsu.
-        Pulih otomatis bila kondisi normal kembali.
+        Return "" bila aman, atau string alasan bila aktif — caller
+        mematikan gerak + menimpa status. Sumber baterai mock/Pixhawk
+        dibaca `_battery_fields`; staleness link dilacak `self.safety`
+        (lihat `self.safety.mark_telem()` di loop utama).
         """
-        if not getattr(self.config, "FAILSAFE_ENABLED", True):
-            if self.failsafe_active:
-                self.failsafe_active = False
-                self.failsafe_reason = ""
-            return ""
-        now = time.monotonic()
-        reason = ""
-        timeout = float(getattr(self.config, "FAILSAFE_TELEM_TIMEOUT_S", 2.0))
-        last = float(getattr(self, "_last_telem_mono", 0.0) or 0.0)
-        if last > 0.0 and (now - last) > timeout:
-            reason = f"telemetri basi {now - last:.1f}s"
-        if not reason:
-            fields = self._battery_fields()
-            pct = fields.get("battery_pct")
-            volt = fields.get("voltage_v")
-            low_pct = float(getattr(self.config, "FAILSAFE_LOW_BATT_PCT", 20.0))
-            low_v = float(getattr(self.config, "FAILSAFE_LOW_VOLT_V", 13.2))
-            hold = float(getattr(self.config, "FAILSAFE_LOW_BATT_HOLD_S", 3.0))
-            low = ((pct is not None and pct < low_pct)
-                   or (volt is not None and volt < low_v))
-            if low:
-                if self._lowbatt_since is None:
-                    self._lowbatt_since = now
-                elif now - self._lowbatt_since >= hold:
-                    detail = (f"{pct:.0f}%" if pct is not None
-                              else f"{volt:.1f}V")
-                    reason = f"baterai rendah {detail}"
-            else:
-                self._lowbatt_since = None
-        if reason:
-            if not self.failsafe_active:
-                print(f"[FAILSAFE] AKTIF: {reason} — gerak dihentikan "
-                      "dan coba RTL.")
-            self.failsafe_active = True
-            self.failsafe_reason = reason
-            self._request_rtl()
-            return reason
-        if self.failsafe_active:
-            print("[FAILSAFE] Pulih: kondisi normal kembali.")
-        self.failsafe_active = False
-        self.failsafe_reason = ""
-        return ""
+        fields = self._battery_fields()
+        return self.safety.check(fields.get("battery_pct"),
+                                 fields.get("voltage_v"))
 
     # ------------------- Loop utama -------------------
     def run(self, data_signal):
@@ -723,7 +526,7 @@ class GroundSimNavigator:
 
         # Worker YOLO asinkron: video loop jalan 30 fps terlepas dari
         # kecepatan inferensi (deteksi tersedia di saatnya).
-        self._yolo_worker = _YoloWorker(self.config)
+        self._yolo_worker = YoloWorker(self.config)
         self._yolo_worker.bind_gate_model(self.gate_model)
         self._yolo_worker.start()
         self._load_models_async()
@@ -758,12 +561,24 @@ class GroundSimNavigator:
                           if _cam_st == "RETRY"
                           else "KAMERA BELUM ADA — colok USB / Scan"))
             # --- Baca frame BAWAH (downscale, None bila tak ada) ---
+            # Hanya PREVIEW GUI -> throttle 1x per SECONDARY_PREVIEW_INTERVAL
+            # frame (hemat bandwidth USB + CPU); frame terakhir di-cache agar
+            # panel GUI tidak berkedip.
             _sec_ok, _sec_frame = False, None
             if self.cam is not None:
                 try:
-                    _sec_ok, _sec_frame, _ = self.cam.read_secondary()
+                    self._sec_seq += 1
+                    interval = max(1, int(getattr(
+                        self.config, "SECONDARY_PREVIEW_INTERVAL", 3)))
+                    if self._last_sec_frame is None or \
+                            (self._sec_seq % interval) == 0:
+                        _sec_ok, _sec_frame, _ = self.cam.read_secondary()
+                        self._last_sec_frame = _sec_frame \
+                            if (_sec_ok and _sec_frame is not None) else None
+                    _sec_frame = self._last_sec_frame
+                    _sec_ok = _sec_frame is not None
                 except Exception:
-                    _sec_ok, _sec_frame = False, None
+                    _sec_ok, _sec_frame = False, self._last_sec_frame
 
             elapsed = time.time() - self.state_timer
             status_txt = "Transit"
@@ -886,9 +701,9 @@ class GroundSimNavigator:
                     pass
             _mav_has = (self.mav is not None and self.mav.connected
                         and self.mav.has_attitude)
-            # Stamp umur telemetri untuk failsafe stale-link (port navigator).
+            # Stamp umur telemetri untuk failsafe stale-link (SafetyManager).
             if _mav_has:
-                self._last_telem_mono = time.monotonic()
+                self.safety.mark_telem()
             use_real = self._telem_decide_source(_mav_has)
             if use_real:
                 yaw_deg = self.mav.yaw_deg

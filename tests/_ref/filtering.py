@@ -5,14 +5,14 @@ Semua "pemikiran untuk galat" dipusatkan di sini (bukan tersebar di
 navigator.py) supaya bisa diuji per-modul dan di-port 1:1 ke C di
 `core/src/control_filters.c` — dibuktikan identik lewat
 `tests/test_core_control_filters.py` (ctypes vs Python), mengikuti pola
-`app/geo.py` <-> `core/src/nav_math.c`.
+`tests/_ref/geo.py` <-> `core/src/nav_math.c`.
 
 Isi modul (sesuai permintaan):
   1. PID dengan deadband   — kontroler koreksi yaw pengganti gain-P murni.
   2. Complementary filter  — fusi heading terukur dengan laju yaw gyro.
   3. EKF heading (1-dimensi) — estimasi heading + bias gyro yang halus.
-  4. Normalisasi wrap-around — delegasi ke app/geo.normalize_angle.
-  5. Cross-Track Error (CTE) — delegasi ke app/geo.cross_track_distance.
+  4. Normalisasi wrap-around — delegasi ke _ref/geo.normalize_angle.
+  5. Cross-Track Error (CTE) — delegasi ke _ref/geo.cross_track_distance.
 
 Semua fungsi murni/tanpa state tersembunyi (kecuali objek kontroler yang
 state-nya eksplisit lewat atribut) sehingga mudah diuji deterministik.
@@ -20,7 +20,7 @@ state-nya eksplisit lewat atribut) sehingga mudah diuji deterministik.
 
 import math
 
-from app import geo
+from _ref import geo
 
 # Batas dt yang masuk akal (detik) untuk melindungi pembagian saat loop
 # menghasilkan dt=0 (mis. kondisi telemetri kosong).
@@ -175,6 +175,6 @@ def normalize_wrap(angle_rad):
 
 
 def cross_track_error(lat_p, lon_p, lat_wp1, lon_wp1, lat_wp2, lon_wp2):
-    """Delegasi CTE (Cross-Track Error) ke app/geo — satu sumber kebenaran."""
+    """Delegasi CTE (Cross-Track Error) ke _ref/geo — satu sumber kebenaran."""
     return geo.cross_track_distance(lat_p, lon_p, lat_wp1, lon_wp1,
                                     lat_wp2, lon_wp2)

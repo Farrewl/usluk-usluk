@@ -1,10 +1,10 @@
 """Test kunci — buktikan bahwa C (nav_math.c) menghasilkan output yang
-SAMA dengan Python (app/geo.py), bukan sekadar "angka mirip".
+SAMA dengan Python (tests/_ref/geo.py), bukan sekadar "angka mirip".
 
 Cara kerja:
   1. Compile core/src/nav_math.c -> libnav_math.so (gcc, sementara).
   2. Panggil fungsi C lewat ctypes.
-  3. Bandingkan terhadap app/geo.py pada grid deterministik + 500 kasus acak.
+  3. Bandingkan terhadap tests/_ref/geo.py pada grid deterministik + 500 kasus acak.
 
 Jalankan:  python3 -m unittest discover -s tests -v
 """
@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 import unittest
 
-from app import geo
+from _ref import geo
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_C = os.path.join(REPO, "core", "src", "nav_math.c")

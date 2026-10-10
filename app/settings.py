@@ -71,7 +71,7 @@ def _load_saved_params():
 
 # Parameter yang BOLEH disimpan/upload ke tuning_params.json.
 # Kunci ini dipakai bersama _load_saved_params(): key lain (path model,
-# port serial, host redis, index kamera, ...) TIDAK ikut tersimpan agar
+# port serial, index kamera, ...) TIDAK ikut tersimpan agar
 # file tetap portable antar mesin (Windows dev / Pi / laptop mana pun).
 TUNING_PARAM_KEYS = frozenset({
     # video & navigasi umum
@@ -126,12 +126,14 @@ TUNING_PARAM_KEYS = frozenset({
     "RC_CH_DEADMAN", "MANUAL_LOST_HOLD_S",
     # manual dari QGC (app/qgc_offboard.py — Xbox via MAVLink)
     "QGC_MANUAL_TIMEOUT_S",
-    # failsafe otomatis (lihat app/navigator.py _check_failsafe)
+    # failsafe otomatis (lihat app/safety.py)
     "FAILSAFE_ENABLED", "FAILSAFE_TELEM_TIMEOUT_S",
     "FAILSAFE_LOW_BATT_PCT", "FAILSAFE_LOW_VOLT_V",
     "FAILSAFE_LOW_BATT_HOLD_S",
-    # YOLO async (lihat app/yolo_async.py)
+    # YOLO async (lihat app/yolo_worker.py)
     "YOLO_FRAME_SKIP", "YOLO_INFERENCE_SIZE", "YOLO_RESULT_MAX_AGE_S",
+    # Video: throttle preview kamera bawah (lihat app/navigator.py)
+    "SECONDARY_PREVIEW_INTERVAL",
     # P6-B: Pixhawk non-blocking + histeresis telemetri
     "MAV_CONNECT_TIMEOUT_S", "MAV_RETRY_INTERVAL_S",
     "TELEM_HYSTERESIS_FRAMES",
@@ -336,7 +338,7 @@ class Config:
         # kendali -> netral (lihat app/qgc_offboard.py).
         self.QGC_MANUAL_TIMEOUT_S = saved.get('QGC_MANUAL_TIMEOUT_S', 0.5)
 
-        # ---------- Failsafe otomatis (lihat _check_failsafe) ----------
+        # ---------- Failsafe otomatis (lihat app/safety.py) ----------
         # Telemetri stale (tak ada ATTITUDE/GLOBAL_POSITION > batas) ATAU
         # baterai rendah (persen ATAU tegangan di bawah ambang, ditahan
         # selama FAILSAFE_LOW_BATT_HOLD_S agar spike sesaat tak memicu) ->
@@ -354,6 +356,10 @@ class Config:
         # ---------- YOLO & video ----------
         self.YOLO_FRAME_SKIP = saved.get('YOLO_FRAME_SKIP', 2)
         self.YOLO_INFERENCE_SIZE = saved.get('YOLO_INFERENCE_SIZE', 256)
+        # Kamera BAWAH cuma preview GUI: baca 1x per N frame (30 Hz / 3 = 10 Hz)
+        # supaya tak berebut bandwidth USB dengan kamera navigasi utama.
+        self.SECONDARY_PREVIEW_INTERVAL = saved.get(
+            'SECONDARY_PREVIEW_INTERVAL', 3)
         # Umur maks hasil async (detik): hasil lebih tua dianggap basi dan
         # loop memakai cache terakhir / kosong. 0.5 s ~= 1-2 frame @ inferensi
         # lambat; cukup segar untuk kontrol, cukup longgar untuk CPU RPi.

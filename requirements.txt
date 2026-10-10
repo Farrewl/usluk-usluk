@@ -1,7 +1,7 @@
 # ============================================================
 # requirements.txt — SATU-SATUNYA resep dependensi ASV (Opsi B).
-# Freeze 41 paket yang TERBUKTI jalan (GUI, YOLO 4 model, MAVLink,
-# Redis/upload) — dipin versi persis.
+# Freeze 41 paket yang TERBUKTI jalan (GUI, YOLO 4 model, MAVLink)
+# — dipin versi persis.
 #
 # Install TERBAIK (urutan penting!):
 #   Linux  : ./scripts/setup_minimal.sh

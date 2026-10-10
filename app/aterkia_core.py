@@ -298,7 +298,7 @@ class EkfState:
 
 
 # ---------------------------------------------------------------------------
-# nav_math.h — geodesi (pengganti app/geo.py di jalur produksi)
+# nav_math.h — geodesi (pengganti oracle tests/_ref/geo.py di produksi)
 # ---------------------------------------------------------------------------
 
 def nav_normalize_angle(angle_rad):
@@ -490,7 +490,7 @@ def avoid_update(state, det_cx_norm, det_w_norm, dt_s):
 
 # ---------------------------------------------------------------------------
 # gate_vision.h — koleksi pasangan + jarak pinhole + kriteria geometri buoy
-# + sequencer latch (pengganti app/gate_sequencer.py di jalur produksi).
+# + sequencer latch (pengganti oracle tests/_ref/gate_sequencer.py di produksi).
 # Warna HSV tetap di Python (butuh citra); modul ini hanya geometri.
 # ---------------------------------------------------------------------------
 
@@ -681,3 +681,131 @@ class GateSequencerC:
         if not has:
             return None, None, float("inf"), False
         return float(mx.value), float(my.value), float(dist.value), bool(ps.value)
+
+
+# ---------------------------------------------------------------------------
+# state_machine.h — mesin state misi 16 state + guard (pengganti
+# app/state_machine.py). Hanya memutuskan "ke state mana berikutnya" +
+# efek samping; thrust/vision/kamera tetap di Python.
+# ---------------------------------------------------------------------------
+
+# Sentinel guard: tidak ada halangan, misi boleh lanjut. = ((sm_state_t)-1)
+SM_NONE = -1
+
+# Urutan enum sm_state_t (state_machine.h). Nama index = SM_STATES[i].
+SM_WAITING_GPS = 0
+SM_NO_TELEM = 1
+SM_NO_WAYPOINTS = 2
+SM_MISSION_COMPLETE = 3
+SM_WAYPOINT_NAV = 4
+SM_WAYPOINT_TRANSITION = 5
+SM_TAKE_WAYPOINT_PHOTO = 6
+SM_APPROACH_BOX_SEARCH = 7
+SM_APPROACH_BOX_ALIGN = 8
+SM_TAKE_PHOTO = 9
+SM_RETREAT = 10
+SM_APPROACH_BLUE_BOX_SEARCH = 11
+SM_APPROACH_BLUE_BOX_ALIGN = 12
+SM_TAKE_BLUE_BOX_PHOTO = 13
+SM_BLUE_BOX_RETREAT = 14
+SM_APPROACH_RED_BOX_SEARCH = 15
+SM_APPROACH_RED_BOX_ALIGN = 16
+SM_RED_BOX_DOCKED = 17
+SM_STATE_COUNT = 18
+
+SM_STATES = [
+    "WAITING_GPS", "NO_TELEM", "NO_WAYPOINTS", "MISSION_COMPLETE",
+    "WAYPOINT_NAV", "WAYPOINT_TRANSITION", "TAKE_WAYPOINT_PHOTO",
+    "APPROACH_BOX_SEARCH", "APPROACH_BOX_ALIGN", "TAKE_PHOTO",
+    "RETREAT", "APPROACH_BLUE_BOX_SEARCH", "APPROACH_BLUE_BOX_ALIGN",
+    "TAKE_BLUE_BOX_PHOTO", "BLUE_BOX_RETREAT", "APPROACH_RED_BOX_SEARCH",
+    "APPROACH_RED_BOX_ALIGN", "RED_BOX_DOCKED",
+]
+SM_STATE_NAMES = {i: name for i, name in enumerate(SM_STATES)}
+
+# Sub-machine mundur RETREAT / BLUE_BOX_RETREAT (= enum sm_retreat_step_t).
+SM_STEP_IDLE = 0
+SM_STEP_START_BRAKE = 1
+SM_STEP_GOTO_NEUTRAL = 2
+SM_STEP_START_REVERSE = 3
+SM_RETREAT_STEPS = ["IDLE", "START_BRAKE", "GOTO_NEUTRAL", "START_REVERSE"]
+
+# Urutan field = struct sm_input_t (state_machine.h). JANGAN diubah tanpa
+# menyamakan header C.
+_SM_INPUT_FIELDS = [
+    "wp_idx", "n_wp", "at_waypoint", "wp_in_photo_box_legs",
+    "wp_in_blue_box_legs", "wp_in_stop_and_photo", "wp_is_red_after",
+    "green_model", "blue_model", "red_model",
+    "box_found", "box_confirmed", "box_aligned", "box_lost_over_2s",
+    "blue_found", "blue_confirmed", "blue_aligned", "blue_lost_over_2s",
+    "red_found", "red_aligned",
+    "transition_over", "wp_photo_over", "blue_photo_over",
+    "brake_over", "neutral_over", "retreat_over", "dock_hold_over",
+]
+
+
+# Urutan field = struct sm_input_t (C): wp_idx/n_wp int, sisanya 0/1.
+class _SmInputC(ctypes.Structure):
+    _fields_ = [(f, _I) for f in _SM_INPUT_FIELDS]
+
+
+# Urutan field = struct sm_result_t (C).
+class _SmResultC(ctypes.Structure):
+    _fields_ = [
+        ("next", _I),
+        ("wp_inc", _I),
+        ("reset_task_timer", _I),
+        ("reset_vision", _I),
+        ("retreat_step", _I),
+    ]
+
+
+def sm_guard(gps_3d_fix, yaw_radio, waypoints_loaded, wp_idx, n_wp):
+    """Guard loop utama (C). Return SM_NONE bila misi boleh lanjut, selain
+    itu state guard (SM_NO_TELEM / SM_NO_WAYPOINTS / SM_MISSION_COMPLETE).
+    """
+    fn = _sig("sm_guard", [_I, _I, _I, _I, _I], _I)
+    return int(fn(int(bool(gps_3d_fix)), int(bool(yaw_radio)),
+                  int(bool(waypoints_loaded)), int(wp_idx), int(n_wp)))
+
+
+def sm_transition(state, retreat_step, inp):
+    """Keputusan transisi state misi (C). `inp` = dict field sm_input_t.
+
+    Return dict {next, wp_inc, reset_task_timer, reset_vision, retreat_step}.
+    Caller menerapkan efek samping (wp++ / reset timer / reset vision /
+    set retreat_step).
+    """
+    fn = _sig("sm_transition",
+              [_I, _I, ctypes.POINTER(_SmInputC)], _SmResultC)
+    s = _SmInputC()
+    for f in _SM_INPUT_FIELDS:
+        setattr(s, f, int(inp.get(f, 0) or 0))
+    out = fn(int(state), int(retreat_step), ctypes.byref(s))
+    return {
+        "next": int(out.next),
+        "wp_inc": int(out.wp_inc),
+        "reset_task_timer": int(out.reset_task_timer),
+        "reset_vision": int(out.reset_vision),
+        "retreat_step": int(out.retreat_step),
+    }
+
+
+def sm_state_name(state):
+    """Nama state misi dari kode int (C). Return str ('???' bila tak dikenal)."""
+    fn = _sig("sm_state_name", [_I], ctypes.c_char_p)
+    raw = fn(int(state))
+    return raw.decode("utf-8", "replace") if raw is not None else "???"
+
+
+def sm_state_from_name(name):
+    """Kode int state dari namanya (C). Return SM_NONE bila tak ada."""
+    fn = _sig("sm_state_from_name", [ctypes.c_char_p], _I)
+    return int(fn(str(name).encode("utf-8")))
+
+
+def sm_retreat_step_name(step):
+    """Nama step mundur (C). Return str ('???' bila tak dikenal)."""
+    fn = _sig("sm_retreat_step_name", [_I], ctypes.c_char_p)
+    raw = fn(int(step))
+    return raw.decode("utf-8", "replace") if raw is not None else "???"

@@ -1,5 +1,5 @@
 """Test kunci — buktikan C (gate_vision.c) memberi hasil SAMA dengan
-Python referensi (app/gate_sequencer.py + criteria geometri validate_buoy).
+Python referensi (tests/_ref/gate_sequencer.py + criteria geometri validate_buoy).
 
 Cara kerja (pola test_core_nav_math / test_core_state_machine):
   1. Compile core/src/gate_vision.c -> libgate_vision.so (gcc, sementara).
@@ -25,7 +25,7 @@ import subprocess
 import tempfile
 import unittest
 
-from app.gate_sequencer import (
+from _ref.gate_sequencer import (
     GateSequencer,
     collect_gate_pairs,
     estimate_gate_distance,

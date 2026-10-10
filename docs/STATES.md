@@ -1,7 +1,14 @@
-# State Machine Misi (dari `app/navigator.py`)
+# State Machine Misi
 
-Ringkasan ini merekam **apa yang dilakukan kapal di tiap state dan kenapa**.
-Kalau perilaku kapal aneh, baca dokumen ini + `docs/CONFIG.md`.
+Dokumen ini merekam **apa yang dilakukan kapal di tiap state dan kenapa**.
+Kalau perilaku kapal aneh, baca dokumen ini + `docs/KONFIG.md`.
+
+Tabel `sm_state_t` ada **18 state** (`core/include/state_machine.h`,
+dibungkus `app/aterkia_core.py`). Keputusan transisi dihitung di **C**
+(`sm_transition`); Python hanya menerapkan efek samping (wp++ / reset timer /
+reset vision). `sm_guard` menangani state "penjaga" (telemetri / waypoint).
+
+---
 
 ## Peta State
 
@@ -21,55 +28,83 @@ Kalau perilaku kapal aneh, baca dokumen ini + `docs/CONFIG.md`.
 
   APPROACH_BOX_SEARCH ─deteksi 0.5s─▶ APPROACH_BOX_ALIGN ─jarak≤BOX_APPROACH─▶ TAKE_PHOTO
         (rotate YAW_SEARCH_BOX)          (koreksi yaw halus)          │ hilang>2s: tetap TAKE_PHOTO
-                                                                      ▼
-  TAKE_PHOTO ─▶ RETREAT (brake 0.2s → neutral 0.4s → mundur) ─▶ WAYPOINT_NAV (wp++)
+                                                                       ▼
+  TAKE_PHOTO ─▶ RETREAT (brake → netral → mundur) ─▶ WAYPOINT_NAV (wp++)
 
   APPROACH_BLUE_BOX_SEARCH ─▶ APPROACH_BLUE_BOX_ALIGN ─jarak≤BLUE_BOX_APPROACH─▶ TAKE_BLUE_BOX_PHOTO
-                                                                      │
-                                       TAKE_BLUE_BOX_PHOTO (smart capture bawah air)
-                                                                      ▼
+                                                                       │
+                                        TAKE_BLUE_BOX_PHOTO (smart capture bawah air)
+                                                                       ▼
                                         BLUE_BOX_RETREAT ─▶ APPROACH_RED_BOX_SEARCH (jika model ada)
                                                                atau WAYPOINT_NAV (wp++)
 
   APPROACH_RED_BOX_SEARCH ─found─▶ APPROACH_RED_BOX_ALIGN ─jarak≤DOCK_DIST─▶ RED_BOX_DOCKED
         (rotate YAW_SEARCH_DOCK)      │ hilang → kembali ke SEARCH            │ hold DOCK_HOLD
-                                                                              ▼
-                                    WAYPOINT_TRANSITION (wp++) / MISSION_COMPLETE
+                                                                               ▼
+                                     WAYPOINT_TRANSITION (wp++) / MISSION_COMPLETE
+
+  Guard (menyela misi): NO_TELEM · NO_WAYPOINTS · MISSION_COMPLETE
 ```
 
-## Tabel State
+---
+
+## Tabel State (18)
 
 | # | State | Perilaku utama | Ke state berikutnya |
 |---|---|---|---|
-| 1 | `WAITING_GPS` | Kirim thrust 0 sambil tunggu fix GPS + attitude dari Pixhawk | (loop) |
-| 2 | `WAYPOINT_NAV` | Thrust tetap; target yaw = bearing ke WP; koreksi gate bila leg vision aktif | lihat legenda di atas |
-| 3 | `WAYPOINT_TRANSITION` | Masa tenang setelah ganti WP (hindari osilasi) | `WAYPOINT_NAV` |
-| 4 | `TAKE_WAYPOINT_PHOTO` | Berhenti 0.5s, snap foto waypoint | `APPROACH_RED_BOX_SEARCH` (wp==RED_BOX_NAV_AFTER_WP) / `WAYPOINT_TRANSITION` |
-| 5 | `APPROACH_BOX_SEARCH` | Rotasi cari kotak hijau (search thrust) | `APPROACH_BOX_ALIGN` |
-| 6 | `APPROACH_BOX_ALIGN` | Koreksi yaw halus menuju kotak hijau | `TAKE_PHOTO` |
-| 7 | `TAKE_PHOTO` | Berhenti, fotokan kotak hijau | `RETREAT` |
-| 8 | `RETREAT` | Brake → netral → mundur (jauh dari kotak) | `WAYPOINT_NAV` (wp++) |
-| 9 | `APPROACH_BLUE_BOX_SEARCH` | Rotasi cari kotak biru | `APPROACH_BLUE_BOX_ALIGN` |
-| 10 | `APPROACH_BLUE_BOX_ALIGN` | Koreksi yaw & offset lateral ke kotak biru | `TAKE_BLUE_BOX_PHOTO` |
-| 11 | `TAKE_BLUE_BOX_PHOTO` | Stabilisasi 2s, kamera bawah air (smart capture) | `BLUE_BOX_RETREAT` |
-| 12 | `BLUE_BOX_RETREAT` | Mundur; lanjut docking bila model merah ada | `APPROACH_RED_BOX_SEARCH` / `WAYPOINT_NAV` |
-| 13 | `APPROACH_RED_BOX_SEARCH` | Rotasi cari kotak merah (docking area) | `APPROACH_RED_BOX_ALIGN` |
-| 14 | `APPROACH_RED_BOX_ALIGN` | Koreksi yaw presisi; hilang target → kembali SEARCH | `RED_BOX_DOCKED` |
-| 15 | `RED_BOX_DOCKED` | Hold diam selama DOCK_HOLD_DURATION_S | `WAYPOINT_TRANSITION` / `MISSION_COMPLETE` |
-| 16 | `MISSION_COMPLETE` | Semua WP selesai; thrust 0 | (selesai) |
+| 0 | `WAITING_GPS` | Thrust 0 sambil tunggu GPS fix + attitude. Setelah fix, navigator memulai misi (promosi ke `WAYPOINT_NAV` saat guard NONE). | `WAYPOINT_NAV` |
+| 1 | `NO_TELEM` | Guard: GPS/attitude belum dapat di loop → thrust 0, tunggu | `WAYPOINT_NAV` (saat telemetri pulih) |
+| 2 | `NO_WAYPOINTS` | Guard: `plan.csv` kosong / belum dimuat → idle | `WAYPOINT_NAV` (saat WP ada) |
+| 3 | `MISSION_COMPLETE` | Semua WP selesai; thrust 0 | (selesai) |
+| 4 | `WAYPOINT_NAV` | Thrust tetap; target yaw = bearing ke WP; koreksi gate bila leg vision aktif | lihat peta di atas |
+| 5 | `WAYPOINT_TRANSITION` | Masa tenang setelah ganti WP (hindari osilasi) | `WAYPOINT_NAV` |
+| 6 | `TAKE_WAYPOINT_PHOTO` | Berhenti `WAYPOINT_PHOTO_STOP_DURATION_S`, snap foto waypoint | `APPROACH_RED_BOX_SEARCH` (wp==`RED_BOX_NAV_AFTER_WP`) / `WAYPOINT_TRANSITION` |
+| 7 | `APPROACH_BOX_SEARCH` | Rotasi cari kotak hijau (search thrust) | `APPROACH_BOX_ALIGN` |
+| 8 | `APPROACH_BOX_ALIGN` | Koreksi yaw halus menuju kotak hijau | `TAKE_PHOTO` |
+| 9 | `TAKE_PHOTO` | Berhenti, fotokan kotak hijau | `RETREAT` |
+| 10 | `RETREAT` | Brake → netral → mundur (jauh dari kotak) | `WAYPOINT_NAV` (wp++) |
+| 11 | `APPROACH_BLUE_BOX_SEARCH` | Rotasi cari kotak biru | `APPROACH_BLUE_BOX_ALIGN` |
+| 12 | `APPROACH_BLUE_BOX_ALIGN` | Koreksi yaw & offset lateral ke kotak biru | `TAKE_BLUE_BOX_PHOTO` |
+| 13 | `TAKE_BLUE_BOX_PHOTO` | Stabilisasi, kamera bawah air (smart capture) | `BLUE_BOX_RETREAT` |
+| 14 | `BLUE_BOX_RETREAT` | Mundur; lanjut docking bila model merah ada | `APPROACH_RED_BOX_SEARCH` / `WAYPOINT_NAV` |
+| 15 | `APPROACH_RED_BOX_SEARCH` | Rotasi cari kotak merah (docking) | `APPROACH_RED_BOX_ALIGN` |
+| 16 | `APPROACH_RED_BOX_ALIGN` | Koreksi yaw presisi; hilang target → kembali SEARCH | `RED_BOX_DOCKED` |
+| 17 | `RED_BOX_DOCKED` | Hold diam selama `DOCK_HOLD_DURATION_S` | `WAYPOINT_TRANSITION` / `MISSION_COMPLETE` |
 
-## State "Jaga-Jaga" (bukan misi)
+---
 
-| State | Kondisi | Aksi |
+## Sub-machine Mundur (`RETREAT` / `BLUE_BOX_RETREAT`)
+
+Urutan langkah (`sm_retreat_step_t`, nama via `sm_retreat_step_name`):
+
+| Step | Nama | Aksi |
 |---|---|---|
-| `NO_TELEM` | GPS/attitude belum dapat di loop utama | thrust 0, tunggu |
-| `NO_WAYPOINTS` | `plan.csv` kosong / belum dimuat | idle |
-| `MISSION_COMPLETE` | index WP melewati daftar | cruising stop |
+| 0 | `IDLE` | belum mulai |
+| 1 | `START_BRAKE` | rem (thrust lawan arah) |
+| 2 | `GOTO_NEUTRAL` | lepas gas sebentar |
+| 3 | `START_REVERSE` | mundur `RETREAT_THRUST` selama `RETREAT_DURATION_S` |
+
+---
 
 ## Parameter yang Mempengaruhi Transisi
 
-Hampir semua transisi mengacu ke `config` (lihat `docs/CONFIG.md`):
+Hampir semua transisi mengacu ke `config` (lihat `docs/KONFIG.md`):
 `ACCEPTANCE_RADIUS_M`, `TRANSITION_DURATION_S`, `PHOTO_BOX_LEGS`,
 `BLUE_BOX_PHOTO_LEGS`, `STOP_AND_PHOTO_AT_WP`, `RED_BOX_NAV_AFTER_WP`,
-`DETECTION_CONFIRM_DURATION_S`, `*_APPROACH_DISTANCE_M`, `DOCK_HOLD_DURATION_S`,
-`RETREAT_DURATION_S`, `YAW_SEARCH_*`, dan parameter thrust (`SEARCH_*`, `ALIGN_*`).
+`DETECTION_CONFIRM_DURATION_S`, `*_APPROACH_DISTANCE_M`,
+`RED_BOX_DOCK_DISTANCE_M`, `DOCK_HOLD_DURATION_S`, `RETREAT_DURATION_S`,
+`YAW_SEARCH_*`, dan parameter thrust (`SEARCH_*`, `ALIGN_*`, `DOCK_*`).
+
+---
+
+## Mode Operasi (di luar state misi)
+
+Mode op (`core/src/mode_manager.c`) menentukan apakah aksi state dijalankan:
+
+- **AUTO** — misi otonom berjalan (aksi per-state aktif).
+- **MANUAL** — kendali dari RC/gamepad lokal atau QGC; aksi misi ditahan
+  (thrust dari manual).
+- **KILL** — tombol GUI: thrust 0 + DISARM ke Pixhawk.
+
+Saat **bukan AUTO**, navigator menahan aksi misi (thrust 0 / target yaw tetap)
+dan tidak meminta deteksi baru.

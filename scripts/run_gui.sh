@@ -9,4 +9,4 @@ if [ -d .venv ]; then
   source .venv/bin/activate
 fi
 
-exec "$PY" -u main.py
+exec "$PY" -O -u main.py

@@ -22,6 +22,13 @@ powershell -ExecutionPolicy Bypass -File scripts\setup_minimal.ps1
 Hasil: `.venv` ±1,3 GB dengan GUI PyQt, YOLO 4 model, MAVLink. Rincian di
 `requirements.txt`.
 
+**Idempoten — aman dijalankan ulang.** Script memakai ulang `.venv` yang sudah
+ada (tidak menimpa) dan melewati instalasi bila paket inti sudah bisa
+di-import. Jadi menjalankan lagi hanya butuh beberapa detik. Untuk paksa
+bersih, hapus dulu: `rm -rf .venv` (Linux) / `Remove-Item -Recurse -Force .venv`
+(Windows). Verifikasi akhir memakai `scripts/verify_env.py` (satu sumber Linux
++ Windows).
+
 ### Library C (wajib untuk navigator)
 
 ```bash

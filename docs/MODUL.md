@@ -66,7 +66,8 @@
 | `test_deteksi.py` | Live kamera + deteksi (`--flip 0-3 --debug --imgsz 640`) |
 | `calib_hsv.py` | Kalibrasi ambang HSV warna |
 | `download_weights.sh` / `.ps1` | Unduh model YOLO ke `weights/` (Linux / Windows) |
-| `setup_minimal.sh` / `.ps1` | Bikin `.venv` minimal (torch CPU) + verifikasi |
+| `setup_minimal.sh` / `.ps1` | Bikin `.venv` minimal (torch CPU) + verifikasi (idempoten) |
+| `verify_env.py` | Verifikasi `.venv` (import inti + YOLO); dipakai setup Linux & Windows |
 | `run_gui.sh` / `run.bat` | Jalankan GUI (Linux / Windows) |
 | `qgc_forward.sh` | Teruskan MAVLink ke QGC (port 14550) |
 

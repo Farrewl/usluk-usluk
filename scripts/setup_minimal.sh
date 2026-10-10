@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # ============================================================
-# scripts/setup_minimal.sh — install .venv minimal ASV (Opsi B).
+# scripts/setup_minimal.sh — install .venv minimal ASV (Linux).
 #
-# Hasil: .venv ±1,3 GB (vs ±2,2 GB resep lama) dengan seluruh fungsi
-# produksi jalan: GUI PyQt, YOLO 4 model (.pt), MAVLink.
+# Padanan scripts/setup_minimal.ps1 (urut & kunci penghematan SAMA).
+# Hasil: .venv ±1,3 GB dengan seluruh fungsi produksi jalan:
+# GUI PyQt, YOLO 4 model (.pt), MAVLink.
 #
 # Pakai:
-#   ./scripts/setup_minimal.sh
+#   ./scripts/setup_minimal.sh            # idempoten: aman dijalankan ulang
 #   .venv/bin/python -m unittest discover -s tests    # verifikasi
+#
+# IDEMPOTEN (aman diulang):
+#   - .venv yang sudah ada DIPAKAI ULANG (tak ditimpa/dihapus).
+#   - Bila paket inti sudah bisa di-import, langkah install dilewati.
+#   - Langkah pangkas & verifikasi aman diulang.
+#   Mau paksa bersih? hapus dulu:  rm -rf .venv
 #
 # KUNCI penghematan (3 pelajaran dari build 2026-10-08):
 #  1. torch WAJIB dari index CPU — dari PyPI default ia menarik
@@ -23,52 +30,50 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PY="${PYTHON:-python3}"
+FRESH=0
 
-if [ -d .venv ]; then
-  echo "[!] .venv sudah ada ($(du -sh .venv | cut -f1))."
-  read -rp "    Timpa dengan .venv minimal? [y/N] " jawab
-  case "$jawab" in
-    y|Y) rm -rf .venv ;;
-    *) echo "Batal."; exit 1 ;;
-  esac
+# --- [1/5] Virtualenv (reuse kalau sudah ada) ---
+if [ -x .venv/bin/python ]; then
+  echo "[i] .venv sudah ada — dipakai ulang (tak ditimpa)."
+else
+  echo "[1/5] Bikin virtualenv..."
+  "$PY" -m venv .venv
+  FRESH=1
 fi
 
-echo "[1/5] Bikin virtualenv..."
-"$PY" -m venv .venv
-.venv/bin/pip install -q --upgrade pip
+if [ "$FRESH" = 1 ]; then
+  .venv/bin/python -m pip install -q --upgrade pip
+fi
 
-echo "[2/5] Install torch+torchvision CPU-ONLY (index PyTorch, bukan PyPI!)..."
-.venv/bin/pip install -q --index-url https://download.pytorch.org/whl/cpu \
-    torch==2.14.0+cpu torchvision==0.29.0+cpu
+# --- [2-3/5] Dependensi (lewati bila sudah lengkap) ---
+if .venv/bin/python -c "import torch, torchvision, cv2, serial, pymavlink, ultralytics; from PyQt5 import QtWidgets" 2>/dev/null; then
+  echo "[i] Dependensi sudah terpasang — langkah install (2-3) dilewati."
+else
+  echo "[2/5] Install torch+torchvision CPU-ONLY (index PyTorch, bukan PyPI!)..."
+  .venv/bin/pip install -q --index-url https://download.pytorch.org/whl/cpu \
+      torch==2.14.0+cpu torchvision==0.29.0+cpu
 
-echo "[3/5] Install resep minimal + ultralytics tanpa deps borosnya..."
-.venv/bin/pip install -q -r requirements.txt
-.venv/bin/pip install -q --no-deps ultralytics==8.4.160
+  echo "[3/5] Install resep minimal + ultralytics tanpa deps borosnya..."
+  .venv/bin/pip install -q -r requirements.txt
+  .venv/bin/pip install -q --no-deps ultralytics==8.4.160
+fi
 
+# --- [4/5] Pangkas folder test/include/bin-test torch (idempoten) ---
 echo "[4/5] Pangkas folder test/include/bin-test torch (±200 MB)..."
-SP=.venv/lib/python3.12/site-packages
+SP="$(.venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
 rm -rf "$SP/torch/test" "$SP/torch/include"
 rm -f "$SP/torch/lib/libjitbackend_test.so" "$SP/torch/lib/libtorchbind_test.so"
-find "$SP/torch/bin" -mindepth 1 \
-     ! -name torch_shm_manager \
-     ! -name upgrader_models \
-     ! -name script_module_v4.ptl \
-     -delete
+if [ -d "$SP/torch/bin" ]; then
+  find "$SP/torch/bin" -mindepth 1 \
+       ! -name torch_shm_manager \
+       ! -name upgrader_models \
+       ! -name script_module_v4.ptl \
+       -delete
+fi
 
+# --- [5/5] Verifikasi (satu sumber dgn Windows: scripts/verify_env.py) ---
 echo "[5/5] Verifikasi import inti + inferensi YOLO..."
-.venv/bin/python - <<'EOF'
-import numpy as np
-import torch
-assert torch.__version__.endswith("+cpu"), f"KECETOT varian non-CPU: {torch.__version__}"
-import cv2, serial
-from PyQt5.QtWidgets import QApplication
-from ultralytics import YOLO
-from pymavlink import mavutil
-r = YOLO("weights/buoy.pt").predict(
-    np.zeros((480, 640, 3), dtype=np.uint8), verbose=False)
-assert r[0].plot().shape == (480, 640, 3)
-print(f"torch {torch.__version__} | cv2 {cv2.__version__} | YOLO infer OK")
-EOF
+.venv/bin/python scripts/verify_env.py
 
 echo
 echo "Selesai. Total: $(du -sh .venv | cut -f1)"

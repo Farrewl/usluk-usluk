@@ -31,6 +31,9 @@ else:
 from app.slim_map import SlimMapWidget
 from app.settings_dialog import SettingsDialog
 from app import gui_theme as theme
+from app.logutil import get_logger, throttled
+
+log = get_logger()
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(ROOT_DIR, "config")
@@ -66,10 +69,12 @@ class HudOverlay(QWidget):
 
     def set_data(self, state, yaw, lat, lon, dist):
         self._state = state
-        self._yaw = yaw
+        # Koersi aman: mesin tanpa telemetri -> yaw/dist None; lat/lon None
+        # dibiarkan (ditampilkan "--") supaya tak crash di paintEvent.
+        self._yaw = float(yaw) if yaw is not None else 0.0
         self._lat = lat
         self._lon = lon
-        self._dist = dist
+        self._dist = float(dist) if dist is not None else 0.0
         self.update()
 
     def paintEvent(self, _event):  # noqa: N802 - API Qt
@@ -92,7 +97,8 @@ class HudOverlay(QWidget):
         painter.setBrush(QColor(0, 0, 0, 150))
         painter.drawRoundedRect(w - 272, 8, 264, 46, 8, 8)
         info = (f"H {self._yaw:5.1f}°   d {self._dist:5.1f} m\n"
-                f"{self._lat:.6f}, {self._lon:.6f}")
+                f"{'--' if self._lat is None else f'{self._lat:.6f}'}, "
+                f"{'--' if self._lon is None else f'{self._lon:.6f}'}")
         painter.setFont(QFont("monospace", 10))
         painter.setPen(QColor(255, 255, 255))
         painter.drawText(QRect(w - 264, 12, 248, 38), Qt.AlignLeft | Qt.AlignVCenter, info)
@@ -191,7 +197,9 @@ class MainWindow(QMainWindow):
         main_split.setSizes([260, 830, 410])
         self.setCentralWidget(main_split)
 
-        self.nav_thread.newData.connect(self.update_ui)
+        # Bungkus slot: exception di update_ui tak boleh mematikan GUI.
+        # PyQt5 memanggil qFatal (SIGABRT) bila exception lolos dari slot.
+        self.nav_thread.newData.connect(self._on_new_data)
         self._setup_status_bar()
         self._refresh_map_waypoints()
         self.nav_thread.start()
@@ -526,6 +534,19 @@ class MainWindow(QMainWindow):
 
     # ------------------- update UI (throttled) -------------------
 
+    def _on_new_data(self, data):
+        """Slot aman untuk sinyal `newData` dari thread navigator.
+
+        Exception apa pun di `update_ui` ditangkap + dicatat (throttled) agar
+        GUI tidak mati: PyQt5 memanggil qFatal (SIGABRT) bila exception lolos
+        dari slot. Berguna saat mesin tanpa hardware (lat/lon None, dsb.).
+        """
+        try:
+            self.update_ui(data)
+        except Exception as e:
+            if throttled("ui_update_err", 5.0):
+                log.error("update_ui gagal: %s: %s", type(e).__name__, e)
+
     def update_ui(self, data):
         self.current_lat = data['lat']
         self.current_lon = data['lon']
@@ -684,7 +705,11 @@ class MainWindow(QMainWindow):
                            f"BAT {pct:.0f}% ({volt_s})", bc)
 
         # Tab Misi.
-        self.misi_pos.setText(f"{data['lat']:.6f}, {data['lon']:.6f}")
+        lat, lon = data.get('lat'), data.get('lon')
+        if lat is None or lon is None:
+            self.misi_pos.setText("-- belum ada GPS --")
+        else:
+            self.misi_pos.setText(f"{lat:.6f}, {lon:.6f}")
         self.misi_att.setText(f"Y {yaw:6.1f}°  P {pitch:5.1f}°"
                               f"  R {roll:5.1f}°")
         self.misi_speed.setText(

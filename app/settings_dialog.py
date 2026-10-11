@@ -45,9 +45,9 @@ class SettingsDialog(QDialog):
             pass
         self.accept()
 
-    # ------------------- lazy build -------------------
 
-    def showEvent(self, event):  # noqa: N802 - API Qt
+
+    def showEvent(self, event):
         if not self._built:
             self._build_all()
             self._built = True
@@ -108,7 +108,7 @@ class SettingsDialog(QDialog):
 
     def _build_all(self):
         nav = self.nav_thread
-        _ = nav  # baca config via helper di bawah
+        _ = nav
 
         f = self._form_page("Navigasi")
         self._add_header(f, "Navigasi Umum & GPS")

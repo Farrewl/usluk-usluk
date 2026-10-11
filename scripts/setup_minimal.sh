@@ -32,6 +32,14 @@ cd "$(dirname "$0")/.."
 PY="${PYTHON:-python3}"
 FRESH=0
 
+# --- [core] Build library C (libaterkia.so) bila belum ada ---
+if [ -f core/libaterkia.so ]; then
+  echo "[i] core/libaterkia.so sudah ada — build C dilewati."
+else
+  echo "[core] Build inti C (butuh gcc + make)..."
+  make -C core linux
+fi
+
 # --- [1/5] Virtualenv (reuse kalau sudah ada) ---
 if [ -x .venv/bin/python ]; then
   echo "[i] .venv sudah ada — dipakai ulang (tak ditimpa)."
@@ -77,5 +85,6 @@ echo "[5/5] Verifikasi import inti + inferensi YOLO..."
 
 echo
 echo "Selesai. Total: $(du -sh .venv | cut -f1)"
-echo "Jalankan program:  .venv/bin/python main.py"
-echo "Jalankan tes:      .venv/bin/python -m unittest discover -s tests"
+echo "Jalankan GUI :  ./scripts/run_gui.sh"
+echo "Web dashboard:  http://<ip-laptop>:8080  (saat GUI jalan)"
+echo "Jalankan tes :  .venv/bin/python -m unittest discover -s tests"

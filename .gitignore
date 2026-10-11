@@ -16,8 +16,10 @@ venv/
 data/*
 !data/README.md
 
-# Model YOLO — berat (~6 MB/file), unduh via scripts/download_weights.sh
-weights/*.pt
+# Model YOLO — DI-VERSI-GIT (dipakai langsung setelah clone, tanpa unduh)
+# agar teman bisa "clone lalu jalan" tanpa langkah manual.
+# Bila nanti berat, aktifkan lagi baris di bawah.
+# weights/*.pt
 
 # Media (dulu pernah ter-track, sekarang tidak)
 *.jpg
@@ -46,3 +48,5 @@ Thumbs.db
 *.so
 *.dll
 core/build/
+# kecuali DLL Windows prebuilt (opsional, biar teman tanpa MinGW bisa jalan)
+!core/aterkia_core.dll

@@ -1,0 +1,23 @@
+{
+    "name": "B",
+    "start_color": "green",
+    "start_lat": -7.9153897,
+    "start_lon": 112.589158,
+    "grid": {"origin": "START", "cell_m": 5, "cols": 5, "rows": 5},
+    "waypoints": [
+        {"lat": -7.9153897, "lon": 112.589158},
+        {"lat": -7.9153402, "lon": 112.5892581},
+        {"lat": -7.9152858, "lon": 112.5892743},
+        {"lat": -7.9151759, "lon": 112.5892228},
+        {"lat": -7.9151724, "lon": 112.5892085},
+        {"lat": -7.9152012, "lon": 112.5891131},
+        {"lat": -7.9152076, "lon": 112.5891022},
+        {"lat": -7.9152123, "lon": 112.5890784},
+        {"lat": -7.9152336, "lon": 112.5890807}
+    ],
+    "vision_legs": [1, 3, 5],
+    "photo_box_legs": [6],
+    "blue_box_photo_legs": [8],
+    "red_box_nav_after_wp": 8,
+    "stop_and_photo_at_wp": []
+}

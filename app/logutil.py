@@ -22,7 +22,7 @@ _LOGGER_NAME = "asv"
 _CONFIGURED = False
 _CONFIG_LOCK = threading.Lock()
 
-# Cap waktu terakhir per kunci throttle (monotonic).
+
 _LAST = {}
 _LAST_LOCK = threading.Lock()
 

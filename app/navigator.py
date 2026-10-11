@@ -33,6 +33,8 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 from . import settings as cfg
 from . import aterkia_core as core
+from . import geotag
+from . import state_bus
 from .logutil import get_logger, throttled
 from .camera import (
     make_fallback_frame,
@@ -51,23 +53,23 @@ from .yolo_worker import YoloWorker
 
 try:
     from . import mavlink_telemetry as mavlink_mod
-except Exception:  # pragma: no cover
+except Exception:
     mavlink_mod = None
 
 try:
     from ultralytics import YOLO
     YOLO_AVAILABLE = True
-except Exception:  # pragma: no cover - ultralytics tidak terpasang
+except Exception:
     YOLO = None
     YOLO_AVAILABLE = False
 
 log = get_logger()
 
-# Fuzzy Sugeno sudah dipindah ke C (core/src/fuzzy.c via aterkia_core):
-# tidak butuh objek controller, cukup fungsi murni — aktif bila C ada.
+
+
 FUZZY_ENABLED = core.C_AVAILABLE
 
-# Peta nama -> kode sub-step mundur (untuk sm_transition). Nama dibuat oleh C.
+
 _SM_STEP_BY_NAME = {
     core.sm_retreat_step_name(core.SM_STEP_IDLE): core.SM_STEP_IDLE,
     core.sm_retreat_step_name(core.SM_STEP_START_BRAKE): core.SM_STEP_START_BRAKE,
@@ -77,8 +79,8 @@ _SM_STEP_BY_NAME = {
         core.SM_STEP_START_REVERSE,
 }
 
-# Sudut defleksi maksimum saat hindar-rintangan (rad) — dipakai untuk
-# menerjemahkan bias yaw ternormalisasi C ke heading absolut.
+
+
 _AVOID_MAX_DEFLECT_RAD = math.radians(25.0)
 
 STATE_ORDER = list(core.SM_STATES)
@@ -98,8 +100,9 @@ class VisionNavigator:
         self.current_waypoint_index = 0
         self.current_state = "WAITING_GPS"
         self.running = False
+        self._configure_cpu_threads()
 
-        # --- Telemetri NYATA (diisi tiap poll) ---
+
         self.mav = None
         self._mav_retry_mono = 0.0
         self._mav_port_logged = None
@@ -111,12 +114,12 @@ class VisionNavigator:
         self.current_groundspeed = 0.0
         self.dist_to_wp = 0.0
 
-        # --- Kamera ganda (navigasi + bawah air) ---
+
         self.cam = CameraManager(config)
-        self.cap = self.cam.cap  # alias kompat GUI/kode lama
+        self.cap = self.cam.cap
         self._sync_frame_dims()
 
-        # --- Model YOLO ---
+
         self.gate_model = None
         self.box_model = None
         self.blue_box_model = None
@@ -132,16 +135,16 @@ class VisionNavigator:
                 raise FileNotFoundError(
                     f"FATAL: gagal memuat model GATE: {e}")
 
-        # --- Worker YOLO async (dipakai bersama simulator) ---
+
         self.yolo_worker = YoloWorker(self.config)
         self.yolo_worker.bind_gate_model(self.gate_model)
         self._det_cache = {}
         self._frame_seq = 0
         self._last_frame = None
-        self._sec_seq = 0            # throttle baca kamera bawah (preview)
+        self._sec_seq = 0
         self._last_sec_frame = None
 
-        # --- Filter & kontroler galat (hitung di C) ---
+
         self.pid_gate = core.PidState(
             kp=config.PID_KP, ki=config.PID_KI, kd=config.PID_KD,
             deadband=config.PID_DEADBAND,
@@ -157,7 +160,7 @@ class VisionNavigator:
         self._last_loop_time = time.time()
         self._loop_dt = 0.033
 
-        # --- Sequencer gate (titik tengah merah+hijau, hitung di C) ---
+
         self.gate_seq = core.GateSequencerC(
             pass_distance_m=config.GATE_PASS_DISTANCE_M,
             lost_tolerance_frames=config.GATE_LOST_TOLERANCE_FRAMES,
@@ -166,8 +169,13 @@ class VisionNavigator:
         )
         self.gate_active_mid = None
         self._gate_last_leg = -1
+        self._gate_counted_leg = -1
+        self._gate_passed_count = 0
+        self._surface_taken = False
+        self._under_taken = False
+        self._dock_done = False
 
-        # --- State misi transien ---
+
         self.task_timer = 0.0
         self.retreat_step = "IDLE"
         self.leg_start_lat = None
@@ -181,7 +189,7 @@ class VisionNavigator:
         self._wp_photo_taken = False
         self._blue_photo_taken = False
 
-        # --- Manual: RC/gamepad kapal + QGC (Xbox laptop) ---
+
         self.manual_link = ManualLink(config)
         self.qgc_link = QgcOffboard(config)
         self.manual_gui_request = False
@@ -191,25 +199,25 @@ class VisionNavigator:
                             "source": "AUTO"}
         self.qgc_last = dict(self.manual_last)
 
-        # --- Output ke Pixhawk + failsafe ---
+
         self.output = OutputLink(config)
         self.safety = SafetyManager(config, link=self.output)
 
-        # --- Hindar-rintangan reaktif (C) ---
+
         self.avoid_state = {"yaw_bias": 0.0, "memory_s": 0.0}
         self._avoid_last_mono = time.monotonic()
 
-        # Cek parameter failsafe Pixhawk sekali (thread daemon, baca saja).
+
         self.pixhawk_check = "menunggu MAVLink"
         threading.Thread(target=self._pixhawk_param_check_worker,
                          daemon=True).start()
 
-        # Rekaman sesi opsional.
+
         self.video_writer = None
 
-    # ------------------------------------------------------------------
-    # Dimensi frame turunan
-    # ------------------------------------------------------------------
+
+
+
     def _sync_frame_dims(self):
         self.processing_width = int(self.config.FRAME_WIDTH)
         self.processing_height = int(self.config.FRAME_HEIGHT)
@@ -218,9 +226,9 @@ class VisionNavigator:
         self.roi_top_y_cutoff = int(
             self.processing_height * self.config.ROI_TOP_CUTOFF_PERCENT)
 
-    # ------------------------------------------------------------------
-    # Muat model non-gate (lazy)
-    # ------------------------------------------------------------------
+
+
+
     def _load_models_async(self):
         if self._models_loading or self._models_loaded or not YOLO_AVAILABLE:
             return
@@ -245,9 +253,9 @@ class VisionNavigator:
 
         threading.Thread(target=_loader, daemon=True, name="lazy-models").start()
 
-    # ------------------------------------------------------------------
-    # MAVLink: connect non-blokir + telemetri
-    # ------------------------------------------------------------------
+
+
+
     def _mav_ensure_connected(self):
         if self.mav is not None and self.mav.connected:
             return True
@@ -309,9 +317,9 @@ class VisionNavigator:
             self.safety.mark_telem()
         self.current_groundspeed = mav.groundspeed
 
-    # ------------------------------------------------------------------
-    # Kamera
-    # ------------------------------------------------------------------
+
+
+
     def _read_frames(self):
         if self.cam is not None:
             ok, frame, cam_st = self.cam.read_primary(
@@ -330,10 +338,10 @@ class VisionNavigator:
         sec = None
         if self.cam is not None:
             try:
-                # Kamera bawah hanya untuk PREVIEW di GUI (resolusi kecil).
-                # Membacanya tiap frame ikut memakan bandwidth USB + CPU;
-                # cukup 1x per SECONDARY_PREVIEW_INTERVAL frame. Frame terakhir
-                # disimpan agar panel GUI tidak berkedip/hilang.
+
+
+
+
                 self._sec_seq += 1
                 interval = max(1, int(getattr(
                     self.config, "SECONDARY_PREVIEW_INTERVAL", 3)))
@@ -347,9 +355,9 @@ class VisionNavigator:
                 sec = self._last_sec_frame
         return frame, sec, cam_st
 
-    # ------------------------------------------------------------------
-    # Deteksi (async worker)
-    # ------------------------------------------------------------------
+
+
+
     def _request_detections(self, frame):
         self._frame_seq += 1
         skip = int(getattr(self.config, "YOLO_FRAME_SKIP", 2))
@@ -371,12 +379,12 @@ class VisionNavigator:
         mid, model, conf = want
         if model is None:
             return
-        # `.copy()` sengaja dipertahankan: worker menaikkan frame ini di
-        # thread lain, sementara loop utama menggambar HUD (kotak/teks) di
-        # buffer yang sama. Tanpa copy, inferensi bisa "melihat" overlay HUD
-        # (risiko deteksi palsu). Biaya copy (~2,7 MB @ ~10 Hz) < 1 ms —
-        # bukan bottleneck (inferensi YOLO imgsz=256 ≈ 18 ms @ i3). Pindah
-        # copy ke sisi tampilan justru MENAMBAH copy (tiap frame 30 Hz).
+
+
+
+
+
+
         self.yolo_worker.submit(mid, model, frame.copy(), conf)
 
     def _take_latest(self, model_id):
@@ -488,9 +496,9 @@ class VisionNavigator:
             return self._parse_detections(self._take_latest(self._MID_RED))
         return {}
 
-    # ------------------------------------------------------------------
-    # Vision helpers
-    # ------------------------------------------------------------------
+
+
+
     def _find_best_box(self, detections, target_class_id, use_roi=False):
         boxes = detections.get(target_class_id, [])
         if use_roi and self.roi_top_y_cutoff > 0:
@@ -528,6 +536,9 @@ class VisionNavigator:
                 self.config.GATE_AREA_SIMILARITY_RATIO)
         mid_x, mid_y, dist, is_passed = self.gate_seq.update(
             red_balls, green_balls, pairs, self.image_center_y)
+        if is_passed and self._gate_counted_leg != self.current_waypoint_index:
+            self._gate_counted_leg = self.current_waypoint_index
+            self._gate_passed_count = min(10, self._gate_passed_count + 1)
         if mid_x is None:
             self.gate_active_mid = None
             return None, float('inf')
@@ -674,9 +685,9 @@ class VisionNavigator:
             target_yaw = bearing_ke_wp
         return target_yaw, status
 
-    # ------------------------------------------------------------------
-    # Geometri / sudut (hitung di C)
-    # ------------------------------------------------------------------
+
+
+
     def _normalize_angle(self, angle_rad):
         return core.nav_normalize_angle(angle_rad)
 
@@ -687,9 +698,9 @@ class VisionNavigator:
         self._loop_dt = max(dt, 1e-4)
         return self._loop_dt
 
-    # ------------------------------------------------------------------
-    # Failsafe / hindar-rintangan
-    # ------------------------------------------------------------------
+
+
+
     def _avoidance_scan(self):
         try:
             boxes = self.yolo_worker.latest_boxes_any(max_age_s=0.5)
@@ -748,9 +759,9 @@ class VisionNavigator:
             time.sleep(0.5)
         self.pixhawk_check = "MAVLink tidak tersambung (cek dilewati)"
 
-    # ------------------------------------------------------------------
-    # Foto misi (LOKAL saja)
-    # ------------------------------------------------------------------
+
+
+
     def _capture_secondary(self):
         cap = self.cam.secondary.cap if self.cam is not None else None
         if cap is None or not cap.isOpened():
@@ -762,6 +773,19 @@ class VisionNavigator:
                 frame = f
         return frame
 
+    def _geotag_and_register(self, kind, path):
+        """Tulis sidecar geo-tag + publikasikan ke bus web."""
+        gs = float(getattr(self, "current_groundspeed", 0.0) or 0.0)
+        cog = math.degrees(self.current_yaw_rad or 0.0)
+        info = geotag.finalize_capture(
+            kind, path, self.current_lat, self.current_lon,
+            gs * 1.943844, gs * 3.6, cog)
+        try:
+            state_bus.set_photo(info)
+        except Exception:
+            pass
+        return info
+
     def _take_photo(self, frame):
         if not getattr(self.config, "SAVE_GREEN_BOX_PHOTO", True):
             return
@@ -770,6 +794,8 @@ class VisionNavigator:
             path = os.path.join(cfg.CAPTURES_DIR,
                                 f"WP6_GreenBox_{int(time.time())}.jpg")
             if cv2.imwrite(path, frame):
+                self._surface_taken = True
+                self._geotag_and_register("surface", path)
                 log.info("Foto box hijau disimpan: %s", path)
         except Exception as e:
             log.warning("Gagal simpan foto box hijau: %s", e)
@@ -787,6 +813,7 @@ class VisionNavigator:
                 cfg.WAYPOINT_PHOTO_DIR,
                 f"wp_photo_WP{self.current_waypoint_index}_{int(time.time())}.jpg")
             if cv2.imwrite(path, frame):
+                self._geotag_and_register("wp", path)
                 log.info("Foto waypoint disimpan: %s", path)
         except Exception as e:
             log.warning("Gagal simpan foto waypoint: %s", e)
@@ -805,13 +832,15 @@ class VisionNavigator:
                 cfg.WAYPOINT_PHOTO_DIR,
                 f"WP8_BlueBox_{tag}_{int(time.time())}.jpg")
             if cv2.imwrite(path, frame):
+                self._under_taken = True
+                self._geotag_and_register("under", path)
                 log.info("[WP8] Foto bawah air disimpan: %s", path)
         except Exception as e:
             log.warning("[WP8] Gagal simpan foto bawah air: %s", e)
 
-    # ------------------------------------------------------------------
-    # Rekaman sesi (opsional)
-    # ------------------------------------------------------------------
+
+
+
     def _start_video_recording(self):
         if not getattr(self.config, "ENABLE_SESSION_RECORDING", False):
             self.video_writer = None
@@ -837,9 +866,9 @@ class VisionNavigator:
                 pass
             self.video_writer = None
 
-    # ------------------------------------------------------------------
-    # State machine
-    # ------------------------------------------------------------------
+
+
+
     def _set_state(self, new_state):
         if self.current_state == new_state:
             return
@@ -869,9 +898,9 @@ class VisionNavigator:
         self.retreat_step = core.sm_retreat_step_name(res["retreat_step"])
         self._set_state(core.sm_state_name(res["next"]))
 
-    # ------------------------------------------------------------------
-    # HUD (digambar pada frame agar GUI tampil beranotasi)
-    # ------------------------------------------------------------------
+
+
+
     def _visualize(self, frame, detections, best_gate, best_box,
                    best_red_box, jarak_ke_wp, box_distance,
                    red_box_distance, print_status):
@@ -931,9 +960,31 @@ class VisionNavigator:
         if self.video_writer is not None:
             self.video_writer.write(frame)
 
-    # ------------------------------------------------------------------
-    # Loop utama
-    # ------------------------------------------------------------------
+
+
+
+    def _configure_cpu_threads(self):
+        """Batasi thread torch/OpenCV agar tak oversubscribe di mini-PC."""
+        n = int(getattr(self.config, "PERF_THREADS", 0) or 0)
+        if n <= 0:
+            try:
+                n = max(1, (os.cpu_count() or 2) // 2)
+            except Exception:
+                n = 2
+        try:
+            cv2.setNumThreads(n)
+        except Exception:
+            pass
+        try:
+            import torch
+            torch.set_num_threads(n)
+        except Exception:
+            pass
+        log.info("CPU threads (torch/cv2) = %d", n)
+
+
+
+
     def run(self, data_signal):
         log.info("Navigator PRODUKSI start (OFFBOARD via Pixhawk).")
         self.running = True
@@ -942,7 +993,7 @@ class VisionNavigator:
         self._start_video_recording()
         deadline = time.monotonic()
 
-        # Tunggu telemetri pertama (lat + heading) tanpa membekukan GUI.
+
         while self.running and (self.current_lat is None
                                 or self.current_yaw_rad is None):
             self._poll_telemetry()
@@ -966,7 +1017,7 @@ class VisionNavigator:
             self._sync_frame_dims()
             self._poll_telemetry()
 
-            # Manual: RC/gamepad kapal + QGC (Xbox laptop).
+
             try:
                 man = self.manual_link.update(
                     dt=self._loop_dt, kill=self.kill_request,
@@ -1003,7 +1054,7 @@ class VisionNavigator:
             now = time.time()
             n_wp = len(self.waypoints)
 
-            # --- Guard loop (C) ---
+
             guard = core.sm_guard(
                 self.current_lat is not None and self.current_lon is not None,
                 self.current_yaw_rad is not None,
@@ -1020,9 +1071,9 @@ class VisionNavigator:
                 deadline = pace_to_fps(deadline)
                 continue
 
-            # Telemetri/waypoint sudah tersedia: bila state masih state GUARD
-            # (WAITING_GPS / NO_TELEM / NO_WAYPOINTS), masuk/kembali ke
-            # WAYPOINT_NAV — mesin-state C tidak punya transisi keluar guard.
+
+
+
             if self.current_state in ("WAITING_GPS", "NO_TELEM",
                                       "NO_WAYPOINTS"):
                 self._set_state("WAYPOINT_NAV")
@@ -1049,14 +1100,14 @@ class VisionNavigator:
             st = self.current_state
             inp = {}
 
-            # ------------------- Bukan AUTO: tahan, jangan jalankan aksi misi
-            # (mencegah foto/aksi terpanggil berulang saat MANUAL/KILL). -----
+
+
             if op_mode != "AUTO":
                 thrust = 0.0
                 target_yaw = self.current_yaw_rad or 0.0
                 print_status = op_mode
 
-            # ------------------- WAYPOINT_NAV -------------------
+
             elif st == "WAYPOINT_NAV":
                 inp["wp_idx"] = self.current_waypoint_index
                 inp["n_wp"] = n_wp
@@ -1083,7 +1134,7 @@ class VisionNavigator:
                     target_yaw = self.current_yaw_rad or 0.0
                     print_status = "WAYPOINT_NAV"
 
-            # ------------------- WAYPOINT_TRANSITION -------------------
+
             elif st == "WAYPOINT_TRANSITION":
                 print_status = "TRANSITION (GPS ONLY)"
                 thrust = self.config.THRUST_VALUE
@@ -1091,7 +1142,7 @@ class VisionNavigator:
                 inp["transition_over"] = (
                     (now - self.task_timer) > self.config.TRANSITION_DURATION_S)
 
-            # ------------------- TAKE_WAYPOINT_PHOTO -------------------
+
             elif st == "TAKE_WAYPOINT_PHOTO":
                 thrust = 0.0
                 target_yaw = self.current_yaw_rad or 0.0
@@ -1113,7 +1164,7 @@ class VisionNavigator:
                 else:
                     print_status = f"PHOTO_WP (Waiting {elapsed:.1f}s)"
 
-            # ------------------- APPROACH_BOX_SEARCH -------------------
+
             elif st == "APPROACH_BOX_SEARCH":
                 detections = self._detect(frame, self.box_model)
                 best_box = self._find_best_box(
@@ -1139,7 +1190,7 @@ class VisionNavigator:
                         + math.radians(self.config.YAW_SEARCH_BOX))
                     print_status = "BOX_SEARCH (Rotating)"
 
-            # ------------------- APPROACH_BOX_ALIGN -------------------
+
             elif st == "APPROACH_BOX_ALIGN":
                 detections = self._detect(frame, self.box_model)
                 best_box = self._find_best_box(
@@ -1179,7 +1230,7 @@ class VisionNavigator:
                         thrust = 0.0
                         print_status = "BOX_ALIGN (Lost > 2s)"
 
-            # ------------------- TAKE_PHOTO -------------------
+
             elif st == "TAKE_PHOTO":
                 self.output.send(0.0, self.current_yaw_rad or 0.0,
                                  force_send=True)
@@ -1189,7 +1240,7 @@ class VisionNavigator:
                 target_yaw = self.current_yaw_rad or 0.0
                 print_status = "TAKE_PHOTO"
 
-            # ------------------- RETREAT -------------------
+
             elif st == "RETREAT":
                 elapsed_start = now - self.task_timer
                 inp["brake_over"] = elapsed_start > 0.2
@@ -1209,7 +1260,7 @@ class VisionNavigator:
                     thrust = 0.0
                     print_status = "RETREAT"
 
-            # ------------------- APPROACH_BLUE_BOX_SEARCH -------------------
+
             elif st == "APPROACH_BLUE_BOX_SEARCH":
                 detections = self._detect(frame, self.blue_box_model)
                 best_box = self._find_best_box(
@@ -1236,7 +1287,7 @@ class VisionNavigator:
                         + math.radians(self.config.BLUE_BOX_YAW_SEARCH))
                     print_status = "BLUE_BOX_SEARCH (Rotating)"
 
-            # ------------------- APPROACH_BLUE_BOX_ALIGN -------------------
+
             elif st == "APPROACH_BLUE_BOX_ALIGN":
                 detections = self._detect(frame, self.blue_box_model)
                 best_box = self._find_best_box(
@@ -1276,7 +1327,7 @@ class VisionNavigator:
                         thrust = 0.0
                         print_status = "BLUE_BOX_ALIGN (Lost > 2s)"
 
-            # ------------------- TAKE_BLUE_BOX_PHOTO -------------------
+
             elif st == "TAKE_BLUE_BOX_PHOTO":
                 thrust = 0.0
                 target_yaw = self.current_yaw_rad or 0.0
@@ -1293,7 +1344,7 @@ class VisionNavigator:
                 else:
                     print_status = f"PHOTO_BLUE (Holding {elapsed:.1f}s)"
 
-            # ------------------- BLUE_BOX_RETREAT -------------------
+
             elif st == "BLUE_BOX_RETREAT":
                 elapsed_start = now - self.task_timer
                 inp["brake_over"] = elapsed_start > 0.2
@@ -1314,7 +1365,7 @@ class VisionNavigator:
                     thrust = 0.0
                     print_status = "BLUE_RETREAT"
 
-            # ------------------- APPROACH_RED_BOX_SEARCH -------------------
+
             elif st == "APPROACH_RED_BOX_SEARCH":
                 detections = self._detect(frame, self.red_dock_model)
                 best_red_box = self._find_best_box(
@@ -1332,7 +1383,7 @@ class VisionNavigator:
                         + math.radians(self.config.YAW_SEARCH_DOCK))
                     print_status = "RED_DOCK_SEARCH (Rotating)"
 
-            # ------------------- APPROACH_RED_BOX_ALIGN -------------------
+
             elif st == "APPROACH_RED_BOX_ALIGN":
                 detections = self._detect(frame, self.red_dock_model)
                 best_red_box = self._find_best_box(
@@ -1360,7 +1411,7 @@ class VisionNavigator:
                     thrust = 0.0
                     print_status = "RED_DOCK_ALIGN (Lost Target!)"
 
-            # ------------------- RED_BOX_DOCKED -------------------
+
             elif st == "RED_BOX_DOCKED":
                 thrust = 0.0
                 target_yaw = self.current_yaw_rad or 0.0
@@ -1370,7 +1421,7 @@ class VisionNavigator:
                     (now - self.task_timer) > self.config.DOCK_HOLD_DURATION_S)
                 print_status = f"RED_BOX_DOCKED ({now - self.task_timer:.1f}s)"
 
-            # --- Hindar-rintangan (AUTO, saat transit) ---
+
             avoid = self._avoidance_scan()
             if (avoid.get("active") and op_mode == "AUTO"
                     and st in ("WAYPOINT_NAV", "WAYPOINT_TRANSITION")):
@@ -1380,7 +1431,7 @@ class VisionNavigator:
                 arah = "KIRI" if avoid.get("yaw_bias", 0.0) < 0 else "KANAN"
                 print_status = f"{print_status} (AVOID-{arah})"
 
-            # --- Transisi state (C) — hanya saat AUTO ---
+
             if op_mode == "AUTO":
                 res = core.sm_transition(
                     core.sm_state_from_name(st),
@@ -1388,7 +1439,7 @@ class VisionNavigator:
                     inp)
                 self._apply_transition(res, st)
 
-            # --- Arbitrasi KILL > MANUAL > AUTO ---
+
             if self.kill_request or op_mode == "KILL":
                 thrust = 0.0
                 lateral = 0.0
@@ -1405,7 +1456,7 @@ class VisionNavigator:
                 print_status = (f"MANUAL ({man.get('source', '?')}) "
                                 f"surge {thrust:+.2f} yaw {float(man.get('yaw', 0.0)):+.2f}")
 
-            # --- Failsafe (prioritas tertinggi) ---
+
             batt = {}
             if self.mav is not None and self.mav.has_battery:
                 batt = {"battery_pct": self.mav.battery_pct,
@@ -1420,7 +1471,7 @@ class VisionNavigator:
                 print_status = f"FAILSAFE ({fs_reason})"
                 op_mode = "FAILSAFE"
 
-            # --- Kirim setpoint + HUD + emit ---
+
             self.output.send(thrust, target_yaw, lateral_thrust=lateral)
             self._visualize(frame, detections, best_gate, best_box,
                             best_red_box, jarak_ke_wp, box_distance,
@@ -1434,9 +1485,9 @@ class VisionNavigator:
 
         self._cleanup()
 
-    # ------------------------------------------------------------------
-    # Emit paket GUI
-    # ------------------------------------------------------------------
+
+
+
     def _emit(self, data_signal, frame, sec, cam_st, state, dist_to_wp,
               groundspeed, _gd, status, op_mode, man, qgc, fs_reason, avoid,
               batt=None):
@@ -1475,14 +1526,58 @@ class VisionNavigator:
         pkt["voltage_v"] = batt.get("voltage_v")
         pkt["current_a"] = batt.get("current_a")
         pkt["battery_pct"] = batt.get("battery_pct")
+
+        gs = float(self.current_groundspeed or 0.0)
+        pkt["sog_kn"] = gs * 1.943844
+        pkt["sog_kmh"] = gs * 3.6
+        pkt["cog_deg"] = pkt["yaw_deg"]
+        pkt["wp_total"] = len(self.waypoints or [])
+        self._publish_web(pkt, frame, state, op_mode, status)
         try:
             data_signal.emit(pkt)
         except Exception:
             pass
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
+    def _publish_web(self, pkt, frame, state, op_mode, status):
+        """Push snapshot + frame ke bus dashboard web (tanpa blokir loop)."""
+        try:
+            if state == "RED_BOX_DOCKED":
+                self._dock_done = True
+            wp_idx = int(getattr(self, "current_waypoint_index", 0) or 0)
+            state_bus.update({
+                "team": getattr(self.config, "TEAM_NAME", ""),
+                "pt": getattr(self.config, "TEAM_PT", ""),
+                "track": getattr(self.config, "TRACK", "A"),
+                "track_start": getattr(self.config, "TRACK_START", None),
+                "lat": pkt.get("lat"), "lon": pkt.get("lon"),
+                "yaw_deg": pkt.get("yaw_deg"), "pitch_deg": pkt.get("pitch_deg"),
+                "roll_deg": pkt.get("roll_deg"),
+                "sog_kn": pkt.get("sog_kn"), "sog_kmh": pkt.get("sog_kmh"),
+                "cog_deg": pkt.get("cog_deg"),
+                "groundspeed": pkt.get("groundspeed"),
+                "battery_pct": pkt.get("battery_pct"),
+                "voltage_v": pkt.get("voltage_v"), "current_a": pkt.get("current_a"),
+                "state": state, "wp_idx": wp_idx, "wp_total": pkt.get("wp_total"),
+                "mavlink_ok": pkt.get("mavlink_ok"), "gps_fix": pkt.get("gps_fix"),
+                "op_mode": op_mode,
+                "failsafe_active": pkt.get("failsafe_active"), "status": status,
+            })
+            state_bus.update_mission(
+                prep=bool(pkt.get("mavlink_ok") or pkt.get("gps_fix")),
+                start=(wp_idx >= 1),
+                balls=int(getattr(self, "_gate_passed_count", 0)),
+                surface=bool(getattr(self, "_surface_taken", False)),
+                under=bool(getattr(self, "_under_taken", False)),
+                dock=bool(getattr(self, "_dock_done", False)),
+            )
+            if frame is not None:
+                state_bus.set_frame(frame)
+        except Exception:
+            pass
+
+
+
+
     def _cleanup(self):
         log.info("Navigator cleanup...")
         self._stop_video_recording()
@@ -1513,7 +1608,7 @@ class VisionNavigator:
                 pass
         self.cap = None
 
-    # API GUI: Scan kamera + ganti index saat runtime (plug-and-play).
+
     def rescan_cameras(self):
         if self.cam is None:
             return []

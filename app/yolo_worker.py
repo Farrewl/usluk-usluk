@@ -33,14 +33,14 @@ import time
 try:
     from .detection_validation import validate_buoy, draw_validated_boxes
     VALIDATION_AVAILABLE = True
-except Exception:  # pragma: no cover - cv2/numpy tidak ada
+except Exception:
     validate_buoy = None
     draw_validated_boxes = None
     VALIDATION_AVAILABLE = False
 
-# Batas antrean job: 1 = hanya frame terbaru yang diproses.
+
 _JOB_QUEUE_SIZE = 1
-# Timeout ambil job agar thread responsif terhadap stop.
+
 _JOB_GET_TIMEOUT_S = 0.2
 
 
@@ -50,7 +50,7 @@ class YoloWorker:
     def __init__(self, config):
         self.config = config
         self._jobs = queue.Queue(maxsize=_JOB_QUEUE_SIZE)
-        # model_id -> dict{det, boxes, annotated, detected, ts}
+
         self._latest = {}
         self._gate_model = None
         self._lock = threading.Lock()
@@ -62,7 +62,7 @@ class YoloWorker:
         """Tandai model gate (hasil tampilannya minta >= 2 objek = 2 buoy)."""
         self._gate_model = model
 
-    # ------------------- lifecycle -------------------
+
 
     def start(self):
         """Jalankan thread worker (idempoten)."""
@@ -86,7 +86,7 @@ class YoloWorker:
         """True bila worker sedang menjalankan inferensi."""
         return self._busy.is_set()
 
-    # ------------------- API loop utama -------------------
+
 
     def submit(self, model_id, model, frame, conf, imgsz=None):
         """Antrekan 1 job inferensi. Return True bila diterima.
@@ -108,7 +108,7 @@ class YoloWorker:
             return True
         except queue.Full:
             try:
-                self._jobs.get_nowait()  # buang job lama
+                self._jobs.get_nowait()
             except queue.Empty:
                 pass
             try:
@@ -179,7 +179,7 @@ class YoloWorker:
         with self._lock:
             self._latest.clear()
 
-    # ------------------- internal -------------------
+
 
     @staticmethod
     def _parse_results(results):
@@ -246,7 +246,7 @@ class YoloWorker:
                            and self._gate_model is not None)
                 if is_gate:
                     keep = self._gate_keep(frame, raw_boxes)
-                    detected = len(keep) >= 2   # gate butuh 2 buoy
+                    detected = len(keep) >= 2
                 else:
                     keep = raw_boxes
                     detected = len(raw_boxes) > 0
@@ -264,8 +264,8 @@ class YoloWorker:
                         "detected": bool(detected), "ts": time.monotonic(),
                     }
             except Exception:
-                # Model rusak / frame aneh: jangan racuni cache; biarkan
-                # hasil lama (caller menilai basi via max_age_s).
+
+
                 pass
             finally:
                 self._busy.clear()

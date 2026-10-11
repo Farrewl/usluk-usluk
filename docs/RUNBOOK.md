@@ -19,7 +19,8 @@ Panduan praktis dari nol sampai siap di air. Untuk arsitektur lihat
 powershell -ExecutionPolicy Bypass -File scripts\setup_minimal.ps1
 ```
 
-Hasil: `.venv` ±1,3 GB dengan GUI PyQt, YOLO 4 model, MAVLink. Rincian di
+Hasil: `.venv` ±1,3 GB dengan GUI PyQt, YOLO 4 model, MAVLink. Inti C
+(`core/libaterkia.so`) ikut di-build oleh script. Rincian di
 `requirements.txt`.
 
 **Idempoten — aman dijalankan ulang.** Script memakai ulang `.venv` yang sudah
@@ -31,27 +32,28 @@ bersih, hapus dulu: `rm -rf .venv` (Linux) / `Remove-Item -Recurse -Force .venv`
 
 ### Library C (wajib untuk navigator)
 
+Dibangun otomatis oleh `setup_minimal.sh` (idempoten — dilewati bila ada).
+Manual:
+
 ```bash
 make -C core linux                  # -> core/libaterkia.so
 # Windows (MinGW): mingw32-make -C core windows  -> core/aterkia_core.dll
 ```
 
 Tanpa library C, `aterkia_core.C_AVAILABLE=False` dan navigator gagal
-eksplisit (bukan angka palsu).
+eksplisit (bukan angka palsu). Di Windows butuh MinGW-w64.
 
-### Model YOLO (tidak ada di git)
+### Model YOLO (ikut di repo)
 
-```bash
-WEIGHTS_SOURCE=/path/ke/weights ./scripts/download_weights.sh     # Linux
-# Windows: .\scripts\download_weights.ps1  (set $env:WEIGHTS_SOURCE dulu)
-```
+4 model sudah ada di `weights/` (`buoy.pt`, `box_hijau.pt`,
+`best_blue_dark.pt`, `best_red_new.pt`) — **tak perlu unduh**.
 
-Butuh 4 model: `buoy.pt`, `box_hijau.pt`, `best_blue_dark.pt`, `best_red_new.pt`.
+### Waypoint & lintasan
 
-### Waypoint
-
-Isi `config/plan.csv` (format `lat,lon`, baris pertama header). Satu-satunya
-file plan.
+Dua file lintasan: `config/trackA.json` (start dock merah) dan
+`config/trackB.json` (start dock hijau). Pilih lintasan di `config/site.json`
+(`"TRACK": "A"`), dropdown GUI tab Misi, atau env `ASV_TRACK=A|B`.
+`config/plan.csv` tinggal cadangan.
 
 ---
 
@@ -78,16 +80,15 @@ ASV_BACKEND=sim ./scripts/run_gui.sh     # mode simulator darat
 
 ## 3. Urutan Bring-up di Lapangan
 
-1. **Daya & kamera**: nyalakan NUC + kamera, cek kamera terdeteksi
-   (`./scripts/test_deteksi.py --debug` di Linux).
+1. **Daya & kamera**: nyalakan NUC + kamera, cek status di GUI (chip kamera).
 2. **Pixhawk**: colok USB ke NUC. Pastikan `SERIAL_PORT` benar
    (`/dev/ttyACM0` di Pi, `COMx` di Windows). Buka GUI, pilih port dari combobox.
 3. **Tunggu chip telemetri LOCK** (attitude + GPS 3D fix). Chip baterai harus
    menunjukkan nilai nyata (bukan abu = no data).
 4. **Cek parameter failsafe Pixhawk** — log startup `[PIXHAWK-CHECK]` menandai
    yang KRITIS. Betulkan di QGC/Mission Planner sebelum arm.
-5. **QGC (opsional)**: `GCS_IP=192.168.1.50 ./scripts/qgc_forward.sh` untuk
-   monitor + Arm/Mode/E-stop dari laptop. Otonomi tetap di NUC.
+5. **QGC (opsional)**: hubungkan QGC ke port MAVLink NUC untuk monitor +
+   Arm/Mode/E-stop dari laptop. Otonomi tetap di NUC.
 6. **Arm** (dari QGC atau RC). State `WAITING_GPS` → misi mulai otomatis saat
    fix GPS + attitude tersedia.
 7. **Kill switch**: tombol KILL GUI = thrust 0 + DISARM. E-stop hardware
@@ -115,7 +116,15 @@ ASV_BACKEND=sim ./scripts/run_gui.sh     # mode simulator darat
 - Foto misi disimpan **lokal**:
   - kotak hijau: `data/captures/`
   - kotak biru (bawah air) & waypoint: `data/waypoint_captures/`
-- Tidak ada upload ke server.
+- Tidak ada upload ke server. Geo-tag tiap foto (Day/Date/Time, koordinat
+  DD & DM, SOG, COG) ditulis sebagai sidecar `.json` di samping gambar dan
+  tampil di dashboard web.
+
+### Dashboard web
+
+Server nyala otomatis saat GUI jalan (lihat `config/site.json`). Buka
+`http://<ip-laptop>:8080` di jaringan router tim. Demo tanpa kapal:
+`ASV_MOCK=1 ./scripts/run_gui.sh`.
 
 ---
 
@@ -123,9 +132,8 @@ ASV_BACKEND=sim ./scripts/run_gui.sh     # mode simulator darat
 
 | Alat | Fungsi |
 |---|---|
-| `scripts/test_deteksi.py --flip 0-3 --debug --imgsz 640` | Live kamera + deteksi + alasan tolak |
-| `scripts/calib_hsv.py` | Kalibrasi ambang HSV warna |
 | `settings_dialog.py` (GUI) | Ubah parameter saat runtime |
+| `DETECTION_DEBUG=True` (tuning) | Cetak alasan buoy ditolak ke log |
 
 ---
 

@@ -73,8 +73,8 @@ QScrollBar::handle:vertical {
 }
 """
 
-# Warna teks status (dipakai via QSS `color:` sekali saat berubah,
-# BUKAN tiap frame — lihat main.py _set_chip agar tidak lag).
+
+
 COLOR_OK = "#2ecc71"
 COLOR_WARN = "#f39c12"
 COLOR_BAD = "#ff6b6b"

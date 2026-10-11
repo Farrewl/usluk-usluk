@@ -18,30 +18,30 @@ offboard.
 
 ## Cepat Mulai
 
+Model YOLO & library inti **ikut di build**: cukup 2 langkah.
+
 ```bash
-# 1. Setup .venv minimal (torch CPU) + verifikasi
-./scripts/setup_minimal.sh                 # Linux / Pi
+# 1. Setup .venv minimal (torch CPU) + build inti C + verifikasi
+./scripts/setup_minimal.sh
 
-# 2. Ambil model YOLO ke weights/ (~25 MB, 4 model)
-WEIGHTS_SOURCE=/path/ke/weights ./scripts/download_weights.sh
-
-# 3. Isi waypoint di config/plan.csv (format: lat,lon per baris)
-
-# 4. Jalankan GUI
-./scripts/run_gui.sh                       # atau: ./.venv/bin/python3 -O main.py
-
-# 5. (Dev) uji kamera + deteksi langsung
-./scripts/test_deteksi.py --flip 0 --debug --imgsz 640
+# 2. Jalankan GUI (web dashboard otomatis nyala di :8080)
+./scripts/run_gui.sh
 ```
 
 **Windows** (PowerShell, dari root repo):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\setup_minimal.ps1
-$env:WEIGHTS_SOURCE = "\\server\bersama\weights"; .\scripts\download_weights.ps1
-# isi config\plan.csv, lalu:
 scripts\run.bat
 ```
+
+Sudah pernah setup? Langsung `./scripts/run_gui.sh`. Setup idempoten:
+`.venv` dan library yang sudah ada **dipakai ulang, tak ditimpa**; install
+dilewati bila paket inti sudah bisa di-import.
+
+Lintasan & identitas tim diatur di `config/site.json` (+ `config/trackA.json`,
+`config/trackB.json`) — bisa juga ganti dari dropdown GUI / env
+`ASV_TRACK=A|B`. Model YOLO sudah ada di `weights/` (tak perlu unduh).
 
 ---
 
@@ -85,11 +85,12 @@ Modul: `nav_math`, `gate_vision`, `fuzzy`, `state_machine` (18 state),
 |---|---|---|---|
 | GUI PyQt (`main.py`) | ✅ | ✅ | sama persis |
 | YOLO 4 model (.pt) | ✅ | ✅ | torch CPU (wheel index PyTorch) |
-| Setup `.venv` | ✅ `setup_minimal.sh` | ✅ `setup_minimal.ps1` | |
-| Model YOLO | ✅ `download_weights.sh` | ✅ `download_weights.ps1` | butuh `tar` (bawaan Win 10+) |
+| Setup `.venv` | ✅ `setup_minimal.sh` | ✅ `setup_minimal.ps1` | idempoten, skip yang sudah ada |
+| Model YOLO | ✅ ikut repo | ✅ ikut repo | ter-commit, tanpa unduh |
+| Dashboard web (SSE+MJPEG) | ✅ | ✅ | buka `http://<ip>:8080` |
 | Telemetri Pixhawk | ✅ `/dev/ttyACM*` | ✅ `COM3–9` | deteksi otomatis |
 | Kamera | ✅ UID by-id | ✅ index angka | negosiasi resolusi otomatis |
-| Library C (`aterkia`) | ✅ `make -C core linux` | ✅ `make -C core windows` | tanpa build → gagal eksplisit |
+| Library C (`aterkia`) | ✅ `make -C core linux` | ✅ `make -C core windows` | Windows butuh MinGW; tanpa itu gagal eksplisit |
 | Gamepad USB | ✅ `/dev/input/js*` | ⛔ stub | Windows: RC Pixhawk / tombol GUI |
 | Cross-check C↔Python | ✅ | ✅ | tanpa `gcc` otomatis skip |
 
@@ -116,15 +117,41 @@ usluk-usluk/
 │   ├── include/*.h
 │   ├── src/*.c             # nav_math, gate_vision, fuzzy, state_machine, ...
 │   └── libaterkia.so       # build lokal (di-ignore git)
+├── web/                    # Dashboard monitoring (SSE + MJPEG, stdlib)
+│   ├── server.py           # HTTP server + endpoint /events /video /captures
+│   ├── mock.py             # feeder data palsu (env ASV_MOCK=1)
+│   └── static/             # index.html + dashboard.js + grid.js + geo.js
 ├── config/
-│   ├── plan.csv            # Waypoint misi (kanonik)
+│   ├── site.json           # identitas tim, lintasan, host/port web
+│   ├── trackA.json / trackB.json  # waypoint + leg misi per lintasan
 │   └── tuning_params.json  # Parameter tuning (simpan otomatis)
-├── weights/                # Model YOLO (*.pt) — di-ignore git
+├── weights/                # Model YOLO (*.pt) — IKUT git
 ├── data/                   # Output runtime (foto) — di-ignore git
-├── scripts/                # Helper dev/operasional (lihat docs/MODUL.md)
+├── scripts/                # setup_minimal.sh/.ps1, run_gui.sh, run.bat, verify_env.py
 ├── docs/                   # Dokumentasi (lihat bawah)
 └── tests/                  # Cross-check C↔Python (test_core_*.py + _ref/)
 ```
+
+---
+
+## Dashboard Web (monitoring KKI)
+
+Saat GUI jalan, server dashboard otomatis nyala (`config/site.json`:
+`WEB_HOST`/`WEB_PORT`, default `0.0.0.0:8080`). Panitia/peserta buka
+`http://<ip-laptop>:8080` di jaringan router tim.
+
+- `/events` — Server-Sent Events, snapshot telemetri @ `SSE_HZ` (default 5 Hz)
+- `/video` — MJPEG dari kamera NAV @ `VIDEO_HZ` (default 10 Hz)
+- `/captures` — daftar foto misi + geo-tag (sidecar JSON)
+- `/config` — identitas tim, lintasan, geometri grid & waypoint
+
+Isi: header tim/PT + pemilih lintasan A/B + baterai + video; Position-Log
+misi 1–6 (Preparation, Start, Floating Ball Set 0–10, Surface Imaging,
+Underwater Imaging, Finish); SOG (knot & km/h), COG, attitude; grid
+A1–E5 25×25 m + trajectory realtime + kompas; popup foto geo-tag (Day,
+Date `DD/MM/YYYY`, Time, Coordinate DD & DM, SOG, COG).
+
+Demo tanpa kapal: `ASV_MOCK=1 ./scripts/run_gui.sh` (data + frame sintetis).
 
 ---
 

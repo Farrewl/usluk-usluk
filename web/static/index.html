@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aterkia ASV — Web Monitoring KKI</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">ASV</div>
+    <div>
+      <div class="team" id="teamName">Aterkia</div>
+      <div class="pt" id="teamPt">Universitas Diponegoro</div>
+    </div>
+  </div>
+
+  <div class="ctrl">
+    <label>Lintasan</label>
+    <select id="trackSelect">
+      <option value="A">Lintasan A</option>
+      <option value="B">Lintasan B</option>
+    </select>
+  </div>
+
+  <div class="stat">
+    <div class="stat-box"><span class="k">Battery</span>
+      <span class="v" id="batt">--</span></div>
+    <div class="stat-box"><span class="k">State</span>
+      <span class="v small" id="state">--</span></div>
+    <div class="stat-box"><span class="k">Link</span>
+      <span class="v" id="link">--</span></div>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="col-left">
+    <div class="card">
+      <h2>Position-Log</h2>
+      <ul class="steps" id="steps">
+        <li data-step="prep"><b>[1]</b> Preparation
+          <span class="badge">Monitoring system and communication setting</span></li>
+        <li data-step="start"><b>[2]</b> Start
+          <span class="badge">Mulai dari posisi docking / jerigen apung</span></li>
+        <li data-step="balls"><b>[3]</b> Floating Ball Set
+          <span class="badge">Tracking kelulusan 10 pasang bola merah &amp; hijau</span>
+          <span class="tick" id="ballsTick">0 / 10</span></li>
+        <li data-step="surface"><b>[4]</b> Mission Surface Imaging
+          <span class="badge">Photo permukaan air (kotak hijau)</span>
+          <span class="tick" id="surfTick">-</span></li>
+        <li data-step="under"><b>[5]</b> Mission Underwater Imaging
+          <span class="badge">Photo bawah permukaan air (kotak biru)</span>
+          <span class="tick" id="underTick">-</span></li>
+        <li data-step="dock"><b>[6]</b> Finish
+          <span class="badge">Tambat / docking pada jerigen apung</span></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>Attitude &amp; Speed</h2>
+      <div class="att">
+        <div class="att-item"><span class="k">SOG</span>
+          <span class="v" id="sogKn">0.00 kn</span>
+          <span class="sub" id="sogKmh">0.00 km/h</span></div>
+        <div class="att-item"><span class="k">COG</span>
+          <span class="v" id="cog">0.0°</span>
+          <span class="sub" id="yaw">H 0.0°</span></div>
+        <div class="att-item"><span class="k">ATT</span>
+          <span class="v" id="att">P0.0 R0.0</span>
+          <span class="sub" id="wp">WP -/-</span></div>
+        <div class="att-item"><span class="k">POS</span>
+          <span class="v small" id="pos">--</span></div>
+      </div>
+    </div>
+
+    <div class="card photos">
+      <h2>Mission Imaging</h2>
+      <div class="photo" id="photoSurface">
+        <div class="ph-head">Surface (Kotak Hijau)</div>
+        <div class="ph-body empty">No image captured yet</div>
+        <div class="ph-geo"></div>
+      </div>
+      <div class="photo" id="photoUnder">
+        <div class="ph-head">Underwater (Kotak Biru)</div>
+        <div class="ph-body empty">No image captured yet</div>
+        <div class="ph-geo"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="col-right">
+    <div class="card map-card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center">
+        Trajectory &amp; Mapping Grid
+        <span class="live" id="liveBadge">● LIVE</span>
+      </h2>
+      <div class="gridwrap">
+        <canvas id="grid" width="720" height="720"></canvas>
+        <canvas id="compass" width="110" height="110"></canvas>
+      </div>
+      <div class="legend">
+        <span><i class="dot red"></i>Bola Merah</span>
+        <span><i class="dot green"></i>Bola Hijau</span>
+        <span><i class="dot boat"></i>Kapal</span>
+        <span><i class="line"></i>Trajectory</span>
+        <span id="trackBadge" class="track">START (RED) / FINISH</span>
+      </div>
+    </div>
+    <div class="card video-card">
+      <h2>Live Camera (Stream)</h2>
+      <img id="video" src="/video" alt="stream kamera">
+    </div>
+  </section>
+</main>
+
+<script src="/static/geo.js"></script>
+<script src="/static/grid.js"></script>
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

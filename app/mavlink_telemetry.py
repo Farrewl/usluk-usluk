@@ -23,16 +23,16 @@ import time
 try:
     from pymavlink import mavutil
     MAVLINK_AVAILABLE = True
-except ImportError:          # pragma: no cover - mesin tanpa pymavlink
+except ImportError:
     mavutil = None
     MAVLINK_AVAILABLE = False
 
-# --- Ground Control Station (QGroundControl) forwarding ---
-# Pixhawk 6C hanya punya 1 link serial ke NUC; QGC di laptop lapangan
-# ikut memantau + Arm/Mode via UDP forward (bukan colok serial kedua).
-# Arsitektur: Pixhawk --serial--> NUC (master) --udp--> QGC 14550.
-# Otoritas: QGC pegang Arm/Mode/E-stop, NUC pegang otonomi OFFBOARD.
-# Failsafe GUI tetap: KILL > MANUAL > AUTO.
+
+
+
+
+
+
 GCS_DEFAULT_IP = "127.0.0.1"
 GCS_DEFAULT_PORT = 14550
 
@@ -101,24 +101,24 @@ class MavlinkTelemetry:
         self.master = None
         self.connected = False
         self.last_heartbeat_time = 0.0
-        # Jembatan GCS (QGC): koneksi udp-out malas ke laptop lapangan.
-        # Dibuat HANYA bila enable_gcs_forward(True) dipanggil — default
-        # mati agar mesin tanpa QGC tidak membuka socket sia-sia.
+
+
+
         self._gcs = None
         self._gcs_addr = (GCS_DEFAULT_IP, GCS_DEFAULT_PORT)
         self._gcs_enabled = False
-        self._attitude = {}            # {'roll','pitch','yaw'} rad
-        self._pos = None               # (lat_deg, lon_deg) atau None (no GPS)
+        self._attitude = {}
+        self._pos = None
         self._groundspeed = 0.0
-        # Baterai dari SYS_STATUS / BATTERY_STATUS (None = belum ada data).
-        # voltage_v = tegangan pack (V), current_a = arus (A),
-        # battery_pct = sisa 0..100 (%), dihitung dari tegangan bila persen
-        # tidak dikirim firmware.
+
+
+
+
         self._voltage_v = None
         self._current_a = None
         self._battery_pct = None
 
-    # ------------------- koneksi -------------------
+
     def connect(self, timeout_s=8.0):
         """Buka serial + tunggu heartbeat. True bila Pixhawk merespons."""
         if not MAVLINK_AVAILABLE:
@@ -165,7 +165,7 @@ class MavlinkTelemetry:
             self._gcs = None
         self._gcs_enabled = False
 
-    # ------------------- forward ke QGroundControl -------------------
+
     def enable_gcs_forward(self, on=True, ip=None, port=None):
         """Nyalakan/matikan forward UDP ke QGC (default 127.0.0.1:14550).
 
@@ -199,18 +199,18 @@ class MavlinkTelemetry:
             ip, prt = self._gcs_addr
             self._gcs = mavutil.mavlink_connection(
                 f"udpout:{ip}:{prt}", source_system=1,
-                source_component=191)  # comp GCS-passthrough
+                source_component=191)
             print(f"[MAV] Forward QGC aktif -> udp:{ip}:{prt}.")
         except Exception as exc:
             print(f"[MAV] Gagal buka forward QGC: {exc}")
             self._gcs = None
 
-    # ------------------- request stream -------------------
+
     def _request_streams(self):
         """Minta attitude/posisi mengalir (10 Hz) — PX4 & ArduPilot."""
-        # Konstanta MAV_DATA_STREAM_* beda-beda antar dialect pymavlink;
-        # kalau tidak dikenal -> di-skip. SET_MESSAGE_INTERVAL di bawah
-        # tetap menjamin rate attitude walau request stream ditolak.
+
+
+
         for stream_name in ("MAV_DATA_STREAM_EXTRA_ATTITUDE",
                             "MAV_DATA_STREAM_POSITION",
                             "MAV_DATA_STREAM_EXTRA3"):
@@ -222,13 +222,13 @@ class MavlinkTelemetry:
                     self.master.target_system, self.master.target_component,
                     stream_id, 10, 1)
             except Exception:
-                pass  # request ditolak firmware -> abaikan
+                pass
 
-        # SET_MESSAGE_INTERVAL per pesan — lebih andal di PX4.
-        # RC_CHANNELS: posisi stick receiver (baca via Pixhawk RCIN).
+
+
         for name in ("ATTITUDE", "GLOBAL_POSITION_INT", "VFR_HUD",
                      "SYS_STATUS", "BATTERY_STATUS", "RC_CHANNELS"):
-            self._set_message_interval(name, 100_000)  # 10 Hz = 100 ms
+            self._set_message_interval(name, 100_000)
 
     def _set_message_interval(self, name, interval_us):
         msg_id = getattr(mavutil.mavlink, f"MAVLINK_MSG_ID_{name}", None)
@@ -240,9 +240,9 @@ class MavlinkTelemetry:
                 mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0,
                 msg_id, interval_us, 0, 0, 0, 0, 0)
         except Exception:
-            pass  # kalau firmware belum support, stream default tetap ada
+            pass
 
-    # ------------------- baca pesan (non-blocking) -------------------
+
     def poll(self):
         """Baca SEMUA pesan yang mengantre; perbarui state internal.
 
@@ -267,15 +267,15 @@ class MavlinkTelemetry:
                         "roll": msg.roll, "pitch": msg.pitch, "yaw": msg.yaw,
                     }
                 elif mtype == "GLOBAL_POSITION_INT":
-                    # lat/lon == 0 menandakan belum ada GPS fix (PX4)
+
                     if msg.lat != 0 or msg.lon != 0:
                         self._pos = (msg.lat / 1e7, msg.lon / 1e7)
                 elif mtype == "VFR_HUD":
                     self._groundspeed = msg.groundspeed
                 elif mtype == "SYS_STATUS":
-                    # voltage_battery: millivolt (0/0xFFFF = tidak ada sensor).
-                    # current_battery: 10*mA (-1 = tidak ada sensor).
-                    # battery_remaining: persen 0..100 (-1 = tidak dikirim).
+
+
+
                     vbatt = getattr(msg, "voltage_battery", 0) or 0
                     if vbatt not in (0, 0xFFFF, 65535):
                         self._voltage_v = vbatt / 1000.0
@@ -286,8 +286,8 @@ class MavlinkTelemetry:
                     if rem is not None and 0 <= rem <= 100:
                         self._battery_pct = float(rem)
                 elif mtype == "BATTERY_STATUS":
-                    # voltages[0] = tegangan cell-1 (mV); voltage pack =
-                    # jumlah semua cell yang valid (< 0xFFFF).
+
+
                     volts = getattr(msg, "voltages", None) or []
                     cells_mv = [v for v in volts
                                 if v not in (0, 0xFFFF, 65535)]
@@ -302,8 +302,8 @@ class MavlinkTelemetry:
                 elif mtype == "HEARTBEAT":
                     self.last_heartbeat_time = time.time()
                     if self._gcs is not None:
-                        # QGC butuh heartbeat rutin dari link agar status
-                        # "Connected" tidak kedip; kirim max 1 Hz.
+
+
                         now_hb = time.time()
                         if now_hb - getattr(self, "_last_gcs_hb", 0.0) >= 1.0:
                             self._last_gcs_hb = now_hb
@@ -318,7 +318,7 @@ class MavlinkTelemetry:
         except Exception as exc:
             print(f"[MAV] Error poll: {exc}")
 
-    # ------------------- properti hasil -------------------
+
     @property
     def has_attitude(self):
         return bool(self._attitude)
@@ -347,11 +347,11 @@ class MavlinkTelemetry:
     def groundspeed(self):
         return self._groundspeed
 
-    # ------------------- baterai -------------------
-    # Baterai LiPO 4S penuh = 16.8 V, kosong = ~12.8 V (3.2 V/cell).
-    # Baterai LiFePO4 4S penuh = 14.6 V, kosong = ~12.0 V (3.0 V/cell).
-    # Persen dihitung linear dari tegangan bila firmware tidak mengirim
-    # battery_remaining — cukup akurat untuk indikator GUI.
+
+
+
+
+
     LIPO_4S_FULL_V = 16.8
     LIPO_4S_EMPTY_V = 12.8
 

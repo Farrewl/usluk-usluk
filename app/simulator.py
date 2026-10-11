@@ -30,6 +30,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 from . import settings as cfg
 from . import aterkia_core as core
+from . import state_bus
 
 from .manual_link import ManualLink
 from .qgc_offboard import QgcOffboard
@@ -59,9 +60,9 @@ except ImportError:
 
 from . import mavlink_telemetry as mavlink_mod
 
-# skfuzzy TIDAK dipakai di jalur produksi (fuzzy jalan di C via aterkia_core).
-# Blok import dipertahankan agar mesin lama tanpa C tetap bisa jalan dengan
-# gain statis — nilai FUZZY di bawah tidak dibaca lagi.
+
+
+
 FUZZY_ENABLED = False
 
 try:
@@ -73,13 +74,48 @@ except ImportError:
 try:
     from .detection_validation import validate_buoy, draw_validated_boxes
     VALIDATION_AVAILABLE = True
-except ImportError:  # cv2/numpy tidak ada -> fallback ke plot() bawaan YOLO
+except ImportError:
     VALIDATION_AVAILABLE = False
 
 
-# ---------------------------------------------------------------------------
-# GroundSimNavigator — kamera asli + YOLO asli, GPS dimock
-# ---------------------------------------------------------------------------
+
+
+
+def _publish_web(pkt, config):
+    """Push snapshot + frame sim ke bus dashboard web (tanpa blokir loop)."""
+    try:
+        gs = float(pkt.get("groundspeed", 0.0) or 0.0)
+        wp_idx = int(pkt.get("target_wp_idx", 0) or 0)
+        state_bus.update({
+            "team": getattr(config, "TEAM_NAME", ""),
+            "pt": getattr(config, "TEAM_PT", ""),
+            "track": getattr(config, "TRACK", "A"),
+            "track_start": getattr(config, "TRACK_START", None),
+            "lat": pkt.get("lat"), "lon": pkt.get("lon"),
+            "yaw_deg": pkt.get("yaw_deg"), "pitch_deg": pkt.get("pitch_deg", 0.0),
+            "roll_deg": pkt.get("roll_deg", 0.0),
+            "sog_kn": gs * 1.943844, "sog_kmh": gs * 3.6,
+            "cog_deg": pkt.get("yaw_deg", 0.0), "groundspeed": gs,
+            "battery_pct": pkt.get("battery_pct"),
+            "voltage_v": pkt.get("voltage_v"), "current_a": pkt.get("current_a"),
+            "state": pkt.get("state"), "wp_idx": wp_idx,
+            "wp_total": pkt.get("wp_total", 0),
+            "mavlink_ok": pkt.get("mavlink_ok"), "gps_fix": pkt.get("gps_fix"),
+            "op_mode": pkt.get("op_mode", "SIM"), "status": "SIM",
+        })
+        state_bus.update_mission(
+            prep=True, start=(wp_idx >= 1),
+            balls=int(pkt.get("gate_count", 0) or 0),
+            surface=bool(pkt.get("surface_taken", False)),
+            under=bool(pkt.get("under_taken", False)),
+            dock=bool(pkt.get("dock_done", False)))
+        fr = pkt.get("frame")
+        if fr is not None:
+            state_bus.set_frame(fr)
+    except Exception:
+        pass
+
+
 class GroundSimNavigator:
     """Menjalankan pipeline kamera-nyata + YOLO-nyata, tetapi posisi kapal
     diperbarui sintetis (mock). Berguna menguji deteksi tanpa ke laut."""
@@ -91,19 +127,19 @@ class GroundSimNavigator:
         self.current_state = "IDLE"
         self.running = False
 
-        # --- MOCK TELEMETRY ---
-        # Posisi mock: None sampai misi punya WP (tanpa pin palsu ITS).
+
+
         self.current_lat = None
         self.current_lon = None
         self.current_yaw_rad = 0.0
         self.current_groundspeed = 0.0
         self.dist_to_wp = 0.0
 
-        # --- KAMERA GANDA (lihat app/camera_manager.py) ---
-        # Primary = navigasi (negosiasi resolusi), secondary = bawah air
-        # (640x480). Keduanya hidup bareng + reconnect otomatis bila USB
-        # dicabut / reset bus saat Pixhawk dicolok. `self.cap` dipertahankan
-        # sebagai alias primary agar kode lama tetap jalan.
+
+
+
+
+
         print(f"[SIM] Membuka kamera NAV idx={self.config.CAMERA_INDEX} + "
               f"BAWAH idx={self.config.WAYPOINT_PHOTO_CAMERA_INDEX}...")
         self.cam = (CameraManager(self.config)
@@ -128,7 +164,7 @@ class GroundSimNavigator:
             print("[SIM] Helper kamera tak ada — pakai frame sintetis.")
         self.cap = self.cam.cap if self.cam is not None else None
 
-        # --- MODEL YOLO ASLI ---
+
         if YOLO_AVAILABLE:
             try:
                 self.gate_model = YOLO(self.config.MODEL_PATH, task='detect')
@@ -137,7 +173,7 @@ class GroundSimNavigator:
                 print(f"[SIM][ERROR] Gagal memuat model GATE: {e}")
                 self.gate_model = None
 
-            # 3 model lain: lazy-load di thread latar
+
             self.box_model = None
             self.blue_box_model = None
             self.red_dock_model = None
@@ -147,9 +183,9 @@ class GroundSimNavigator:
             self.gate_model = self.box_model = None
             self.blue_box_model = self.red_dock_model = None
 
-        # --- Failsafe otomatis (stale-link + low-batt). Logika bersama ada
-        # di app/safety.py; perintah RTL/disarm lewat app/output_link.py
-        # (dipakai bersama app/navigator.py — satu sumber logika).
+
+
+
         self.output = OutputLink(self.config)
         self.safety = SafetyManager(self.config, link=self.output)
 
@@ -187,34 +223,34 @@ class GroundSimNavigator:
         self.sim_step = 1
         self._loop_start = time.time()
         self._yolo_subcount = 0
-        self._last_detection = {}   # id(model) -> (detected, annotated)
-        self._sec_seq = 0           # throttle baca kamera bawah (preview)
+        self._last_detection = {}
+        self._sec_seq = 0
         self._last_sec_frame = None
-        # Histeresis telemetri mock->real: butuh N frame bagus beruntun
-        # sebelum pindah (hindari GUI lompat saat Pixhawk baru dicolok /
-        # heartbeat sesaat). Mundur ke mock juga butuh N gagal beruntun.
+
+
+
         self._telem_good_streak = 0
         self._telem_bad_streak = 0
         self._telem_use_real = False
         self._mav_port_logged = None
         self._mav_retry_mono = 0.0
-        # Jembatan manual RC/gamepad (hitung di C) — dipasang ke master
-        # MAVLink setelah konek; GUI bisa minta manual via flag ini.
+
+
         self.manual_link = ManualLink(self.config)
-        # Sumber manual QGC (Xbox di laptop -> QGC -> MAVLink MANUAL_CONTROL).
-        # Adu dengan sumber lokal via core.arb_manual2 (konflik -> netral).
+
+
         self.qgc_link = QgcOffboard(self.config)
         self.manual_gui_request = False
-        # KILL dari tombol GUI: masuk jalur C (mode_manager KILL) + kirim
-        # DISARM ke Pixhawk (lihat self.output.send_disarm).
+
+
         self.kill_request = False
-        # Hasil cek param failsafe Pixhawk saat startup (thread daemon,
-        # lihat _pixhawk_param_check_worker). Dibaca GUI via data_signal.
+
+
         self.pixhawk_check = "menunggu MAVLink"
         threading.Thread(target=self._pixhawk_param_check_worker,
                          daemon=True).start()
-        # Hindar-rintangan reaktif (C, core/src/avoidance.c): state bias yaw
-        # + cap waktu frame untuk decay memori.
+
+
         self.avoid_state = {"yaw_bias": 0.0, "memory_s": 0.0}
         self._avoid_last_mono = time.monotonic()
         self.manual_last = {"surge": 0.0, "yaw": 0.0, "active": False,
@@ -290,7 +326,7 @@ class GroundSimNavigator:
                 print("[MAV] Sumber telemetri: REAL -> MOCK (link putus).")
         return self._telem_use_real
 
-    # ------------------- Geolokasi mock -------------------
+
     def _update_mock_position(self, target_lat, target_lon, speed_mps=1.5,
                               yaw_bias_norm=0.0):
         """Geser posisi mock mendekati target; True jika sudah tiba (<2 m).
@@ -314,7 +350,7 @@ class GroundSimNavigator:
         self.current_groundspeed = 0.5
         return True
 
-    # ------------------- Deteksi -------------------
+
     def _run_yolo_detection(self, model, frame, run_now=True):
         """Inferensi YOLO ASINKRON — loop video tidak pernah menunggu.
 
@@ -330,9 +366,9 @@ class GroundSimNavigator:
         if run_now:
             conf = 0.5
             if model is self.gate_model:
-                # Model gate rawan mendeteksi objek mirip bola (mis. wajah)
-                # sebagai buoy — confidence-nya dinaikkan lewat config
-                # (BUOY_CONF_THRESHOLD) + validasi warna/bentuk di worker.
+
+
+
                 conf = self.config.BUOY_CONF_THRESHOLD
             self._yolo_worker.submit(mid, model, frame.copy(), conf)
         result = self._yolo_worker.latest_status(mid)
@@ -342,7 +378,7 @@ class GroundSimNavigator:
         self._last_detection[mid] = (detected, annotated)
         return detected, annotated
 
-    # ------------------- Foto bawah air (WP 8) -------------------
+
     def _execute_smart_capture_procedure(self):
         """Ganti ke kamera bawah air, hangatkan 20 frame, simpan & upload foto."""
         print("\n=== [WP 8] PROSEDUR SMART PHOTO (REAL HARDWARE) ===")
@@ -354,10 +390,10 @@ class GroundSimNavigator:
         cam_bawah = (open_camera(self.config.WAYPOINT_PHOTO_CAMERA_INDEX, 640, 480)
                      if CAMERA_HELPER else None)
         if cam_bawah and cam_bawah.isOpened():
-            cam_bawah.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # paksa auto-exposure ON
+            cam_bawah.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
 
             for _ in range(20):
-                cam_bawah.read()  # warm-up sensor
+                cam_bawah.read()
 
             for percobaan in range(1, 6):
                 ret, frame = cam_bawah.read()
@@ -374,7 +410,7 @@ class GroundSimNavigator:
         if cam_bawah:
             cam_bawah.release()
 
-        # hidupkan kembali kamera navigasi (auto-negosiasi, sama seperti init)
+
         self.cap = (open_camera(self.config.CAMERA_INDEX,
                                 target_fps=self.config.CAMERA_TARGET_FPS,
                                 auto_highest=True)
@@ -383,10 +419,10 @@ class GroundSimNavigator:
             self.config.FRAME_WIDTH = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             self.config.FRAME_HEIGHT = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # ------------------- Failsafe otomatis (logika bersama) ----------
-    # Implementasi ada di app/safety.py + app/output_link.py (dipakai
-    # bersama app/navigator.py). Di sini hanya adaptor sumber baterai
-    # (mock vs Pixhawk) supaya atribut GUI tetap kompatibel.
+
+
+
+
     @property
     def failsafe_active(self):
         return self.safety.failsafe_active
@@ -488,7 +524,7 @@ class GroundSimNavigator:
                 except Exception:
                     continue
             if best is not None:
-                det = (best[1], best[0])   # (cx_norm, w_norm)
+                det = (best[1], best[0])
         now = time.monotonic()
         dt_s = max(1e-3, now - self._avoid_last_mono)
         self._avoid_last_mono = now
@@ -511,21 +547,21 @@ class GroundSimNavigator:
         return self.safety.check(fields.get("battery_pct"),
                                  fields.get("voltage_v"))
 
-    # ------------------- Loop utama -------------------
+
     def run(self, data_signal):
         print("--- [SIM] GROUND SIMULATOR (kamera + YOLO asli) START ---")
         self.running = True
 
-        # --- Pixhawk: connect non-blocking + throttled (loop tak freeze) ---
-        # Sebelumnya connect(timeout 5 dtk) blocking di sini -> GUI freeze
-        # saat start; kini _mav_ensure_connected() dipanggil tiap loop.
+
+
+
         self.mav = None
         self._last_mav_log = 0.0
         if not mavlink_mod.MAVLINK_AVAILABLE:
             print("[SIM] pymavlink belum terpasang — attitude dari mock.")
 
-        # Worker YOLO asinkron: video loop jalan 30 fps terlepas dari
-        # kecepatan inferensi (deteksi tersedia di saatnya).
+
+
         self._yolo_worker = YoloWorker(self.config)
         self._yolo_worker.bind_gate_model(self.gate_model)
         self._yolo_worker.start()
@@ -534,17 +570,17 @@ class GroundSimNavigator:
         deadline = time.monotonic()
 
         while self.running:
-            # --- Pixhawk reconnect throttled (colok belakangan OK) ---
+
             try:
                 self._mav_ensure_connected()
             except Exception:
                 pass
-            # --- Baca frame NAV via manajer (reconnect otomatis) ---
+
             _cam_st = "OK"
             if self.cam is not None:
                 _ok, frame, _cam_st = self.cam.read_primary(
                     self.config.FRAME_WIDTH, self.config.FRAME_HEIGHT)
-                self.cap = self.cam.cap  # alias kompat kode lama
+                self.cap = self.cam.cap
                 if frame is None:
                     _ok = False
             elif self.cap is not None:
@@ -560,10 +596,10 @@ class GroundSimNavigator:
                     text=("KAMERA TERPUTUS — mencoba lagi..."
                           if _cam_st == "RETRY"
                           else "KAMERA BELUM ADA — colok USB / Scan"))
-            # --- Baca frame BAWAH (downscale, None bila tak ada) ---
-            # Hanya PREVIEW GUI -> throttle 1x per SECONDARY_PREVIEW_INTERVAL
-            # frame (hemat bandwidth USB + CPU); frame terakhir di-cache agar
-            # panel GUI tidak berkedip.
+
+
+
+
             _sec_ok, _sec_frame = False, None
             if self.cam is not None:
                 try:
@@ -585,13 +621,13 @@ class GroundSimNavigator:
             is_detected = False
             processed_frame = frame
 
-            # Frame-skip: inferensi YOLO tidak tiap frame (bisa ratusan ms di
-            # CPU), agar capture & tampilan video tetap mengalir ~30 fps.
+
+
             self._yolo_subcount += 1
             _run_now = (self._yolo_subcount % (self.config.YOLO_FRAME_SKIP + 1)) == 0
 
-            # Alur skenario darat: gate1 -> gate2 -> gate3 -> kotak hijau
-            # -> kotak biru (foto bawah air) -> docking -> MISSION_COMPLETE
+
+
             if self.sim_step == 1:
                 self.current_state = "ENTER_TRACK_1"
                 status_txt = "Navigating to Gate 1..."
@@ -671,12 +707,12 @@ class GroundSimNavigator:
                     self.current_state = "MISSION_COMPLETE"
                     print("[SIM] MISI SELESAI!")
 
-            # Hindar-rintangan reaktif (C): bias yaw menjauh dari objek
-            # besar di jalur. Dihitung dulu agar heading mock ikut berbelok
-            # pada frame yang sama.
+
+
+
             avoid = self._avoidance_scan()
 
-            # mock gerakan ke waypoint aktif (mulai dari WP1 bila ada WP)
+
             if self.waypoints:
                 if self.current_lat is None:
                     self.current_lat = self.waypoints[0]['lat']
@@ -685,7 +721,7 @@ class GroundSimNavigator:
                                             len(self.waypoints) - 1)]
                 speed = 1.5 if self.sim_step in (1, 3, 5) else 0.2
                 if self.failsafe_active:
-                    speed = 0.0   # failsafe: mock tidak boleh maju
+                    speed = 0.0
                 self._update_mock_position(target['lat'], target['lon'],
                                            speed_mps=speed,
                                            yaw_bias_norm=self.avoid_state.get(
@@ -693,7 +729,7 @@ class GroundSimNavigator:
             else:
                 self.current_lat, self.current_lon = 0.0, 0.0
 
-            # --- Telemetri: histeresis mock<->real (GUI tak lompat) ---
+
             if self.mav is not None:
                 try:
                     self.mav.poll()
@@ -701,7 +737,7 @@ class GroundSimNavigator:
                     pass
             _mav_has = (self.mav is not None and self.mav.connected
                         and self.mav.has_attitude)
-            # Stamp umur telemetri untuk failsafe stale-link (SafetyManager).
+
             if _mav_has:
                 self.safety.mark_telem()
             use_real = self._telem_decide_source(_mav_has)
@@ -722,9 +758,9 @@ class GroundSimNavigator:
                 roll_deg = 0.0
                 lat, lon = self.current_lat, self.current_lon
 
-            # Kendali manual (hitung di C): KILL > MANUAL > AUTO. Di mode
-            # MANUAL, state_txt ditimpa agar operator tahu siapa memegang
-            # kapal; field op_mode/manual_* dibaca chip + panel GUI.
+
+
+
             try:
                 now_man = time.time()
                 dt_man = max(1e-4, now_man - self._last_loop_t)
@@ -732,16 +768,16 @@ class GroundSimNavigator:
                 self.manual_last = self.manual_link.update(
                     dt=dt_man, kill=self.kill_request,
                     gui_manual=self.manual_gui_request)
-                # Sumber manual QGC (Xbox via MAVLink) — poll non-blocking.
+
                 self.qgc_last = self.qgc_link.poll(dt=dt_man)
             except Exception:
                 pass
             man = getattr(self, "manual_last", {}) or {}
             qgc = getattr(self, "qgc_last", {}) or {}
 
-            # --- Adu dua sumber manual: QGC (Xbox laptop) vs lokal
-            # (RC/gamepad kapal). Hitung di C (arb_manual2): keduanya
-            # aktif = KONFLIK kendali -> netral + warning, TANPA memilih.
+
+
+
             try:
                 arb2 = core.arb_manual2(
                     bool(qgc.get("active")),
@@ -754,12 +790,12 @@ class GroundSimNavigator:
 
             op_mode = man.get("mode_name", "AUTO")
             if arb2.get("conflict"):
-                # Dua operator memegang bersamaan -> paksa netral dulu.
+
                 man = dict(man, active=True, surge=0.0, yaw=0.0)
                 op_mode = "MANUAL"
                 status_txt = "KONFLIK manual (QGC + lokal) -> NETRAL"
             elif qgc.get("active"):
-                # QGC menang (sumber lokal tidak aktif).
+
                 man = dict(man, active=True, mode_name="MANUAL",
                            surge=float(arb2.get("surge", 0.0)),
                            yaw=float(arb2.get("yaw", 0.0)),
@@ -774,22 +810,22 @@ class GroundSimNavigator:
             elif op_mode == "KILL":
                 status_txt = "KILL (E-stop)"
 
-            # --- Failsafe otomatis (stale-link + low-batt) — prioritas
-            # TERTINGGI: menimpa status apa pun sebelum dikirim ke GUI.
+
+
             fs_reason = self._check_failsafe()
             if fs_reason:
                 status_txt = f"FAILSAFE ({fs_reason})"
                 op_mode = "FAILSAFE"
-            # KILL GUI: kirim DISARM best-effort (throttled di dalam).
+
             self._send_disarm()
 
-            # Label hindar-rintangan (hanya saat kendali AUTO, biar tak
-            # menutupi status manual/kill/failsafe).
+
+
             if avoid.get("active") and op_mode == "AUTO":
                 arah = "KIRI" if avoid.get("yaw_bias", 0.0) < 0 else "KANAN"
                 status_txt = f"{status_txt} (AVOID-{arah})"
 
-            # Simpan sementara agar bisa dimodifikasi sebelum emit.
+
             _pkt = {
                 "lat": lat, "lon": lon,
                 "yaw_deg": yaw_deg,
@@ -821,7 +857,7 @@ class GroundSimNavigator:
                 "avoid_active": bool(self.avoid_state.get("active", False)),
                 "avoid_bias": float(self.avoid_state.get("yaw_bias", 0.0)),
             }
-            # Baterai dari Pixhawk (SYS_STATUS/BATTERY_STATUS) bila terhubung.
+
             if self.mav and self.mav.has_battery:
                 _pkt["voltage_v"] = self.mav.voltage_v
                 _pkt["current_a"] = self.mav.current_a
@@ -830,16 +866,17 @@ class GroundSimNavigator:
                 _pkt["voltage_v"] = None
                 _pkt["current_a"] = None
                 _pkt["battery_pct"] = None
+            _publish_web(_pkt, self.config)
             data_signal.emit(_pkt)
 
             if self.dist_to_wp < 3.0 and self.current_waypoint_index < len(self.waypoints) - 1:
                 if self.sim_step in (1, 3, 5):
                     self.current_waypoint_index += 1
 
-            # Pacing 25 Hz monotonic (tanpa printf tiap detik —
-            # FPS hanya tampil di chip GUI main.py, bukan terminal).
-            # Frame kamera lambat (mis. 10 fps) tidak menurunkan display:
-            # cap.read() blocking memberi frame terakhir, pacing tetap 25.
+
+
+
+
             deadline = pace_to_fps(deadline)
             self._last_loop_t = time.time()
 
@@ -860,7 +897,7 @@ class GroundSimNavigator:
                 pass
         self.cap = None
 
-    # API GUI: Scan kamera + ganti index saat runtime (plug-and-play).
+
     def rescan_cameras(self):
         cam = getattr(self, "cam", None)
         if cam is None:
@@ -919,9 +956,9 @@ class GroundSimNavigatorThread(QThread):
         self.navigator.waypoints = wps
 
 
-# ---------------------------------------------------------------------------
-# MockSimNavigator — tanpa kamera: vision & fisika disintesis
-# ---------------------------------------------------------------------------
+
+
+
 class MockSimNavigator:
     """Simulator penuh tanpa hardware: objek vision digenerate, posisi kapal
     digerakkan dengan rumus destination(). Tidak butuh kamera maupun model."""
@@ -946,16 +983,16 @@ class MockSimNavigator:
         self.fuzzy_ctrl = self._create_fuzzy_controller()
 
     def _create_fuzzy_controller(self):
-        # DIHAPUS dari jalur produksi: fuzzy Sugeno jalan di C
-        # (core/src/fuzzy.c via aterkia_core.fuzzy_docking_gain).
-        # Stub dipertahankan agar atribut lama tidak AttributeError.
+
+
+
         return None
 
     def _generate_mock_vision(self, elapsed):
         """Objek tiruan yang 'menjauh' ke tengah frame seiring waktu (simulasi align)."""
         w = self.config.FRAME_WIDTH
         progress = min(1.0, elapsed / 3.0)
-        current_error = 200 * (1.0 - progress)   # px: 200 -> 0
+        current_error = 200 * (1.0 - progress)
         cx = (w / 2) + current_error + random.uniform(-5, 5)
         cy = (self.config.FRAME_HEIGHT / 2) + random.uniform(-5, 5)
         dist = max(0.5, 5.0 - elapsed)
@@ -1024,7 +1061,7 @@ class MockSimNavigator:
                 jarak_wp, bear_wp = core.nav_distance_bearing(
                     self.current_lat, self.current_lon, wp['lat'], wp['lon'])
 
-            # ----- state machine sederhana -----
+
             if self.current_state == "WAYPOINT_NAV":
                 self.mock_box = None
                 target_yaw = bear_wp
@@ -1081,14 +1118,14 @@ class MockSimNavigator:
                         self.current_waypoint_index += 1
                     self._set_state("WAYPOINT_NAV")
 
-            # ----- fisika sederhana -----
+
             if move:
                 diff = core.nav_normalize_angle(target_yaw - self.current_yaw_rad)
                 self.current_yaw_rad += diff * dt * 2.0
                 self.current_lat, self.current_lon = core.nav_destination(
                     self.current_lat, self.current_lon, 5.0 * dt, self.current_yaw_rad)
 
-            # ----- render frame tiruan -----
+
             frame = np.zeros((self.config.FRAME_HEIGHT, self.config.FRAME_WIDTH, 3),
                              dtype=np.uint8)
             cv2.putText(frame, f"SIM STATE: {self.current_state}", (10, 30),
@@ -1101,7 +1138,7 @@ class MockSimNavigator:
                 cv2.line(frame, (int(self.config.FRAME_WIDTH / 2), self.config.FRAME_HEIGHT),
                          (int(self.mock_box['cx']), int(self.mock_box['cy'])), (0, 0, 255), 2)
 
-            data_signal.emit({
+            _pkt = {
                 "lat": self.current_lat, "lon": self.current_lon,
                 "yaw_deg": math.degrees(self.current_yaw_rad),
                 "pitch_deg": 0.0, "roll_deg": 0.0,
@@ -1113,7 +1150,9 @@ class MockSimNavigator:
                 "gps_fix": True,
                 "frame": frame,
                 "voltage_v": None, "current_a": None, "battery_pct": None,
-            })
+            }
+            _publish_web(_pkt, self.config)
+            data_signal.emit(_pkt)
             deadline = pace_to_fps(deadline)
 
     def stop(self):
@@ -1162,5 +1201,5 @@ class MockSimNavigatorThread(QThread):
         print("[SIM] Misi di-reset.")
 
 
-# Nama ramah yang dipakai main.py (default: ground sim dengan kamera asli).
+
 NavigatorThread = GroundSimNavigatorThread

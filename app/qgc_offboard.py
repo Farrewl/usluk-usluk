@@ -27,21 +27,21 @@ import time
 
 try:
     from . import aterkia_core as core
-except Exception:  # pragma: no cover - import parsial saat uji
+except Exception:
     core = None
 
 from .logutil import get_logger, throttled
 
 log = get_logger()
 
-# --- Rentang protocol MAVLink MANUAL_CONTROL (konstan protokol) ---
-# x, y, r : int16 dalam [-127, 127] (rush/pitch, roll, yaw)
-# z       : uint16 dalam [0, 1000], netral = tengah rentang [Hz-spek]
-# Kapal permukaan memakai z -> surge (maju/mundur) dan r -> yaw (buritan).
+
+
+
+
 Z_MIN = 0.0
 Z_MAX = 1000.0
-Z_NEUTRAL = (Z_MIN + Z_MAX) / 2.0   # 500 = stik throttle di tengah
-R_FULL = 127.0                       # deviasi yaw stik penuh
+Z_NEUTRAL = (Z_MIN + Z_MAX) / 2.0
+R_FULL = 127.0
 
 
 def clamp1(v):
@@ -66,7 +66,7 @@ def convert_manual_control(msg):
     except (TypeError, ValueError):
         return 0.0, 0.0
     if z < Z_MIN or z > Z_MAX:
-        # Di luar rentang protocol (driver aneh) -> anggap netral, aman.
+
         return 0.0, 0.0
     surge = (z - Z_NEUTRAL) / (Z_MAX - Z_NEUTRAL)
     yaw = r / R_FULL
@@ -86,11 +86,11 @@ class QgcOffboard:
     def __init__(self, config):
         self.config = config
         self.master = None
-        self._mode = None                 # core.ModeState (dibuat malas)
-        self._last_rx_mono = None         # monotonic waktu paket terakhir
+        self._mode = None
+        self._last_rx_mono = None
         self._surge = 0.0
         self._yaw = 0.0
-        self._clock = time.monotonic      # injeksi jam untuk tes
+        self._clock = time.monotonic
         self._last_out = {"surge": 0.0, "yaw": 0.0, "active": False,
                           "mode": 0, "mode_name": "AUTO", "rc_ok": False,
                           "source": "AUTO", "qgc_ok": False}
@@ -149,13 +149,13 @@ class QgcOffboard:
                 log.warning("QGC putus > %.2f dtk -> netral (HOLD)",
                             timeout_s)
 
-        # Paket basi -> output dipaksa netral; jangan bawa angka lama.
+
         surge = self._surge if fresh else 0.0
         yaw = self._yaw if fresh else 0.0
 
-        # Mode (C): KILL > MANUAL > HOLD > AUTO — sama dengan ManualLink,
-        # sehingga putus sesaat ditahan MANUAL_LOST_HOLD_S dulu (HOLD),
-        # bukan langsung lompat ke AUTO yang bisa mengejutkan.
+
+
+
         mode = self._mode.update(
             kill=False, manual_req=fresh, rc_ok=fresh,
             dt=float(dt),

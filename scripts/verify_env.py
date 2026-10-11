@@ -10,8 +10,7 @@ sumber, bebas masalah quoting/encoding shell.
 
 Catatan:
   - Cek torch: `torch.version.cuda is None` (wheel CPU-only).
-  - YOLO dilewati bila weights/buoy.pt belum ada (dipanggil sebelum
-    download_weights).
+  - YOLO dilewati bila weights/buoy.pt belum ada.
 """
 
 import numpy as np

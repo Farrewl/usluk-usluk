@@ -12,10 +12,10 @@ import time
 
 try:
     from . import aterkia_core as core
-except Exception:  # pragma: no cover - import parsial saat uji
+except Exception:
     core = None
 
-# Cache fd gamepad (dibuka malas, non-blocking, via ctypes C++).
+
 _GAMEPAD_LIB = None
 _GAMEPAD_FD = -1
 _GAMEPAD_PATH = ""
@@ -29,10 +29,10 @@ def _gamepad_lib():
     """
     global _GAMEPAD_LIB
     if _GAMEPAD_LIB is not None:
-        # False = sentinel "sudah diketahui tak tersedia" -> None ke caller.
+
         return None if _GAMEPAD_LIB is False else _GAMEPAD_LIB
     if os.name == "nt":
-        # evdev /dev/input/js* tidak ada di Windows; jangan muat apa pun.
+
         _GAMEPAD_LIB = False
         return None
     try:
@@ -71,16 +71,16 @@ class ManualLink:
     def __init__(self, config):
         self.config = config
         self.master = None
-        self._ch = []                    # PWM terakhir (µs), maks 16
+        self._ch = []
         self._last_rc_time = 0.0
-        self._manual = None              # core.ManualState (dibuat malas)
-        self._mode = None                # core.ModeState (dibuat malas)
+        self._manual = None
+        self._mode = None
         self._gamepad_path = ""
         self._last_out = {"surge": 0.0, "yaw": 0.0, "active": False,
                           "mode": 0, "mode_name": "AUTO",
                           "rc_ok": False, "source": "AUTO"}
 
-    # ------------------- sumber input -------------------
+
 
     def attach_mav(self, master):
         """Sambungkan koneksi pymavlink Pixhawk (boleh None = RC mati)."""
@@ -159,7 +159,7 @@ class ManualLink:
         except Exception:
             return None
 
-    # ------------------- update utama (tiap loop) -------------------
+
 
     def update(self, dt=0.05, kill=False, gui_manual=False):
         """Hitung setpoint manual (C). Return dict untuk arbitrator/GUI."""
@@ -173,12 +173,12 @@ class ManualLink:
         cfg = self.config
         self._poll_mav_rc()
 
-        # Timeout RC: frame basi > RC_TIMEOUT_MS = hilang.
+
         timeout_s = max(0, float(cfg.RC_TIMEOUT_MS)) / 1000.0
         rc_fresh = (bool(self._ch) and
                     (time.time() - self._last_rc_time) <= timeout_s)
 
-        # Decode RC (C): PWM -> [-1..1] + switch.
+
         if self._ch:
             dec = core.rc_decode(
                 self._ch, cfg.RC_CH_THROTTLE, cfg.RC_CH_YAW,
@@ -188,7 +188,7 @@ class ManualLink:
                    "deadman": False, "rc_ok": False}
         rc_ok = bool(dec["rc_ok"] and rc_fresh)
 
-        # Gamepad (backup darat): timpa stick RC bila ada data.
+
         gp = self._poll_gamepad()
         in_surge, in_yaw = dec["surge"], dec["yaw"]
         deadman = dec["deadman"]
@@ -196,7 +196,7 @@ class ManualLink:
             in_surge, in_yaw, gp_dead = gp
             deadman = bool(deadman or gp_dead)
 
-        # Kurva stick (C): deadband+expo+rate-limit+batas gas.
+
         man = self._manual.update(
             in_surge, in_yaw, bool(cfg.MANUAL_ENABLED),
             bool(deadman), bool(rc_ok),
@@ -204,7 +204,7 @@ class ManualLink:
             float(cfg.MANUAL_RATE_LIMIT), float(dt),
             float(cfg.MANUAL_MAX_SURGE), float(cfg.MANUAL_MAX_YAW))
 
-        # Mode (C): KILL > MANUAL > HOLD > AUTO.
+
         manual_req = bool(dec["mode_manual"] or gui_manual or man["active"])
         mode = self._mode.update(bool(kill), manual_req, bool(rc_ok),
                                  float(dt), float(cfg.MANUAL_LOST_HOLD_S))

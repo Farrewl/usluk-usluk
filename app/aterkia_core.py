@@ -24,8 +24,8 @@ import platform
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(APP_DIR)
 
-# Nama library beda per OS: Linux gcc -> libaterkia.so,
-# Windows (MinGW) -> aterkia_core.dll. Lihat core/Makefile.
+
+
 if platform.system() == "Windows":
     _LIB_NAME = "aterkia_core.dll"
     _BUILD_HINT = (
@@ -68,9 +68,9 @@ def _sig(name, argtypes, restype):
     return fn
 
 
-# ---------------------------------------------------------------------------
-# thruster_mixer.h
-# ---------------------------------------------------------------------------
+
+
+
 
 def mix_diff_drive(surge, yaw):
     """Mixer differential drive (C). Return (pwm_kiri, pwm_kanan) µs.
@@ -82,16 +82,16 @@ def mix_diff_drive(surge, yaw):
                                    ctypes.POINTER(ctypes.c_int)], None)
     kiri = ctypes.c_int(1500)
     kanan = ctypes.c_int(1500)
-    # POINTER (bukan byref) agar cocok argtypes POINTER.
+
     fn(float(surge), float(yaw), ctypes.pointer(kiri), ctypes.pointer(kanan))
     return kiri.value, kanan.value
 
 
-# ---------------------------------------------------------------------------
-# ecu_link.h
-# ---------------------------------------------------------------------------
 
-# Urutan field = struct ecu_status_t (C).
+
+
+
+
 class _EcuStatusC(ctypes.Structure):
     _fields_ = [
         ("valid", ctypes.c_int),
@@ -134,9 +134,9 @@ def build_ecu_cmd(cmd):
     return int(fn(int(cmd)))
 
 
-# ---------------------------------------------------------------------------
-# arbitrator.h
-# ---------------------------------------------------------------------------
+
+
+
 
 class _ArbOutC(ctypes.Structure):
     _fields_ = [
@@ -147,7 +147,7 @@ class _ArbOutC(ctypes.Structure):
     ]
 
 
-# Nama sumber — sama dengan #define ARB_SRC_* di arbitrator.h
+
 SRC_KILLED = 0
 SRC_MANUAL = 1
 SRC_AUTO = 2
@@ -173,7 +173,7 @@ def arbitrate(kill_active, manual_active,
     }
 
 
-# Nama sumber manual ganda — sama dengan ARB_MANUAL_* di arbitrator.h.
+
 MANUAL_NONE = 0
 MANUAL_QGC = 1
 MANUAL_LOCAL = 2
@@ -212,11 +212,11 @@ def arb_manual2(qgc_active, qgc_surge, qgc_yaw,
     }
 
 
-# ---------------------------------------------------------------------------
-# control_filters.h — PID + complementary + EKF (pengganti app/filtering.py)
-# ---------------------------------------------------------------------------
 
-# Urutan field = struct cf_pid_t (C).
+
+
+
+
 class _CfPidC(ctypes.Structure):
     _fields_ = [
         ("kp", _D), ("ki", _D), ("kd", _D),
@@ -262,7 +262,7 @@ def complementary_filter(alpha, angle_prev, gyro_rate, dt, angle_measured):
                     float(dt), float(angle_measured)))
 
 
-# Urutan field = struct cf_ekf_t (C).
+
 class _CfEkfC(ctypes.Structure):
     _fields_ = [
         ("q_heading", _D), ("q_bias", _D),
@@ -297,9 +297,9 @@ class EkfState:
         return float(fn(ctypes.byref(self._s)))
 
 
-# ---------------------------------------------------------------------------
-# nav_math.h — geodesi (pengganti oracle tests/_ref/geo.py di produksi)
-# ---------------------------------------------------------------------------
+
+
+
 
 def nav_normalize_angle(angle_rad):
     """Bawa sudut ke [-pi, pi] (C)."""
@@ -338,9 +338,9 @@ def nav_destination(lat, lon, distance_m, bearing_rad):
     return float(o_lat.value), float(o_lon.value)
 
 
-# ---------------------------------------------------------------------------
-# fuzzy.h — gain P dinamis Sugeno (pengganti app/fuzzy.py di produksi)
-# ---------------------------------------------------------------------------
+
+
+
 
 def fuzzy_gate_gain(jarak_m, error_px):
     """Gain P gate (C). Semesta: 0..2 m, 0..320 px."""
@@ -354,11 +354,11 @@ def fuzzy_docking_gain(jarak_m, error_px):
     return float(fn(float(jarak_m), float(error_px)))
 
 
-# ---------------------------------------------------------------------------
-# rc_decode.h — decode RC_CHANNELS (pengganti logika PWM di Python)
-# ---------------------------------------------------------------------------
 
-# Urutan field = struct rc_decoded_t (C).
+
+
+
+
 class _RcDecodedC(ctypes.Structure):
     _fields_ = [
         ("surge", _D), ("yaw", _D),
@@ -384,16 +384,16 @@ def rc_decode(ch_list, ch_throttle=3, ch_yaw=4, ch_mode=5, ch_deadman=7):
     }
 
 
-# ---------------------------------------------------------------------------
-# manual_control.h — kurva stick manual
-# ---------------------------------------------------------------------------
 
-# Urutan field = struct manual_state_t (C).
+
+
+
+
 class _ManualStateC(ctypes.Structure):
     _fields_ = [("prev_surge", _D), ("prev_yaw", _D)]
 
 
-# Urutan field = struct manual_out_t (C).
+
 class _ManualOutC(ctypes.Structure):
     _fields_ = [("surge", _D), ("yaw", _D), ("active", _I)]
 
@@ -423,9 +423,9 @@ class ManualState:
                 "active": bool(out.active)}
 
 
-# ---------------------------------------------------------------------------
-# mode_manager.h — state AUTO/MANUAL/HOLD/KILL
-# ---------------------------------------------------------------------------
+
+
+
 
 OP_AUTO = 0
 OP_MANUAL = 1
@@ -438,7 +438,7 @@ class ModeState:
     """State mode manager; hitungan di C (mode_update)."""
 
     def __init__(self):
-        # struct mode_state_t = {mode:int, hold_timer:double}
+
         class _S(ctypes.Structure):
             _fields_ = [("mode", _I), ("hold_timer_s", _D)]
         self._C = _S
@@ -457,11 +457,11 @@ class ModeState:
         return {"mode": int(m), "name": OP_NAMES.get(int(m), "?")}
 
 
-# ---------------------------------------------------------------------------
-# avoidance.h — hindar-rintangan reaktif (bias yaw menjauh, hitung di C)
-# ---------------------------------------------------------------------------
 
-# Urutan field = struct avoid_state_t (C).
+
+
+
+
 class _AvoidStateC(ctypes.Structure):
     _fields_ = [("yaw_bias", _D), ("memory_s", _D)]
 
@@ -488,34 +488,34 @@ def avoid_update(state, det_cx_norm, det_w_norm, dt_s):
     return out
 
 
-# ---------------------------------------------------------------------------
-# gate_vision.h — koleksi pasangan + jarak pinhole + kriteria geometri buoy
-# + sequencer latch (pengganti oracle tests/_ref/gate_sequencer.py di produksi).
-# Warna HSV tetap di Python (butuh citra); modul ini hanya geometri.
-# ---------------------------------------------------------------------------
 
-# Batas kompilasi (sama dengan #define GV_* di gate_vision.h).
+
+
+
+
+
+
 GV_MAX_DET = 64
 GV_MAX_PAIRS = 64
 GV_MEM_PER_CLS = 32
 
 
-# Urutan field = struct gv_ball_t (C).
+
 class _GvBallC(ctypes.Structure):
     _fields_ = [("cx", _D), ("cy", _D), ("area", _D)]
 
 
-# Urutan field = struct gv_pair_t (C).
+
 class _GvPairC(ctypes.Structure):
     _fields_ = [("red_idx", _I), ("green_idx", _I)]
 
 
-# Urutan field = struct gv_mem_t (C).
+
 class _GvMemC(ctypes.Structure):
     _fields_ = [("cx", _D), ("cy", _D), ("area", _D), ("unseen", _I)]
 
 
-# Urutan field = struct gv_seq_t (C) — layout terverifikasi 2160 byte.
+
 class _GvSeqC(ctypes.Structure):
     _fields_ = [
         ("pass_distance_m", _D),
@@ -611,7 +611,7 @@ class GateSequencerC:
                  track_boost=1.5):
         self._C = _GvSeqC
         self._s = _GvSeqC()
-        self._pair_cache = []  # pasangan frame terakhir (untuk active_pair)
+        self._pair_cache = []
         _sig("gv_seq_init",
              [ctypes.POINTER(self._C), _D, _I, _D, _D, _D, _D, _D],
              None)(ctypes.byref(self._s), float(pass_distance_m),
@@ -650,7 +650,7 @@ class GateSequencerC:
         self._pair_cache = list(pairs)
         red_arr, n_red = _balls_to_c(red_balls)
         grn_arr, n_grn = _balls_to_c(green_balls)
-        # Petakan pasangan ke index array C (cari posisi dict yang sama).
+
         parr = (_GvPairC * max(len(pairs), 1))()
         for i, (r, g) in enumerate(pairs[:GV_MAX_PAIRS]):
             try:
@@ -683,16 +683,16 @@ class GateSequencerC:
         return float(mx.value), float(my.value), float(dist.value), bool(ps.value)
 
 
-# ---------------------------------------------------------------------------
-# state_machine.h — mesin state misi 16 state + guard (pengganti
-# app/state_machine.py). Hanya memutuskan "ke state mana berikutnya" +
-# efek samping; thrust/vision/kamera tetap di Python.
-# ---------------------------------------------------------------------------
 
-# Sentinel guard: tidak ada halangan, misi boleh lanjut. = ((sm_state_t)-1)
+
+
+
+
+
+
 SM_NONE = -1
 
-# Urutan enum sm_state_t (state_machine.h). Nama index = SM_STATES[i].
+
 SM_WAITING_GPS = 0
 SM_NO_TELEM = 1
 SM_NO_WAYPOINTS = 2
@@ -723,15 +723,15 @@ SM_STATES = [
 ]
 SM_STATE_NAMES = {i: name for i, name in enumerate(SM_STATES)}
 
-# Sub-machine mundur RETREAT / BLUE_BOX_RETREAT (= enum sm_retreat_step_t).
+
 SM_STEP_IDLE = 0
 SM_STEP_START_BRAKE = 1
 SM_STEP_GOTO_NEUTRAL = 2
 SM_STEP_START_REVERSE = 3
 SM_RETREAT_STEPS = ["IDLE", "START_BRAKE", "GOTO_NEUTRAL", "START_REVERSE"]
 
-# Urutan field = struct sm_input_t (state_machine.h). JANGAN diubah tanpa
-# menyamakan header C.
+
+
 _SM_INPUT_FIELDS = [
     "wp_idx", "n_wp", "at_waypoint", "wp_in_photo_box_legs",
     "wp_in_blue_box_legs", "wp_in_stop_and_photo", "wp_is_red_after",
@@ -744,12 +744,12 @@ _SM_INPUT_FIELDS = [
 ]
 
 
-# Urutan field = struct sm_input_t (C): wp_idx/n_wp int, sisanya 0/1.
+
 class _SmInputC(ctypes.Structure):
     _fields_ = [(f, _I) for f in _SM_INPUT_FIELDS]
 
 
-# Urutan field = struct sm_result_t (C).
+
 class _SmResultC(ctypes.Structure):
     _fields_ = [
         ("next", _I),

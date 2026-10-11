@@ -37,11 +37,11 @@ DEFAULT_ZOOM = 18
 MIN_ZOOM = 3
 MAX_ZOOM = 19
 TILE_PX = 256
-# Unduhan tile via Python (urllib pakai OpenSSL sistem 3.x — jalan normal),
-# bukan via Qt Network (Qt di .venv di-build lawan OpenSSL 1.x sehingga
-# tiap request HTTPS gagal TLS + spam puluhan baris QSslSocket).
+
+
+
 TILE_TIMEOUT_S = 8
-TILE_MAX_FAILS = 3  # gagal beruntun segini -> mode offline sesi ini
+TILE_MAX_FAILS = 3
 
 
 def latlon_to_tile_float(lat, lon, zoom):
@@ -69,20 +69,20 @@ class SlimMapWidget(QWidget):
         super().__init__(parent)
         self.setMinimumHeight(220)
         self._zoom = DEFAULT_ZOOM
-        # Pusat peta (lat/lon); None = belum ada data GPS/WP -> tampil
-        # "NO GPS FIX" (tanpa pin palsu ke lokasi mana pun).
+
+
         self._center = None
         self._wps = []
         self._vision_legs = set()
-        self._veh = None  # (lat, lon, yaw_deg)
+        self._veh = None
         self._follow = True
-        self._tiles = {}  # (z,x,y) -> QPixmap | None(sedang diunduh)
-        self._downloading = set()  # kunci yang antre di thread unduh
-        self._tile_fails = 0  # gagal beruntun; >= MAX -> offline sesi ini
+        self._tiles = {}
+        self._downloading = set()
+        self._tile_fails = 0
         self._tile_offline = False
         os.makedirs(TILE_DIR, exist_ok=True)
 
-    # ------------------- API publik (dipakai main.py) -------------------
+
 
     def set_waypoints(self, wps):
         """Ganti daftar waypoint [{'lat','lon'}]; recenters bila follow."""
@@ -106,7 +106,7 @@ class SlimMapWidget(QWidget):
             self._veh = (float(lat), float(lon), float(yaw_deg))
         except (TypeError, ValueError):
             return
-        # Abaikan posisi nol (belum ada fix) agar tak jadi pin palsu.
+
         if self._veh[0] == 0.0 and self._veh[1] == 0.0:
             return
         if self._follow:
@@ -116,7 +116,7 @@ class SlimMapWidget(QWidget):
     def set_follow(self, on):
         self._follow = bool(on)
 
-    # ------------------- tile OSM + cache -------------------
+
 
     def _tile_path(self, z, x, y):
         return os.path.join(TILE_DIR, str(z), str(x), f"{y}.png")
@@ -131,9 +131,9 @@ class SlimMapWidget(QWidget):
             if not pm.isNull():
                 self._tiles[key] = pm
                 return pm
-        # Antre unduh sekali saja via thread Python (urllib, bukan Qt).
-        # Gagal beruntun >= TILE_MAX_FAILS -> berhenti sesi ini (hemat CPU
-        # + tak spam log; peta tetap tampil sebagai grid offline).
+
+
+
         self._tiles[key] = None
         if not self._tile_offline and key not in self._downloading:
             self._downloading.add(key)
@@ -207,8 +207,8 @@ class SlimMapWidget(QWidget):
         except Exception:
             pass
 
-    # ------------------- interaksi mouse (lihat saja) -------------------
-    # WP tak bisa digeser — monitoring-only (WP diatur via config/plan.csv).
+
+
 
     def _latlon_to_screen(self, lat, lon):
         cx, cy = latlon_to_tile_float(*self._center, self._zoom)
@@ -218,7 +218,7 @@ class SlimMapWidget(QWidget):
                 (yt - cy) * TILE_PX + h / 2.0)
 
     def mousePressEvent(self, event):
-        # Monitoring-only: klik tak mengubah apa pun (WP via config/plan.csv).
+
         if event.button() == Qt.LeftButton:
             event.accept()
 
@@ -239,7 +239,7 @@ class SlimMapWidget(QWidget):
         self.update()
         event.accept()
 
-    # ------------------- gambar -------------------
+
 
     def paintEvent(self, _event):
         painter = QPainter(self)
@@ -247,7 +247,7 @@ class SlimMapWidget(QWidget):
         painter.fillRect(0, 0, w, h, QColor("#0e1113"))
 
         if self._center is None:
-            # Belum ada GPS/WP: jangan tampilkan lokasi palsu.
+
             painter.setPen(QPen(QColor(60, 70, 80), 1))
             for gx in range(0, w, 40):
                 painter.drawLine(gx, 0, gx, h)
@@ -276,7 +276,7 @@ class SlimMapWidget(QWidget):
                     painter.drawPixmap(sx, sy, TILE_PX, TILE_PX, pm)
                     drawn_any = True
         if not drawn_any:
-            # Offline / tile belum ada: grid gelap + label.
+
             painter.setPen(QPen(QColor(60, 70, 80), 1))
             for gx in range(0, w, 40):
                 painter.drawLine(gx, 0, gx, h)
@@ -286,7 +286,7 @@ class SlimMapWidget(QWidget):
             painter.setFont(QFont("sans-serif", 10))
             painter.drawText(12, 24, "Peta offline — tile OSM dimuat saat online.")
 
-        # --- garis rute ---
+
         for i in range(1, len(self._wps)):
             x1s, y1s = self._latlon_to_screen(
                 self._wps[i - 1]['lat'], self._wps[i - 1]['lon'])
@@ -300,7 +300,7 @@ class SlimMapWidget(QWidget):
             painter.setPen(pen)
             painter.drawLine(int(x1s), int(y1s), int(x2s), int(y2s))
 
-        # --- marker waypoint ---
+
         painter.setFont(QFont("sans-serif", 9, QFont.Bold))
         for i, wp in enumerate(self._wps):
             sx, sy = self._latlon_to_screen(wp['lat'], wp['lon'])
@@ -311,7 +311,7 @@ class SlimMapWidget(QWidget):
             painter.setPen(QColor("#ffffff"))
             painter.drawText(int(sx + r + 3), int(sy + 4), f"WP{i + 1}")
 
-        # --- panah kapal ---
+
         if self._veh is not None:
             sx, sy = self._latlon_to_screen(self._veh[0], self._veh[1])
             yaw = self._veh[2]
@@ -324,7 +324,7 @@ class SlimMapWidget(QWidget):
                 QPointF(0, -11), QPointF(8, 9), QPointF(0, 4), QPointF(-8, 9))
             painter.restore()
 
-        # --- label zoom ---
+
         painter.setPen(QColor("#8b949e"))
         painter.setFont(QFont("monospace", 9))
         painter.drawText(10, h - 10, f"z{self._zoom}")

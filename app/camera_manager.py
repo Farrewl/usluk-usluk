@@ -27,7 +27,7 @@ import time
 try:
     import cv2
     _CV2_OK = True
-except ImportError:  # pragma: no cover - mesin tanpa cv2
+except ImportError:
     cv2 = None
     _CV2_OK = False
 
@@ -61,7 +61,7 @@ class CameraSlot:
         self.label = ""
         self.open()
 
-    # ------------------- buka / tutup -------------------
+
 
     def _do_open(self, index):
         """Buka index; return cap atau None (cache basi dibuang)."""
@@ -123,7 +123,7 @@ class CameraSlot:
         self.want_index = index
         return self.open()
 
-    # ------------------- baca -------------------
+
 
     def read(self):
         """Baca 1 frame; (ret, frame, status_str).
@@ -154,8 +154,8 @@ class CameraSlot:
             return True, frame, "OK"
         self.fail_count += 1
         if self.fail_count >= CAM_FAIL_THRESHOLD:
-            # Anggap putus (cabut USB / reset bus saat Pixhawk dicolok):
-            # tutup + coba lagi throttled agar loop tak spam open.
+
+
             self.close()
             self.last_try_mono = time.monotonic()
             return False, None, "RETRY"
@@ -194,12 +194,12 @@ class CameraManager:
         flip = getattr(config, "CAMERA_FLIP_MODE", 1)
         self.primary = CameraSlot("NAV", prim_idx, target_fps=fps,
                                   auto_highest=True, flip_mode=flip)
-        # Secondary ringan: 640x480 tanpa negosiasi penuh (hemat 1-2 dtk).
+
         self.secondary = CameraSlot("BAWAH", sec_idx, width=640,
                                     height=480, flip_mode=flip)
         self._reported_retry = {"NAV": False, "BAWAH": False}
 
-    # ------------------- API loop -------------------
+
 
     def read_primary(self, fb_width=1280, fb_height=720):
         """Frame navigasi + teks status jujur untuk fallback."""
@@ -244,7 +244,7 @@ class CameraManager:
             pass
         return True, frame, "OK"
 
-    # ------------------- API GUI -------------------
+
 
     def rescan(self):
         """Daftar kamera tanpa buka frame (untuk dropdown Scan)."""
@@ -287,7 +287,7 @@ class CameraManager:
             self.primary.close()
             self.secondary.close()
 
-    # Kompat: kode lama pegang `.cap` langsung (navigator.py jalur lama).
+
     @property
     def cap(self):
         return self.primary.cap

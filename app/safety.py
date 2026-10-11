@@ -62,13 +62,13 @@ class SafetyManager:
         now = time.monotonic()
         reason = ""
 
-        # 1. Stale-link.
+
         timeout = float(getattr(self.config, "FAILSAFE_TELEM_TIMEOUT_S", 2.0))
         last = float(getattr(self, "_last_telem_mono", 0.0) or 0.0)
         if last > 0.0 and (now - last) > timeout:
             reason = f"telemetri basi {now - last:.1f}s"
 
-        # 2. Baterai rendah (ditahan agar spike sesaat tidak memicu).
+
         if not reason:
             low_pct = float(getattr(self.config, "FAILSAFE_LOW_BATT_PCT", 20.0))
             low_v = float(getattr(self.config, "FAILSAFE_LOW_VOLT_V", 13.2))

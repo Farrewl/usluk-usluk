@@ -19,21 +19,21 @@ import time
 
 import cv2
 
-# Cache file untuk mode kamera (index, fourcc, width, height, fps, uid).
-# Hanya negosiasi penuh bila file hilang / index berubah / UID kamera
-# berubah (cabut-colok pindah port USB) / force=True.
+
+
+
 CAM_MODE_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "..", "data", "cam_mode.json")
 
-# Direktori symlink persisten V4L2 (nama kamera stabil antar colokan).
-# Contoh isi: usb-046d_HD_Pro_Webcam_C920-video-index0 -> ../../video0
+
+
 V4L_BY_ID_DIR = "/dev/v4l/by-id"
 
-# Status baca kamera untuk reconnect throttle (dipakai camera_manager).
+
 CAM_RECONNECT_INTERVAL_S = 2.0
 CAM_FAIL_THRESHOLD = 10
 
-# Level log OpenCV yang tersimpan (None = belum dibungkam sesi ini).
+
 _OPENCV_LOG_LEVEL_SAVED = None
 
 
@@ -103,7 +103,7 @@ def _v4l_uid_for_index(index):
             link = os.readlink(os.path.join(V4L_BY_ID_DIR, name))
         except OSError:
             continue
-        # link relatif macam '../../video0' -> ambil basename.
+
         if os.path.basename(link.rstrip("/")) == target_suffix:
             return name
     return None
@@ -132,8 +132,8 @@ def list_cameras(max_index=6):
             continue
         uid = _v4l_uid_for_index(i)
         if uid:
-            # 'usb-Logitech_HD_Pro_Webcam_C920_ABC123-video-index0'
-            # -> tampil pendek 'HD_Pro_Webcam_C920'.
+
+
             short = uid
             for prefix in ("usb-",):
                 if short.startswith(prefix):
@@ -162,7 +162,7 @@ def _silence_opencv_warns():
         _OPENCV_LOG_LEVEL_SAVED = cv2.utils.logging.getLogLevel()
         cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
     except Exception:
-        _OPENCV_LOG_LEVEL_SAVED = -1  # cv2 tanpa utils.logging: tandai saja
+        _OPENCV_LOG_LEVEL_SAVED = -1
 
 
 def _restore_opencv_logs():
@@ -178,17 +178,17 @@ def _restore_opencv_logs():
         _OPENCV_LOG_LEVEL_SAVED = None
 
 
-# Kandidat resolusi saat negosiasi otomatis (diurutkan dari tertinggi).
-# Kamera USB umumnya "meng-clamp" permintaan di atas kemampuan aslinya
-# (mis. minta 1920x1080 tapi hanya sanggup 1280x720), jadi urutan ini
-# natural menemukan resolusi tertinggi yang benar-benar didukung.
+
+
+
+
 CAMERA_CANDIDATE_SIZES = (
     (1920, 1080), (1600, 1200), (1280, 960), (1280, 720),
     (1024, 768), (800, 600), (640, 480), (320, 240),
 )
-# Urutan codec: MJPG dulu (bandwidth kecil -> bisa 30 fps di resolusi
-# tinggi), YUYV sebagai cadangan (tanpa MJPG, YUYV sering cuma ~7 fps
-# di 720p pada USB 2.0).
+
+
+
 CAMERA_CODECS = ("MJPG", "YUYV")
 
 
@@ -201,10 +201,10 @@ def _platform_backends():
 
 def _make_capture(index, backend):
     """VideoCapture dengan backend tertentu; None bila gagal total."""
-    _silence_opencv_warns()  # bungkam WARN C++ "can't open by index"
+    _silence_opencv_warns()
     try:
         return cv2.VideoCapture(int(index), backend)
-    except Exception:  # pragma: no cover - variasi build cv2
+    except Exception:
         return cv2.VideoCapture(int(index))
 
 
@@ -266,7 +266,7 @@ def _probe_mode(index, fourcc_val, width, height, target_fps, probe_seconds,
                                              target_fps, (backend,))
         if cap is None:
             continue
-        for _ in range(6):  # warm-up singkat supaya pengukuran stabil
+        for _ in range(6):
             if cap.read()[0]:
                 break
         fps = _measure_fps(cap, seconds=probe_seconds)
@@ -334,7 +334,7 @@ def _probe_index_quality(index, target_fps):
     cap, fps = _probe_mode(int(index), fourcc_val, 1280, 720,
                            target_fps, 0.4, backends=native)
     if cap is None:
-        # Kamera tanpa MJPG (mis. YUYV saja): buka default native sekali.
+
         for backend in native:
             cap2 = _make_capture(int(index), backend)
             if cap2 is not None and cap2.isOpened():
@@ -367,7 +367,7 @@ def negotiate_best_camera(preferred, target_fps=30, max_width=1920,
 
     Return: (index_terpilih, fourcc_val, width, height, fps) atau None.
     """
-    # Coba cache dulu (hanya bila index sama, UID sama, & tidak force).
+
     if not force_renegotiate:
         cache = _load_cam_cache()
         if (cache and cache.get("index") == int(preferred)
@@ -376,7 +376,7 @@ def negotiate_best_camera(preferred, target_fps=30, max_width=1920,
             cached_uid = cache.get("uid")
             live_uid = _v4l_uid_for_index(int(preferred))
             if cached_uid and live_uid and cached_uid != live_uid:
-                # Kamera di index ini sudah beda fisik (tukar colokan).
+
                 print(f"[CAM] UID berubah ({cached_uid} -> {live_uid}); "
                       "cache dibuang, negosiasi ulang.")
                 invalidate_cam_cache()
@@ -387,8 +387,8 @@ def negotiate_best_camera(preferred, target_fps=30, max_width=1920,
                 fps = cache.get("fps", 0.0)
                 print(f"[CAM] Mode cache index={preferred}: {width}x{height} "
                       f"{fps:.0f} fps.")
-                # Validasi cepat: cache basi (kamera dicabut) terdeteksi
-                # di sini — langsung negosiasi ulang, bukan gagal diam.
+
+
                 _probe = _make_capture(int(preferred),
                                        _platform_backends()[0])
                 if _probe is not None and _probe.isOpened():
@@ -421,8 +421,8 @@ def negotiate_best_camera(preferred, target_fps=30, max_width=1920,
 
     best_idx = max(scores, key=_rank)
 
-    # Negosiasi detail hanya untuk index terbaik: probe pertama pada
-    # ukuran terbesar langsung lolos di kamera sehat -> cepat.
+
+
     mode = negotiate_camera(best_idx, target_fps=target_fps,
                             max_width=max_width, max_height=max_height,
                             min_fps=min_fps)
@@ -432,7 +432,7 @@ def negotiate_best_camera(preferred, target_fps=30, max_width=1920,
     if best_idx != int(preferred):
         print(f"[CAM] Kamera {int(preferred)} resolusinya lebih kecil; "
               f"pakai index {best_idx} (area terbesar).")
-    # Simpan cache untuk start berikutnya (termasuk UID persisten).
+
     _save_cam_cache(best_idx, mode[0], mode[1], mode[2], mode[3],
                     uid=_v4l_uid_for_index(best_idx))
     return (best_idx, mode[0], mode[1], mode[2], mode[3])
@@ -480,24 +480,24 @@ def open_camera(index, width=None, height=None, target_fps=None,
     """
     if auto_highest:
         cap = _open_auto_negotiated(index, target_fps)
-        _restore_opencv_logs()  # negosiasi selesai -> WARN normal kembali
+        _restore_opencv_logs()
         if cap is not None:
             return cap
         print(f"[CAM] Negosiasi mode gagal untuk index={index}, "
               "lanjut ke mode lama.")
 
-    _silence_opencv_warns()  # jalur lama juga probing -> tetap bungkam WARN
+    _silence_opencv_warns()
     last_error = None
     for backend in _platform_backends():
         try:
             cap = cv2.VideoCapture(int(index), backend)
-        except Exception as exc:  # pragma: no cover - kerasionalan backend
+        except Exception as exc:
             last_error = exc
             continue
         if cap.isOpened():
             if width and height:
-                # Jangan memaksa: kalau gagal, VideoCapture tetap pakai
-                # ukuran native kamera (frame dinormalisasi di pemakai).
+
+
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(width))
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
             if target_fps:
@@ -523,7 +523,7 @@ def _calibrate_exposure(cap, warmup=8):
     """
     if platform.system() == "Windows":
         return
-    # frame jadi hitam terus (brightness ~0) -> coba mode lain
+
     def _brightness():
         for _ in range(warmup):
             cap.read()
@@ -531,7 +531,7 @@ def _calibrate_exposure(cap, warmup=8):
         return float(fr.mean()) if r and fr is not None else -1.0
 
     best_val, best_brightness = None, float(_brightness())
-    if best_brightness < 15.0:  # kandidat gelap -> perlu kalibrasi
+    if best_brightness < 15.0:
         for val in (3.0, 1.0, 0.75):
             try:
                 cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, val)
@@ -545,7 +545,7 @@ def _calibrate_exposure(cap, warmup=8):
                 cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, best_val)
             except Exception:
                 pass
-            _brightness()  # hangatkan ulang dengan mode terbaik
+            _brightness()
 
 
 def find_working_camera(preferred=None, max_index=4, width=None, height=None):
@@ -600,7 +600,7 @@ def flip_frame_if_needed(frame, flip_mode=1):
     return cv2.flip(frame, code)
 
 
-# --- Pacing 30 Hz (monotonic): capture + loop + render dikunci 30 fps ---
+
 TARGET_FPS = 30
 TARGET_INTERVAL_S = 1.0 / TARGET_FPS
 
@@ -621,5 +621,5 @@ def pace_to_fps(next_deadline):
     if sleep_s > 0:
         time.sleep(sleep_s)
         return next_deadline + TARGET_INTERVAL_S
-    # Terlambat: kejar tanpa tidur (maks 1 interval agar tak spiral).
+
     return now + TARGET_INTERVAL_S

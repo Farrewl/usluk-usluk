@@ -21,7 +21,7 @@ import time
 try:
     from pymavlink import mavutil
     MAVLINK_AVAILABLE = True
-except ImportError:          # pragma: no cover - mesin tanpa pymavlink
+except ImportError:
     mavutil = None
     MAVLINK_AVAILABLE = False
 
@@ -30,11 +30,11 @@ from .logutil import get_logger, throttled
 
 log = get_logger()
 
-# ID mode RTL ArduPilot Rover (lihat mode_mapping_rover pymavlink).
+
 ROVER_RTL_MODE = 11
-# Jeda minimal antar percobaan kirim RTL (detik, monotonic).
+
 RTL_RETRY_INTERVAL_S = 5.0
-# Jeda minimal antar kirim DISARM (detik, monotonic).
+
 DISARM_RETRY_INTERVAL_S = 2.0
 
 
@@ -48,7 +48,7 @@ class OutputLink:
         self._rtl_sent_mono = 0.0
         self._disarm_sent_mono = 0.0
 
-    # ------------------- koneksi -------------------
+
 
     def attach_mav(self, master):
         """Sambungkan koneksi pymavlink Pixhawk (boleh None)."""
@@ -58,7 +58,7 @@ class OutputLink:
     def ready(self):
         return self.master is not None
 
-    # ------------------- geometri / mixer -------------------
+
 
     @staticmethod
     def yaw_to_quaternion(yaw_rad):
@@ -77,15 +77,15 @@ class OutputLink:
         except Exception:
             return (1500, 1500)
 
-    # ------------------- kirim setpoint -------------------
+
 
     def _set_attitude_target(self, thrust, target_yaw_rad, lateral_thrust=0.0):
         if self.master is None:
             return
         thrust = max(-1.0, min(1.0, float(thrust)))
         lateral = max(-1.0, min(1.0, float(lateral_thrust)))
-        # bit 1 (pitch rate) & bit 2 (yaw rate) diabaikan; bit 0 (roll rate)
-        # hanya bila tidak ada lateral -> pakai attitude penuh.
+
+
         type_mask = (1 << 1) | (1 << 2)
         body_roll_rate = 0.0
         if abs(lateral) < 0.01:
@@ -140,7 +140,7 @@ class OutputLink:
             self._set_attitude_target(0.0, yaw_rad, 0.0)
             time.sleep(sleep_s)
 
-    # ------------------- failsafe / kill -------------------
+
 
     def request_rtl(self):
         """Minta mode RTL via MAV_CMD_DO_SET_MODE (best-effort, throttled).

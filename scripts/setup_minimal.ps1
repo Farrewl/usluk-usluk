@@ -49,13 +49,30 @@ function Invoke-Step {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-Write-Host "[0/5] Cek Python 3.12..."
+Write-Host "[0/5] Cek Python (min 3.12)..."
 $pyVer = & $Py -c "import sys; print('%d.%d' % sys.version_info[:2])"
 if ($LASTEXITCODE -ne 0) { Write-Host "[!] Interpreter '$Py' tak jalan. Set env PYTHON dulu."; exit 1 }
+$pyNum = [double]$pyVer
+if ($pyNum -lt 3.12) {
+    Write-Host "[!] Python $pyVer terlalu tua; butuh >= 3.12."; exit 1
+}
 if ($pyVer -ne "3.12") {
-    Write-Host "[!] Python $pyVer terdeteksi, resep ini dipin ke 3.12 (wheel torch+cpu)."
-    $jawab = Read-Host "    Tetap lanjut? [y/N]"
-    if ($jawab -notin @("y", "Y")) { Write-Host "Batal."; exit 1 }
+    Write-Host "[i] Python $pyVer terdeteksi (resep diuji di 3.12; wheel torch+cpu ada untuk 3.13/3.14)."
+}
+
+# --- [core] Build aterkia_core.dll bila belum ada (butuh MinGW) ---
+if (Test-Path "core\aterkia_core.dll") {
+    Write-Host "[i] core\aterkia_core.dll sudah ada — build C dilewati."
+} else {
+    $mingw = Get-Command mingw32-make -ErrorAction SilentlyContinue
+    if ($mingw) {
+        Write-Host "[core] Build inti C (MinGW)..."
+        & mingw32-make -C core windows
+    } else {
+        Write-Host "[!] MinGW (mingw32-make) tak ada — core\aterkia_core.dll TIDAK dibangun."
+        Write-Host "    Program jalan tapi mesin-state C mati (C_AVAILABLE=False)."
+        Write-Host "    Install MinGW-w64 lalu:  mingw32-make -C core windows"
+    }
 }
 
 $Vpy = Join-Path ".venv" "Scripts\python.exe"
@@ -104,10 +121,11 @@ Get-ChildItem -Path (Join-Path $SP "torch\lib") -Filter "*test*" -ErrorAction Si
 Write-Host "[5/5] Verifikasi import inti + inferensi YOLO..."
 if (-not (Test-Path (Join-Path "weights" "buoy.pt"))) {
     Write-Host "[!] weights/buoy.pt belum ada — verifikasi YOLO dilewati."
-    Write-Host "    Isi dulu:  `$env:WEIGHTS_SOURCE='\\server\weights'; .\scripts\download_weights.ps1"
+    Write-Host "    Model YOLO ikut ter-commit di repo; pastikan clone tak parsial."
 }
 Invoke-Step @($Vpy, "scripts\verify_env.py")
 
 Write-Host ""
-Write-Host "Selesai. Jalankan program:  .venv\Scripts\python.exe main.py"
-Write-Host "Jalankan tes:               .venv\Scripts\python.exe -m unittest discover -s tests"
+Write-Host "Selesai. Jalankan GUI :  .venv\Scripts\python.exe -O -u main.py"
+Write-Host "Web dashboard         :  http://<ip-laptop>:8080  (saat GUI jalan)"
+Write-Host "Jalankan tes          :  .venv\Scripts\python.exe -m unittest discover -s tests"

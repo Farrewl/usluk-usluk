@@ -10,18 +10,31 @@
 | `yolo_worker.py` | Worker inferensi YOLO async (thread murni, satu untuk semua model) | navigator, simulator |
 | `output_link.py` | Output ke Pixhawk: `SET_ATTITUDE_TARGET`, RTL, disarm | navigator, simulator |
 | `safety.py` | Failsafe otomatis (stale-link / low-batt) | navigator, simulator |
-| `camera.py` | Buka kamera V4L2/DSHOW, negosiasi resolusi, flip | navigator, simulator, `scripts/test_deteksi.py` |
+| `camera.py` | Buka kamera V4L2/DSHOW, negosiasi resolusi, flip | navigator, simulator |
 | `camera_manager.py` | Kelola kamera primer/sekunder, fallback, reconnect | navigator, simulator |
 | `mavlink_telemetry.py` | Baca MAVLink non-blocking (attitude, posisi, baterai) | navigator, simulator |
 | `manual_link.py` | Kendali manual lokal (RC/gamepad) → (surge, yaw) | navigator, simulator |
 | `qgc_offboard.py` | Kendali manual dari QGC (Xbox → `MANUAL_CONTROL`) | navigator, simulator |
-| `detection_validation.py` | `validate_buoy()` filter pasca-YOLO + debug | navigator, simulator, `scripts/test_deteksi.py` |
+| `detection_validation.py` | `validate_buoy()` filter pasca-YOLO + debug | navigator, simulator |
 | `pixhawk_check.py` | Cek parameter failsafe Pixhawk saat startup | navigator |
 | `settings_dialog.py` | Panel tuning GUI | `main.py` |
 | `slim_map.py` | Widget peta ringan (tile) | `main.py` |
 | `gui_theme.py` | Tema/style GUI | `main.py` |
 | `logutil.py` | Logger + throttle | Semua modul |
 | `aterkia_core.py` | **Tipis** ctypes wrapper ke `core/libaterkia.so` / `aterkia_core.dll`, tanpa logika | navigator, simulator |
+| `state_bus.py` | Bus status terbaru (thread-safe) navigator → web | navigator, `web/` |
+| `geotag.py` | Geo-tag foto (Day/Date/Time, koordinat DD & DM, SOG, COG) | navigator |
+
+## `web/` — Dashboard monitoring (SSE + MJPEG)
+
+| File | Fungsi |
+|---|---|
+| `server.py` | HTTP server stdlib: `/events` (SSE), `/video` (MJPEG), `/captures`, `/config` |
+| `mock.py` | Feeder data palsu saat `ASV_MOCK=1` (demo tanpa kapal) |
+| `static/index.html` | Layout dashboard (header, position-log, grid, foto) |
+| `static/dashboard.js` | Klien SSE + isi DOM + popup geo-tag |
+| `static/grid.js` | Peta grid A1–E5 + trajectory + kompas (canvas) |
+| `static/geo.js` | Format koordinat/satuan di sisi browser |
 
 ## `core/` — Inti C/C++ (komputasi deterministik)
 
@@ -47,8 +60,10 @@
 
 | File | Isi |
 |---|---|
-| `plan.csv` | Waypoint misi (`lat,lon` per baris) — **kanonik** |
+| `site.json` | Identitas tim (nama, PT), lintasan aktif, host/port web, grid |
+| `trackA.json` / `trackB.json` | Waypoint + leg misi per lintasan (vision/foto box/dock) |
 | `tuning_params.json` | Parameter tuning (GUI simpan otomatis; hanya `TUNING_PARAM_KEYS`) |
+| `plan.csv` | Waypoint lama (cadangan; kini waypoint dari `track*.json`) |
 | `archive/` | Arsip plan lama (tidak dipakai) |
 
 ## `data/` — Output runtime (di-ignore git)
@@ -63,13 +78,9 @@
 
 | File | Fungsi |
 |---|---|
-| `test_deteksi.py` | Live kamera + deteksi (`--flip 0-3 --debug --imgsz 640`) |
-| `calib_hsv.py` | Kalibrasi ambang HSV warna |
-| `download_weights.sh` / `.ps1` | Unduh model YOLO ke `weights/` (Linux / Windows) |
-| `setup_minimal.sh` / `.ps1` | Bikin `.venv` minimal (torch CPU) + verifikasi (idempoten) |
+| `setup_minimal.sh` / `.ps1` | Bikin `.venv` minimal (torch CPU) + build inti C + verifikasi (idempoten) |
 | `verify_env.py` | Verifikasi `.venv` (import inti + YOLO); dipakai setup Linux & Windows |
-| `run_gui.sh` / `run.bat` | Jalankan GUI (Linux / Windows) |
-| `qgc_forward.sh` | Teruskan MAVLink ke QGC (port 14550) |
+| `run_gui.sh` / `run.bat` | Jalankan GUI (Linux / Windows); web dashboard ikut nyala |
 
 ## `tests/` — Cross-check C vs Python
 
@@ -78,7 +89,7 @@
 - `_ref/` — oracle Python: `geo.py`, `gate_sequencer.py`, `filtering.py`,
   `fuzzy.py`, `state_machine.py`.
 
-## `weights/` — Model YOLO (di-ignore git, ~6 MB/file)
+## `weights/` — Model YOLO (IKUT git, langsung pakai setelah clone)
 
 | File | Misi |
 |---|---|

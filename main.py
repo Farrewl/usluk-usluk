@@ -1,6 +1,5 @@
 import sys
 import os
-import csv
 import time
 
 import cv2
@@ -10,17 +9,17 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt5.QtCore import QTimer, Qt, QLibraryInfo, QRect
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont
 
-# cv2 5.x mengotori env Qt saat import: reset ke plugin milik PyQt5.
+
 os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = QLibraryInfo.location(
     QLibraryInfo.PluginsPath)
 os.environ.pop("QT_QPA_FONTDIR", None)
-# Bungkam spam TLS Qt (Qt .venv = OpenSSL 1.x vs OS 3.x): tile peta kini
-# diunduh via urllib Python (lihat app/slim_map.py), jadi peringatan
-# qt.network.ssl tak ada gunanya selain mengotori terminal.
+
+
+
 os.environ.setdefault("QT_LOGGING_RULES", "qt.network.ssl.warning=false")
 
-# Pilih backend: ASV_BACKEND=nav (default, kapal produksi via Pixhawk) atau
-# ASV_BACKEND=sim (ground simulator darat, kamera+YOLO asli, posisi mock).
+
+
 _ASV_BACKEND = os.environ.get("ASV_BACKEND", "nav").strip().lower()
 if _ASV_BACKEND in ("sim", "simulator", "ground"):
     from app.simulator import GroundSimNavigatorThread as NavigatorThread
@@ -30,6 +29,7 @@ else:
 
 from app.slim_map import SlimMapWidget
 from app.settings_dialog import SettingsDialog
+from app import settings as cfg
 from app import gui_theme as theme
 from app.logutil import get_logger, throttled
 
@@ -37,22 +37,11 @@ log = get_logger()
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(ROOT_DIR, "config")
-WAYPOINT_FILE = os.path.join(CFG_PATH, "plan.csv")
 TMP_MAP_FILE = os.path.join(ROOT_DIR, "data", "temp_map.html")
 os.makedirs(os.path.dirname(TMP_MAP_FILE), exist_ok=True)
 
-WAYPOINTS = []
-try:
-    with open(WAYPOINT_FILE, mode='r', newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            clean = {k.strip(): v for k, v in row.items() if k is not None}
-            if not clean or not clean.get('lat') or not clean.get('lon'):
-                continue
-            WAYPOINTS.append({'lat': float(clean['lat']),
-                              'lon': float(clean['lon'])})
-except Exception as e:
-    print(f"Warning: Could not load {WAYPOINT_FILE}. {e}")
+SITE = cfg.SITE
+WAYPOINTS = cfg.track_waypoints(SITE.get("TRACK"))
 
 
 class HudOverlay(QWidget):
@@ -69,15 +58,15 @@ class HudOverlay(QWidget):
 
     def set_data(self, state, yaw, lat, lon, dist):
         self._state = state
-        # Koersi aman: mesin tanpa telemetri -> yaw/dist None; lat/lon None
-        # dibiarkan (ditampilkan "--") supaya tak crash di paintEvent.
+
+
         self._yaw = float(yaw) if yaw is not None else 0.0
         self._lat = lat
         self._lon = lon
         self._dist = float(dist) if dist is not None else 0.0
         self.update()
 
-    def paintEvent(self, _event):  # noqa: N802 - API Qt
+    def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         w = self.width()
@@ -146,7 +135,7 @@ class VideoPanel(QWidget):
         except Exception:
             pass
 
-    def resizeEvent(self, event):  # noqa: N802 - API Qt
+    def resizeEvent(self, event):
         self.hud.setGeometry(0, 0, self.width(), self.height())
         self.hud.raise_()
         super().resizeEvent(event)
@@ -176,7 +165,7 @@ class MainWindow(QMainWindow):
         self.setGeometry(100, 100, 1500, 880)
         self.current_lat = 0.0
         self.current_lon = 0.0
-        # Cache anti-lag: setText/setStyleSheet hanya saat berubah.
+
         self._chip_cache = {}
         self._last_text_t = 0.0
         self._last_map_t = 0.0
@@ -197,14 +186,15 @@ class MainWindow(QMainWindow):
         main_split.setSizes([260, 830, 410])
         self.setCentralWidget(main_split)
 
-        # Bungkus slot: exception di update_ui tak boleh mematikan GUI.
-        # PyQt5 memanggil qFatal (SIGABRT) bila exception lolos dari slot.
+
+
         self.nav_thread.newData.connect(self._on_new_data)
         self._setup_status_bar()
         self._refresh_map_waypoints()
         self.nav_thread.start()
+        self._start_web_dashboard()
 
-    # ------------------- bangun layout -------------------
+
 
     def _build_sidebar(self):
         side = QWidget()
@@ -287,20 +277,20 @@ class MainWindow(QMainWindow):
 
         split = QSplitter(Qt.Vertical)
         self.slim_map = SlimMapWidget()
-        # Dual-view P6-C: NAV besar + BAWAH kecil (toggle bila 1 kamera).
+
         self.video_panel = VideoPanel(title="NAV")
         self.video_label = self.video_panel.video_label
         self.hud_overlay = self.video_panel.hud
         self.video_panel_bawah = VideoPanel(title="BAWAH")
-        self.video_panel_bawah.hud.hide()  # kecil: tanpa HUD
+        self.video_panel_bawah.hud.hide()
         self.video_label_bawah = self.video_panel_bawah.video_label
         vid_split = QSplitter(Qt.Horizontal)
         vid_split.addWidget(self.video_panel)
         vid_split.addWidget(self.video_panel_bawah)
         vid_split.setSizes([700, 260])
-        self.video_panel_bawah.hide()  # muncul bila frame bawah ada
+        self.video_panel_bawah.hide()
         self._bawah_shown = False
-        self._last_sec_obj = None      # cache identitas frame bawah (anti re-render)
+        self._last_sec_obj = None
         split.addWidget(vid_split)
         split.addWidget(self.slim_map)
         split.setSizes([560, 300])
@@ -311,7 +301,7 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.setFixedWidth(410)
 
-        # --- tab Misi: telemetri kompak ---
+
         misi = QWidget()
         ml = QVBoxLayout(misi)
         f, l = _card("Posisi")
@@ -336,7 +326,25 @@ class MainWindow(QMainWindow):
             "font-family: monospace; font-size: 13px; background: transparent;")
         l.addWidget(self.misi_link)
         ml.addWidget(f)
-        # P6-A: Scan + pilih kamera NAV/BAWAH saat runtime (plug-and-play).
+
+        f, l = _card("Lintasan & Web")
+        trow = QHBoxLayout()
+        self.track_combo = QComboBox()
+        self.track_combo.addItems(["A", "B"])
+        self.track_combo.setCurrentText(str(SITE.get("TRACK", "A")).upper())
+        self.track_apply_btn = QPushButton("Pakai Lintasan")
+        self.track_apply_btn.setProperty("class", "toolBtn")
+        self.track_apply_btn.clicked.connect(self.on_track_apply)
+        trow.addWidget(self.track_combo, 1)
+        trow.addWidget(self.track_apply_btn)
+        l.addLayout(trow)
+        self.web_label = QLabel("Web: --")
+        self.web_label.setStyleSheet(
+            "font-family: monospace; color: #8b949e; background: transparent;")
+        self.web_label.setWordWrap(True)
+        l.addWidget(self.web_label)
+        ml.addWidget(f)
+
         f, l = _card("Kamera")
         row = QHBoxLayout()
         self.cam_combo = QComboBox()
@@ -361,7 +369,7 @@ class MainWindow(QMainWindow):
             "font-family: monospace; color: #8b949e; background: transparent;")
         l.addWidget(self.cam_status_label)
         ml.addWidget(f)
-        # P6-B: pilih port Pixhawk (USB langsung vs radio telemetri).
+
         f, l = _card("Pixhawk")
         prow = QHBoxLayout()
         self.mav_combo = QComboBox()
@@ -399,7 +407,7 @@ class MainWindow(QMainWindow):
                 "padding: 2px 10px; color: #8b949e; background: transparent;")
             bar.addPermanentWidget(chip)
 
-    # ------------------- helper anti-lag -------------------
+
 
     def _set_chip(self, widget, key, text, color):
         """setText + warna hanya saat berubah (hindari recalc style Qt)."""
@@ -413,7 +421,7 @@ class MainWindow(QMainWindow):
             "font-family: monospace; font-weight: bold; padding: 2px 10px;"
             f" color: {color}; background: transparent;")
 
-    # ------------------- peta -------------------
+
 
     def _refresh_map_waypoints(self):
         try:
@@ -425,7 +433,74 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # ------------------- settings -------------------
+
+
+    def _start_web_dashboard(self):
+        self.dash_server = None
+        try:
+            c = self.nav_thread.config
+            if not getattr(c, "WEB_ENABLED", True):
+                self.web_label.setText("Web: OFF (site.json)")
+                return
+            from web.server import DashboardServer
+            if getattr(c, "WEB_MOCK", False):
+                from web.mock import start_mock
+                start_mock(c)
+            self.dash_server = DashboardServer(c)
+            host, port = self.dash_server.start()
+            ip = self._lan_ip()
+            self.web_label.setText(
+                f"Web: http://{ip}:{port} (hotspot tim)\nbind {host}:{port}")
+        except Exception as e:
+            log.error("Web dashboard gagal start: %s", e)
+            self.web_label.setText(f"Web: GAGAL ({e})")
+
+    @staticmethod
+    def _lan_ip():
+        try:
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "127.0.0.1"
+
+    def on_track_apply(self):
+        """Ganti lintasan A/B: muat waypoint + leg misi + persist site.json."""
+        name = str(self.track_combo.currentText()).strip().upper()
+        try:
+            cfg.save_site({"TRACK": name})
+            cfg.SITE["TRACK"] = name
+        except Exception:
+            pass
+        try:
+            trk = cfg.load_track(name)
+            c = self.nav_thread.config
+            c.TRACK = name
+            c.TRACK_DATA = trk
+            c.TRACK_START = {"lat": trk.get("start_lat"),
+                             "lon": trk.get("start_lon"),
+                             "color": trk.get("start_color", "red")}
+            c.TRACK_GRID = trk.get("grid", {})
+            if "vision_legs" in trk:
+                c.VISION_ENABLED_LEGS = trk["vision_legs"]
+            if "photo_box_legs" in trk:
+                c.PHOTO_BOX_LEGS = trk["photo_box_legs"]
+            if "blue_box_photo_legs" in trk:
+                c.BLUE_BOX_PHOTO_LEGS = trk["blue_box_photo_legs"]
+            if "red_box_nav_after_wp" in trk:
+                c.RED_BOX_NAV_AFTER_WP = trk["red_box_nav_after_wp"]
+            wps = cfg.track_waypoints(name)
+            self.nav_thread.update_waypoints(wps)
+            self._refresh_map_waypoints()
+            self.web_label.setText(self.web_label.text())
+            log.info("Lintasan -> %s (%d waypoint)", name, len(wps))
+        except Exception as e:
+            log.error("Ganti lintasan gagal: %s", e)
+
+
 
     def open_settings(self):
         if self._settings_dlg is None:
@@ -449,7 +524,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # ------------------- kamera plug-and-play (P6-A/C) -------------------
+
 
     def _cam_index_from_combo(self):
         try:
@@ -499,7 +574,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # ------------------- pixhawk port select (P6-B) -------------------
+
 
     def on_mav_scan(self):
         try:
@@ -532,7 +607,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # ------------------- update UI (throttled) -------------------
+
 
     def _on_new_data(self, data):
         """Slot aman untuk sinyal `newData` dari thread navigator.
@@ -551,18 +626,18 @@ class MainWindow(QMainWindow):
         self.current_lat = data['lat']
         self.current_lon = data['lon']
 
-        # --- video NAV: tiap paket (25 Hz) ---
+
         try:
             self.video_panel.set_frame(data.get('frame'))
         except Exception:
             pass
-        # --- video BAWAH: tampil hanya bila ada frame (dual-view P6-C) ---
+
         try:
             sec = data.get('frame_secondary')
             if sec is not None:
-                # Frame bawah di-cache di navigator (dibaca 10 Hz); hanya
-                # render ulang bila objeknya BERUBAH — hemat konversi QImage
-                # yang mahal di tiap paket 25 Hz.
+
+
+
                 if sec is not self._last_sec_obj:
                     self._last_sec_obj = sec
                     if not self._bawah_shown:
@@ -575,7 +650,7 @@ class MainWindow(QMainWindow):
                 self._last_sec_obj = None
         except Exception:
             pass
-        # --- status kamera + sumber telemetri (chip jujur P6-A/B) ---
+
         try:
             cam_st = str(data.get('cam_status', 'OK'))
             src = str(data.get('telem_source', 'MOCK'))
@@ -590,7 +665,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # --- FPS ukur 1 Hz ---
+
         self._fps_count += 1
         now_m = time.monotonic()
         if now_m - self._fps_t0 >= 1.0:
@@ -604,8 +679,8 @@ class MainWindow(QMainWindow):
                            f"FPS {self._fps_val:.0f}/30", fps_c)
 
         now = time.time()
-        if now - self._last_text_t < 0.2:  # teks 5 Hz
-            # Peta 1 Hz tetap jalan walau teks di-skip.
+        if now - self._last_text_t < 0.2:
+
             if now - self._last_map_t >= 1.0:
                 self._last_map_t = now
                 try:
@@ -627,14 +702,14 @@ class MainWindow(QMainWindow):
         m_yaw = float(data.get('manual_yaw', 0.0) or 0.0)
         rc_ok = bool(data.get('rc_ok', False))
 
-        # HUD 5 Hz (cukup untuk teks).
+
         try:
             self.hud_overlay.set_data(state, yaw, data['lat'],
                                       data['lon'], dist)
         except Exception:
             pass
 
-        # Peta 1 Hz.
+
         if now - self._last_map_t >= 1.0:
             self._last_map_t = now
             try:
@@ -642,7 +717,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # Sidebar.
+
         fs_on = bool(data.get('failsafe_active', False))
         fs_reason = str(data.get('failsafe_reason', '') or '')
         up_pending = int(data.get('upload_pending', 0) or 0)
@@ -677,7 +752,7 @@ class MainWindow(QMainWindow):
         self.side_wp.setText(f"WP {min(tgt, max(n_wp, 1))} / {n_wp}")
         self.side_dist.setText(f"{dist:.1f} m")
 
-        # Baterai LiPO 4S: penuh 16.8 V / kosong 12.8 V.
+
         volt = data.get('voltage_v')
         curr = data.get('current_a')
         pct = data.get('battery_pct')
@@ -704,7 +779,7 @@ class MainWindow(QMainWindow):
             self._set_chip(self.chip_batt, "batt",
                            f"BAT {pct:.0f}% ({volt_s})", bc)
 
-        # Tab Misi.
+
         lat, lon = data.get('lat'), data.get('lon')
         if lat is None or lon is None:
             self.misi_pos.setText("-- belum ada GPS --")
@@ -730,11 +805,16 @@ class MainWindow(QMainWindow):
                                    (" ^%d" % up_pending) if up_pending else ''),
                        mode_c)
 
-    def closeEvent(self, event):  # noqa: N802 - API Qt
+    def closeEvent(self, event):
         print("Closing application...")
         try:
             self.nav_thread.stop()
             self.nav_thread.wait()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "dash_server", None) is not None:
+                self.dash_server.stop()
         except Exception:
             pass
         if hasattr(self.nav_thread, 'save_config_to_file'):

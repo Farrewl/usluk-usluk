@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Jalankan GUI dashboard ASV (Linux / Raspberry Pi).
-# Gunakan virtualenv kalau belum ada:  python3 -m venv .venv
+# Pakai .venv kalau ada; kalau belum, jalankan dulu:  ./scripts/setup_minimal.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PY="${PYTHON:-python3}"
-if [ -d .venv ]; then
-  source .venv/bin/activate
+if [ -x .venv/bin/python ]; then
+  exec .venv/bin/python -O -u main.py "$@"
 fi
 
-exec "$PY" -O -u main.py
+echo "[i] .venv belum ada — jalankan:  ./scripts/setup_minimal.sh" >&2
+exec "${PYTHON:-python3}" -O -u main.py "$@"

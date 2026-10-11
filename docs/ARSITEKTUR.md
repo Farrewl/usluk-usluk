@@ -224,11 +224,19 @@ QT_QPA_PLATFORM=offscreen python main.py
 
 ## 9. Path & Data
 
-- `config/plan.csv` — waypoint (format `lat,lon`, baris pertama header).
-  **Satu-satunya file plan.**
+- `config/site.json` — identitas tim (nama/PT), lintasan aktif, host/port web.
+- `config/trackA.json` / `trackB.json` — waypoint + leg misi per lintasan.
 - `config/tuning_params.json` — parameter tuning tersimpan (dari `save_params`).
-- `weights/*.pt` — model YOLO. **Tidak masuk git** (~6 MB/file); unduh via
-  `scripts/download_weights.sh` / `.ps1`.
+- `weights/*.pt` — model YOLO. **Masuk git** agar clone langsung jalan.
 - `data/` — output runtime (captures, foto waypoint, video sesi, peta sementara).
   Di-ignore git.
-- `core/libaterkia.so` — di-ignore git (build lokal).
+- `core/libaterkia.so` — di-ignore git (build lokal; `setup_minimal.sh`
+  membangunnya otomatis).
+
+## 10. Dashboard Web
+
+`web/server.py` (stdlib `http.server`, tanpa dependency baru) mengekspos
+`/events` (SSE dari `app/state_bus.py`), `/video` (MJPEG frame NAV),
+`/captures` (foto + geo-tag), `/config` (identitas tim, lintasan, grid).
+Nyala otomatis saat GUI jalan; buka `http://<ip-laptop>:8080`. Mode demo
+tanpa kapal: `ASV_MOCK=1`.

@@ -28,23 +28,23 @@ import numpy as np
 
 from . import aterkia_core as core
 
-# Batas hue (OpenCV: 0..179) untuk warna buoy.
-RED_HUE_MAX = 10        # merah "rendah": hue 0..10
-RED_HUE_MIN2 = 170      # merah "tinggi":  hue 170..179
-GREEN_HUE_MIN = 35      # hijau: hue 35..85
-GREEN_HUE_MAX = 85
-MIN_VALUE = 40          # value HSV di bawah ini = hitam/pudar, tak dihitung
 
-# P4-A: ukuran thumbnail untuk ukur kecerahan global (64x64 = 4096 piksel,
-# ~0.5% biaya satu frame 720p — nyaris gratis, dihitung 1x per frame).
+RED_HUE_MAX = 10
+RED_HUE_MIN2 = 170
+GREEN_HUE_MIN = 35
+GREEN_HUE_MAX = 85
+MIN_VALUE = 40
+
+
+
 BRIGHTNESS_THUMB_PX = 64
 
-# Batas tepi sisi minimum — cerminan ambah di C (gv_buoy_fail). Dipakai HANYA
-# untuk menyusun pesan debug, bukan untuk memutuskan.
+
+
 DEBUG_MIN_SIDE_PX = 2
 
-# Ambang "kotak kecil" (fraksi warna dibagi 2). Ini keputusan NYATA pada
-# jalur warna (Python), jadi konstanta biasa — bukan debug.
+
+
 SMALL_BOX_AREA_PX = 80
 
 
@@ -120,7 +120,7 @@ def frame_brightness(frame):
     (adaptive threshold) dan calon P4-B (preprocessing saat gelap).
     """
     if frame is None or getattr(frame, "size", 0) == 0:
-        return 255.0  # frame rusak -> anggap terang (jalur normal, aman)
+        return 255.0
     small = cv2.resize(frame, (BRIGHTNESS_THUMB_PX, BRIGHTNESS_THUMB_PX),
                        interpolation=cv2.INTER_AREA)
     hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
@@ -196,8 +196,7 @@ def validate_buoy(frame, cls, xyxy, min_area,
     gagal eksplisit (tidak ada fallback diam-diam ke rumus Python).
 
     saat `debug=True`, kembalikan (ok: bool, reasons: list[str]) dengan
-    nilai terukur tiap kriteria agar mudah dicetak di test-live
-    (scripts/test_deteksi.py --debug).
+    nilai terukur tiap kriteria agar mudah dicetak di log.
     """
     x1, y1, x2, y2 = [int(v) for v in xyxy]
     w = x2 - x1
@@ -205,7 +204,7 @@ def validate_buoy(frame, cls, xyxy, min_area,
     reasons = []
 
     area = w * h
-    # Kode penolakan geometri dari C (0 = lolos). Sumber kebenaran tunggal.
+
     fail = core.buoy_geometry_fail_c(w, h, min_area, max_aspect_deviation)
     if fail != 0:
         if debug:
@@ -216,7 +215,7 @@ def validate_buoy(frame, cls, xyxy, min_area,
 
     eff_saturation = min_saturation
     eff_value = min_value
-    # Box kecil (jauh) → statistik warna tidak stabil → turunkan ambang 2×
+
     is_small = area < SMALL_BOX_AREA_PX
     eff_color_frac = min_color_fraction * (0.5 if is_small else 1.0)
     gelap_info = ""

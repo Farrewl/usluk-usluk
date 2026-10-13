@@ -126,18 +126,9 @@ class VisionNavigator:
         self.red_dock_model = None
         self._models_loading = False
         self._models_loaded = False
-        if YOLO_AVAILABLE:
-            try:
-                log.info("Memuat model GATE: %s", self.config.MODEL_PATH)
-                self.gate_model = YOLO(self.config.MODEL_PATH,
-                                       task='detect').to(self.config.YOLO_DEVICE)
-            except Exception as e:
-                raise FileNotFoundError(
-                    f"FATAL: gagal memuat model GATE: {e}")
-
-
         self.yolo_worker = YoloWorker(self.config)
-        self.yolo_worker.bind_gate_model(self.gate_model)
+        if YOLO_AVAILABLE:
+            self._load_models_async()
         self._det_cache = {}
         self._frame_seq = 0
         self._last_frame = None
@@ -236,6 +227,7 @@ class VisionNavigator:
 
         def _loader():
             for attr, path, label in (
+                    ("gate_model", self.config.MODEL_PATH, "GATE BUOY"),
                     ("box_model", self.config.BOX_MODEL_PATH, "BOX HIJAU"),
                     ("red_dock_model", self.config.RED_DOCK_MODEL_PATH,
                      "BOX MERAH"),
@@ -247,6 +239,11 @@ class VisionNavigator:
                             YOLO(path, task='detect').to(self.config.YOLO_DEVICE))
                 except Exception as e:
                     log.warning("Gagal memuat model %s: %s", label, e)
+                if attr == "gate_model" and self.yolo_worker is not None:
+                    try:
+                        self.yolo_worker.bind_gate_model(self.gate_model)
+                    except Exception:
+                        pass
             self._models_loaded = True
             self._models_loading = False
             log.info("Lazy-load model selesai.")
@@ -365,7 +362,11 @@ class VisionNavigator:
             return
         st = self.current_state
         want = None
-        if st == "WAYPOINT_NAV":
+        if st in ("WAITING_GPS", "NO_TELEM", "NO_WAYPOINTS"):
+            if getattr(self.config, "DETECT_CONTINUOUS", True):
+                want = (self._MID_GATE, self.gate_model,
+                        self.config.BUOY_CONF_SMALL_THRESHOLD)
+        elif st == "WAYPOINT_NAV":
             want = (self._MID_GATE, self.gate_model,
                     self.config.BUOY_CONF_SMALL_THRESHOLD)
         elif st in ("APPROACH_BOX_SEARCH", "APPROACH_BOX_ALIGN"):
@@ -1488,9 +1489,43 @@ class VisionNavigator:
 
 
 
+    def _annotated_frame(self, frame):
+        """Frame ter-annotasi (kotak deteksi) bila ada hasil YOLO segar.
+
+        Sebelumnya frame mentah selalu dipublish ke GUI/web meski worker
+        menyimpan versi ter-annotasi — operator tidak pernah melihat kotak.
+        Ambil hasil terbaru semua model yang umurnya <= 1 s; kalau ada,
+        publish versi annotate (bukan frame mentah).
+        """
+        if frame is None or not getattr(self.config, "DETECT_CONTINUOUS", True):
+            return frame
+        try:
+            now = time.monotonic()
+            best = None
+            best_age = None
+            for mid in (self._MID_GATE, self._MID_BOX,
+                        self._MID_BLUE, self._MID_RED):
+                st = self.yolo_worker.latest_status(mid)
+                if st is None:
+                    continue
+                _detected, annotated, _boxes, ts = st
+                if annotated is None:
+                    continue
+                age = now - ts
+                if age > 1.0:
+                    continue
+                if best_age is None or age < best_age:
+                    best, best_age = annotated, age
+            if best is not None:
+                return best
+        except Exception:
+            pass
+        return frame
+
     def _emit(self, data_signal, frame, sec, cam_st, state, dist_to_wp,
               groundspeed, _gd, status, op_mode, man, qgc, fs_reason, avoid,
               batt=None):
+        frame = self._annotated_frame(frame)
         mav = self.mav
         pkt = {
             "lat": self.current_lat, "lon": self.current_lon,

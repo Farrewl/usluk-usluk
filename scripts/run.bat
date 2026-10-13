@@ -6,5 +6,7 @@ cd /d "%~dp0.."
 if exist ".venv\Scripts\python.exe" (
     .venv\Scripts\python.exe -O -u main.py
 ) else (
+    echo [!] .venv belum ada. Install dulu sekali:
+    echo       powershell -ExecutionPolicy Bypass -File scripts\setup_minimal.ps1
     python -O -u main.py
 )

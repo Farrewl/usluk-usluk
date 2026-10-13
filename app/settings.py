@@ -324,6 +324,18 @@ class Config:
         self.CAMERA_MAX_AUTO_HEIGHT = CAMERA_MAX_AUTO_HEIGHT
         self.CAMERA_MIN_ACCEPT_FPS = CAMERA_MIN_ACCEPT_FPS
 
+        # Fast-start kamera: buka sekali (mode cache/1280x720 MJPG) tanpa
+        # sweep resolusi/codec berulang (5-25 s di Windows). Negosiasi penuh
+        # tetap bisa diminta manual via tombol Scan GUI. Matikan: ASV_CAM_FAST=0.
+        _env_fast = os.environ.get("ASV_CAM_FAST", "").strip().lower()
+        self.CAMERA_FAST_START = _env_fast not in ("0", "false", "off", "no")
+
+        # Deteksi kontinu: model GATE ikut dijalankan saat pra-misi
+        # (WAITING_GPS dst) dan frame ter-annotasi dipublish ke GUI+web.
+        # Matikan: ASV_DETECT=0.
+        _env_det = os.environ.get("ASV_DETECT", "").strip().lower()
+        self.DETECT_CONTINUOUS = _env_det not in ("0", "false", "off", "no")
+
 
         self.CAMERA_FLIP_MODE = saved.get('CAMERA_FLIP_MODE', CAMERA_FLIP_MODE)
         self.ENABLE_SESSION_RECORDING = False

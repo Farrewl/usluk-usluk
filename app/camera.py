@@ -438,11 +438,66 @@ def negotiate_best_camera(preferred, target_fps=30, max_width=1920,
     return (best_idx, mode[0], mode[1], mode[2], mode[3])
 
 
+def _open_fast_primary(index, target_fps):
+    """Buka kamera utama TANPA negosiasi panjang (fast-start).
+
+    Pakai mode tersimpan di cache (data/cam_mode.json) bila cocok; kalau
+    tidak, default 1280x720 MJPG. Hanya 1 open per backend, pemanasan 3
+    frame, tanpa kalibrasi exposure dan tanpa sweep resolusi/codec —
+    startup turun drastis (penting di Windows yang mem-probe 0..4 tiap
+    kali). Return cap atau None.
+    """
+    cache = _load_cam_cache()
+    fourcc = w = h = None
+    if cache and cache.get("index") == int(index):
+        fourcc = cache.get("fourcc")
+        w = cache.get("width")
+        h = cache.get("height")
+    if not w or not h:
+        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+        w, h = 1280, 720
+    _silence_opencv_warns()
+    cap = None
+    for backend in _platform_backends():
+        c = _make_capture(int(index), backend)
+        if c is None or not c.isOpened():
+            if c is not None:
+                try:
+                    c.release()
+                except Exception:
+                    pass
+            continue
+        try:
+            if fourcc:
+                c.set(cv2.CAP_PROP_FOURCC, int(fourcc))
+            c.set(cv2.CAP_PROP_FRAME_WIDTH, int(w))
+            c.set(cv2.CAP_PROP_FRAME_HEIGHT, int(h))
+            if target_fps:
+                c.set(cv2.CAP_PROP_FPS, float(target_fps))
+        except Exception:
+            pass
+        for _ in range(3):
+            try:
+                if c.read()[0]:
+                    break
+            except Exception:
+                break
+        cap = c
+        break
+    if cap is not None:
+        print(f"[CAM] Fast-start index={index}: {w}x{h} "
+              f"(mode {'cache' if cache else 'default'}).")
+    _restore_opencv_logs()
+    return cap
+
+
 def _open_auto_negotiated(index, target_fps=None):
     """Buka kamera terbaik dengan resolusi tertinggi & fps stabil."""
     from . import settings as cfg
 
     target = target_fps or cfg.CAMERA_TARGET_FPS
+    if getattr(cfg, "CAMERA_FAST_START", True):
+        return _open_fast_primary(index, target)
     best = negotiate_best_camera(index,
                                  target_fps=target,
                                  max_width=cfg.CAMERA_MAX_AUTO_WIDTH,

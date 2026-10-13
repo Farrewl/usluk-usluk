@@ -45,6 +45,40 @@ Lintasan & identitas tim diatur di `config/site.json` (+ `config/trackA.json`,
 
 ---
 
+## Cara Menjalankan (3 Peran Tim)
+
+Tim pakai **1 mini-PC (compute)** + **laptop (operator)** lewat router/hotspot:
+
+| Peran | Mesin | Cara |
+|---|---|---|
+| **Compute** (kamera, Pixhawk, ESC, misi) | mini-PC Linux | `./scripts/setup_minimal.sh` sekali → `./scripts/run_gui.sh`. Auto-misi jalan; dashboard web nyala di `:8080`. |
+| **Monitor** (operator) | laptop apa pun | buka browser `http://<ip-mini-pc>:8080` — telemetri, video, log posisi, grid. Tanpa install apa pun. |
+| **Debug / tes** | laptop Windows/Linux | Windows: `setup_minimal.ps1` + `run.bat`; Linux: `setup_minimal.sh` + `run_gui.sh`. |
+
+Cari IP mini-PC: tercetak di GUI (label "Web: ...") atau `ip addr`.
+
+### QGroundControl
+
+- **Mudah**: pasang QGC di mini-PC, hubungkan langsung ke Pixhawk via USB.
+- **Lewat jaringan** (QGC di laptop operator): jalankan mini-PC dengan env
+  ```bash
+  GCS_FORWARD=1 GCS_IP=<ip-laptop> GCS_PORT=14550 ./scripts/run_gui.sh
+  ```
+  lalu di QGC laptop: *Add Link → UDP → Listen port 14550*.
+
+### Percepat startup & deteksi
+
+- **Fast-start kamera ON default** — kamera utama dibuka sekali (mode cache /
+  1280x720), tanpa sweep resolusi berulang (di Windows bisa 5–25 s). Negosiasi
+  penuh tetap bisa dipicu manual via tombol **Scan** (tab Misi). Matikan:
+  `ASV_CAM_FAST=0`.
+- **Deteksi kontinu ON default** — model GATE ikut dijalankan saat pra-misi
+  (WAITING_GPS) dan frame ber-kotak deteksi tampil di GUI **dan** web MJPEG.
+  Matikan: `ASV_DETECT=0`. Model YOLO dimuat di thread (lazy); kotak muncul
+  begitu model siap (~10 s pertama).
+
+---
+
 ## Pilih Backend
 
 Lewat variabel lingkungan `ASV_BACKEND`:

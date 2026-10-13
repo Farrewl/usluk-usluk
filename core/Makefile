@@ -23,9 +23,13 @@ CPPFLAGS  += -Iinclude
 SRC_C     := $(wildcard src/*.c)
 LM        := -lm
 
-# Compiler MinGW: native Windows pakai "gcc" bawaan MinGW;
-# cross dari Linux pakai x86_64-w64-mingw32-gcc (override: CC_WIN=...)
+# Compiler MinGW: target `windows` (native, MinGW shell) pakai CC=gcc
+# dari PATH. Target `cross` (dari Linux) pakai CC_WIN, default
+# x86_64-w64-mingw32-gcc (override: make cross CC_WIN=...).
+# LDFLAGS_WIN: -static supaya DLL self-contained (tanpa kebergantungan
+# libgcc_s_seh-1.dll / libwinpthread-1.dll di PATH mesin target).
 CC_WIN    ?= x86_64-w64-mingw32-gcc
+LDFLAGS_WIN ?= -static -static-libgcc
 
 .PHONY: linux windows cross check clean
 
@@ -37,11 +41,11 @@ libaterkia.so: $(SRC_C) $(wildcard include/*.h)
 
 # --- Windows native (MinGW shell): DLL (dipakai app/aterkia_core.py) ---
 windows:
-	$(CC_WIN) -shared $(CFLAGS) $(CPPFLAGS) $(SRC_C) -o aterkia_core.dll $(LM)
+	$(CC) -shared $(CFLAGS) $(CPPFLAGS) $(SRC_C) -o aterkia_core.dll $(LDFLAGS_WIN) $(LM)
 
 # --- Cross-build .dll dari Linux (butuh mingw-w64 terpasang) ---
 cross:
-	$(CC_WIN) -shared $(CFLAGS) $(CPPFLAGS) $(SRC_C) -o aterkia_core.dll $(LM)
+	$(CC_WIN) -shared $(CFLAGS) $(CPPFLAGS) $(SRC_C) -o aterkia_core.dll $(LDFLAGS_WIN) $(LM)
 
 # --- Verifikasi ketat tanpa menghasilkan file (jalur POSIX + jalur
 #     non-POSIX/Windows dipaksa lewat -U__unix__ supaya #else ikut dicek) ---

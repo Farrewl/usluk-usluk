@@ -41,19 +41,28 @@ LIB_PATH = os.path.join(ROOT_DIR, "core", _LIB_NAME)
 
 C_AVAILABLE = False
 _lib = None
+_LOAD_ERR = None
 
 try:
     if os.path.exists(LIB_PATH):
         _lib = ctypes.CDLL(LIB_PATH)
         C_AVAILABLE = True
-except Exception:
+except Exception as _e:
     _lib = None
     C_AVAILABLE = False
+    _LOAD_ERR = _e
 
 
 def _need_lib():
     if not C_AVAILABLE or _lib is None:
-        raise RuntimeError(_BUILD_HINT)
+        hint = _BUILD_HINT
+        if os.path.exists(LIB_PATH) and _LOAD_ERR:
+            hint += (
+                "\n" + os.path.basename(LIB_PATH) + " ADA tapi GAGAL dimuat: "
+                + str(_LOAD_ERR)
+                + "\n(ctypes error di atas; DLL harus self-contained, "
+                "lihat core/Makefile LDFLAGS_WIN -static.)")
+        raise RuntimeError(hint)
 
 
 _D = ctypes.c_double

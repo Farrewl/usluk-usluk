@@ -1,8 +1,8 @@
 # ============================================================
-# scripts/setup_minimal.ps1 — install .venv minimal ASV di WINDOWS.
+# scripts/setup_minimal.ps1 - install .venv minimal ASV di WINDOWS.
 #
 # Padanan scripts/setup_minimal.sh (urut & kunci penghematan SAMA).
-# Hasil: .venv ±1,3 GB dengan seluruh fungsi produksi jalan:
+# Hasil: .venv ~1,3 GB dengan seluruh fungsi produksi jalan:
 # GUI PyQt, YOLO 4 model (.pt), MAVLink.
 #
 # Pakai (PowerShell, dari root repo):
@@ -16,16 +16,16 @@
 #   Mau paksa bersih? hapus dulu:  Remove-Item -Recurse -Force .venv
 #
 # KUNCI penghematan (sama dengan versi Linux):
-#  1. torch WAJIB dari index CPU — dari PyPI default ia menarik
-#     CUDA+nvidia-*+triton (≈3,6 GB membengkak). Wheel Windows CPU
+#  1. torch WAJIB dari index CPU - dari PyPI default ia menarik
+#     CUDA+nvidia-*+triton (~3,6 GB membengkak). Wheel Windows CPU
 #     (win_amd64, bertanda +cpu) sudah diverifikasi tersedia.
-#  2. ultralytics dipasang --no-deps — deps bawaannya menarik
+#  2. ultralytics dipasang --no-deps - deps bawaannya menarik
 #     matplotlib+polars+opencv-python non-headless yang TIDAK PERNAH
 #     di-import eager saat inferensi.
 #  3. Folder test/include di dalam torch aman dibuang.
 #
 # Catatan Windows (beda dengan Linux):
-#  - Gamepad USB (/dev/input/js*) TIDAK ada — fitur gamepad dinonaktif
+#  - Gamepad USB (/dev/input/js*) TIDAK ada - fitur gamepad dinonaktif
 #    otomatis; RC Pixhawk / tombol GUI tetap jalan.
 #  - Library C: aterkia_core.dll butuh MinGW (lihat core/Makefile,
 #    target `windows`). Tanpa MinGW pun program tetap jalan dengan
@@ -51,7 +51,14 @@ function Invoke-Step {
 
 Write-Host "[0/5] Cek Python (min 3.12)..."
 $pyVer = & $Py -c "import sys; print('%d.%d' % sys.version_info[:2])"
-if ($LASTEXITCODE -ne 0) { Write-Host "[!] Interpreter '$Py' tak jalan. Set env PYTHON dulu."; exit 1 }
+if ($LASTEXITCODE -ne 0) {
+    if ($Py -ne "py") {
+        Write-Host "[i] '$Py' tak jalan; coba launcher 'py'..."
+        $Py = "py"
+        $pyVer = & $Py -c "import sys; print('%d.%d' % sys.version_info[:2])"
+    }
+    if ($LASTEXITCODE -ne 0) { Write-Host "[!] Interpreter '$Py' tak jalan. Set env PYTHON dulu."; exit 1 }
+}
 $pyNum = [double]$pyVer
 if ($pyNum -lt 3.12) {
     Write-Host "[!] Python $pyVer terlalu tua; butuh >= 3.12."; exit 1
@@ -62,14 +69,14 @@ if ($pyVer -ne "3.12") {
 
 # --- [core] Build aterkia_core.dll bila belum ada (butuh MinGW) ---
 if (Test-Path "core\aterkia_core.dll") {
-    Write-Host "[i] core\aterkia_core.dll sudah ada — build C dilewati."
+    Write-Host "[i] core\aterkia_core.dll sudah ada - build C dilewati."
 } else {
     $mingw = Get-Command mingw32-make -ErrorAction SilentlyContinue
     if ($mingw) {
         Write-Host "[core] Build inti C (MinGW)..."
         & mingw32-make -C core windows
     } else {
-        Write-Host "[!] MinGW (mingw32-make) tak ada — core\aterkia_core.dll TIDAK dibangun."
+        Write-Host "[!] MinGW (mingw32-make) tak ada - core\aterkia_core.dll TIDAK dibangun."
         Write-Host "    Program jalan tapi mesin-state C mati (C_AVAILABLE=False)."
         Write-Host "    Install MinGW-w64 lalu:  mingw32-make -C core windows"
     }
@@ -79,7 +86,7 @@ $Vpy = Join-Path ".venv" "Scripts\python.exe"
 
 # --- [1/5] Virtualenv (reuse kalau sudah ada) ---
 if (Test-Path $Vpy) {
-    Write-Host "[i] .venv sudah ada — dipakai ulang (tak ditimpa)."
+    Write-Host "[i] .venv sudah ada - dipakai ulang (tak ditimpa)."
 } else {
     Write-Host "[1/5] Bikin virtualenv..."
     Invoke-Step @($Py, "-m", "venv", ".venv")
@@ -93,7 +100,7 @@ if ($Fresh) {
 # --- [2-3/5] Dependensi (lewati bila sudah lengkap) ---
 & $Vpy -c "import torch, torchvision, cv2, serial, pymavlink, ultralytics; from PyQt5 import QtWidgets" 2>$null
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "[i] Dependensi sudah terpasang — langkah install (2-3) dilewati."
+    Write-Host "[i] Dependensi sudah terpasang - langkah install (2-3) dilewati."
 } else {
     Write-Host "[2/5] Install torch+torchvision CPU-ONLY (index PyTorch, bukan PyPI!)..."
     Invoke-Step @($Vpy, "-m", "pip", "install", "-q",
@@ -120,7 +127,7 @@ Get-ChildItem -Path (Join-Path $SP "torch\lib") -Filter "*test*" -ErrorAction Si
 # --- [5/5] Verifikasi (satu sumber dgn Linux: scripts/verify_env.py) ---
 Write-Host "[5/5] Verifikasi import inti + inferensi YOLO..."
 if (-not (Test-Path (Join-Path "weights" "buoy.pt"))) {
-    Write-Host "[!] weights/buoy.pt belum ada — verifikasi YOLO dilewati."
+    Write-Host "[!] weights/buoy.pt belum ada - verifikasi YOLO dilewati."
     Write-Host "    Model YOLO ikut ter-commit di repo; pastikan clone tak parsial."
 }
 Invoke-Step @($Vpy, "scripts\verify_env.py")

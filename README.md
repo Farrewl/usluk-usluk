@@ -69,7 +69,10 @@ vs oracle Python (`tests/test_core_*.py`).
 ```bash
 make -C core linux                 # Linux / Pi  -> core/libaterkia.so
 make -C core check                 # -Wall -Wextra -Werror
-# Windows (MinGW): mingw32-make -C core windows -> core/aterkia_core.dll
+# Windows: core/aterkia_core.dll SUDAH di-repo (self-contained, UCRT
+# bawaan Win10/11). Rebuild HANYA kalau ada perubahan C:
+#   mingw32-make -C core windows   (MinGW native)
+#   make -C core cross             (cross dari Linux, pakai mingw-w64)
 ```
 
 Modul: `nav_math`, `gate_vision`, `fuzzy`, `state_machine` (18 state),
@@ -90,7 +93,7 @@ Modul: `nav_math`, `gate_vision`, `fuzzy`, `state_machine` (18 state),
 | Dashboard web (SSE+MJPEG) | ✅ | ✅ | buka `http://<ip>:8080` |
 | Telemetri Pixhawk | ✅ `/dev/ttyACM*` | ✅ `COM3–9` | deteksi otomatis |
 | Kamera | ✅ UID by-id | ✅ index angka | negosiasi resolusi otomatis |
-| Library C (`aterkia`) | ✅ `make -C core linux` | ✅ `make -C core windows` | Windows butuh MinGW; tanpa itu gagal eksplisit |
+| Library C (`aterkia`) | ✅ `make -C core linux` | ✅ DLL di-repo | Windows: `core/aterkia_core.dll` self-contained sudah di-commit; rebuild opsional (MinGW) |
 | Gamepad USB | ✅ `/dev/input/js*` | ⛔ stub | Windows: RC Pixhawk / tombol GUI |
 | Cross-check C↔Python | ✅ | ✅ | tanpa `gcc` otomatis skip |
 

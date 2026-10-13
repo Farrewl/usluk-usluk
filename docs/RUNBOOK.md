@@ -41,7 +41,9 @@ make -C core linux                  # -> core/libaterkia.so
 ```
 
 Tanpa library C, `aterkia_core.C_AVAILABLE=False` dan navigator gagal
-eksplisit (bukan angka palsu). Di Windows butuh MinGW-w64.
+eksplisit (bukan angka palsu). Di Windows DLL `core/aterkia_core.dll`
+sudah ada di repo (self-contained — tak butuh MinGW untuk run); rebuild
+HANYA kalau ada perubahan C: `mingw32-make -C core windows`.
 
 ### Model YOLO (ikut di repo)
 

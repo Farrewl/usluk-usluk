@@ -31,11 +31,11 @@ import threading
 import time
 
 try:
-    from .detection_validation import validate_buoy, draw_validated_boxes
+    from .detection_validation import validate_buoy, draw_detections_raw
     VALIDATION_AVAILABLE = True
 except Exception:
     validate_buoy = None
-    draw_validated_boxes = None
+    draw_detections_raw = None
     VALIDATION_AVAILABLE = False
 
 
@@ -252,8 +252,8 @@ class YoloWorker:
                     detected = len(raw_boxes) > 0
                 try:
                     if VALIDATION_AVAILABLE:
-                        annotated = draw_validated_boxes(
-                            frame, keep, results[0].names)
+                        annotated = draw_detections_raw(
+                            frame, raw_boxes, results[0].names)
                     else:
                         annotated = results[0].plot()
                 except Exception:

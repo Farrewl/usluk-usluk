@@ -34,6 +34,7 @@ CAM_RECONNECT_INTERVAL_S = 2.0
 CAM_FAIL_THRESHOLD = 10
 
 
+_FAST_SCAN_TRIED = set()
 _OPENCV_LOG_LEVEL_SAVED = None
 
 
@@ -476,17 +477,32 @@ def _open_fast_primary(index, target_fps):
                 c.set(cv2.CAP_PROP_FPS, float(target_fps))
         except Exception:
             pass
+        ok_read = False
         for _ in range(3):
             try:
                 if c.read()[0]:
+                    ok_read = True
                     break
             except Exception:
                 break
-        cap = c
-        break
+        if ok_read:
+            cap = c
+            break
+        try:
+            c.release()
+        except Exception:
+            pass
     if cap is not None:
         print(f"[CAM] Fast-start index={index}: {w}x{h} "
               f"(mode {'cache' if cache else 'default'}).")
+        _restore_opencv_logs()
+        return cap
+    # Fast-start gagal di index terkonfigurasi — coba cari kamera lain
+    # (scan sekali per proses per index, supaya tidak berulang tiap
+    # reconnect). Tanpa ini: "backend gagal membuka kamera" berulang.
+    if index not in _FAST_SCAN_TRIED:
+        _FAST_SCAN_TRIED.add(index)
+        cap = find_working_camera(preferred=index)
     _restore_opencv_logs()
     return cap
 

@@ -162,7 +162,17 @@ class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Aterkia ASV — Dashboard")
-        self.setGeometry(100, 100, 1500, 880)
+        app = QApplication.instance()
+        scr = app.primaryScreen().availableGeometry() if app else None
+        if scr is not None and scr.width() > 0:
+            win_w = min(1500, int(scr.width() * 0.96))
+            win_h = min(880, int(scr.height() * 0.94))
+            x = max(4, (scr.width() - win_w) // 2)
+            y = max(4, (scr.height() - win_h) // 2)
+            self.setGeometry(x, y, win_w, win_h)
+        else:
+            self.setGeometry(100, 100, 1500, 880)
+        self.setMinimumSize(1150, 660)
         self.current_lat = 0.0
         self.current_lon = 0.0
 
@@ -184,6 +194,7 @@ class MainWindow(QMainWindow):
         main_split.addWidget(center)
         main_split.addWidget(right)
         main_split.setSizes([260, 830, 410])
+        center.setMinimumWidth(480)
         self.setCentralWidget(main_split)
 
 

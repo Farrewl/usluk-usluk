@@ -1003,6 +1003,8 @@ class VisionNavigator:
             self._emit(data_signal, frame, sec, cam_st, "WAITING_GPS",
                        0.0, 0.0, 0.0, "WAITING_GPS", "AUTO",
                        {"active": False}, {"active": False}, "", {"active": False})
+            if frame is not None and not cam_st.startswith("NO"):
+                self._request_detections(frame)
             deadline = pace_to_fps(deadline)
             time.sleep(0.02)
 

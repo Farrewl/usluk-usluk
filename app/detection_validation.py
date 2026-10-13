@@ -271,3 +271,27 @@ def draw_validated_boxes(frame, kept, names):
         cv2.putText(annotated, label, (x1, max(15, y1 - 6)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, bgr, 1, cv2.LINE_AA)
     return annotated
+
+
+def draw_detections_raw(frame, boxes, names):
+    """Gambar SEMUA kotak deteksi YOLO + label confidence (mentah).
+
+    `boxes` = list (cls, conf, xyxy) apa adanya dari model, TANPA filter
+    validasi. Dipakai untuk tampilan GUI/web agar operator selalu melihat
+    apa yang dideteksi model berikut skor yakinnya — keputusan navigasi
+    tetap pakai jalur validasi (validate_buoy/_gate_keep) yang terpisah.
+    """
+    annotated = frame.copy()
+    for cls, conf, xyxy in boxes:
+        x1, y1, x2, y2 = [int(v) for v in xyxy]
+        if cls == 0:
+            bgr = (0, 255, 0)
+        elif cls == 1:
+            bgr = (0, 0, 255)
+        else:
+            bgr = (255, 255, 0)
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), bgr, 2)
+        label = f"{names.get(cls, str(cls))} {conf:.2f}"
+        cv2.putText(annotated, label, (x1, max(15, y1 - 6)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, bgr, 1, cv2.LINE_AA)
+    return annotated

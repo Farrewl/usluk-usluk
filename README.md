@@ -39,6 +39,15 @@ Sudah pernah setup? Langsung `./scripts/run_gui.sh`. Setup idempoten:
 `.venv` dan library yang sudah ada **dipakai ulang, tak ditimpa**; install
 dilewati bila paket inti sudah bisa di-import.
 
+> **Catatan: JANGAN `source .venv/bin/activate`, pakai script wrapper.**
+> Script aktivasi python `venv` menyimpan **path absolut** dan rusak bila
+> repo **dipindah/di-rename**, apalagi kalau pathnya mengandung **spasi**
+> (mis. `asv usluk-usluk`) — `source` diam-diam gagal, `python` kembali ke
+> sistem. Solusi: selalu jalankan lewat `./scripts/run_gui.sh`,
+> `scripts\run.bat`, atau langsung `./.venv/bin/python3 -O main.py` —
+> ketiganya kebal path & shell. Python versi venv sendiri tetap bisa dipakai
+> walau aktivasi rusak, karena `bin/python3` relatif terhadap `pyvenv.cfg`.
+
 Lintasan & identitas tim diatur di `config/site.json` (+ `config/trackA.json`,
 `config/trackB.json`) — bisa juga ganti dari dropdown GUI / env
 `ASV_TRACK=A|B`. Model YOLO sudah ada di `weights/` (tak perlu unduh).
@@ -73,9 +82,15 @@ Cari IP mini-PC: tercetak di GUI (label "Web: ...") atau `ip addr`.
   penuh tetap bisa dipicu manual via tombol **Scan** (tab Misi). Matikan:
   `ASV_CAM_FAST=0`.
 - **Deteksi kontinu ON default** — model GATE ikut dijalankan saat pra-misi
-  (WAITING_GPS) dan frame ber-kotak deteksi tampil di GUI **dan** web MJPEG.
-  Matikan: `ASV_DETECT=0`. Model YOLO dimuat di thread (lazy); kotak muncul
-  begitu model siap (~10 s pertama).
+  (WAITING_GPS dan waypoint-nav) dan frame ber-kotak deteksi tampil di GUI
+  **dan** web MJPEG. Matikan: `ASV_DETECT=0`. Model YOLO dimuat di thread
+  (lazy); kotak muncul begitu model siap (~10 s pertama).
+- **Kotak = semua deteksi mentah + confidence** (label `kls 0.87`) — bukan
+  hanya yang lulus validasi warna. Validasi HSV tetap dipakai untuk keputusan
+  navigasi, tampilan selalu jujur apa adanya.
+- **Kamera auto-cari** — kalau index yang dikonfigurasi gagal dibuka/restart,
+  app otomatis scan index lain sekali dan memakainya (log `pakai index N`).
+  Tidak perlu edit config di lapangan.
 
 ---
 

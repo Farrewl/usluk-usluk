@@ -34,7 +34,11 @@
 #  - Verifikasi akhir pakai scripts/verify_env.py (BUKAN here-string)
 #    agar kompatibel dengan Windows PowerShell 5.1.
 # ============================================================
-$ErrorActionPreference = "Stop"
+# JANGAN pakai "Stop": di PS 5.1 stderr program native (python/pip)
+# direkam jadi ErrorRecord dan EAP=Stop menjadikannya TERMINATING,
+# walau sudah diarahkan 2>$null -> setup mati di tengah. Semua langkah
+# native dicek eksplisit via $LASTEXITCODE (Invoke-Step + guard).
+$ErrorActionPreference = "Continue"
 Set-Location (Join-Path $PSScriptRoot "..")
 
 # Interpreter: hormati env PYTHON, default "python".
@@ -75,6 +79,10 @@ if (Test-Path "core\aterkia_core.dll") {
     if ($mingw) {
         Write-Host "[core] Build inti C (MinGW)..."
         & mingw32-make -C core windows
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[!] Build C gagal (mingw32-make rc=$LASTEXITCODE)."
+            exit $LASTEXITCODE
+        }
     } else {
         Write-Host "[!] MinGW (mingw32-make) tak ada - core\aterkia_core.dll TIDAK dibangun."
         Write-Host "    Program jalan tapi mesin-state C mati (C_AVAILABLE=False)."

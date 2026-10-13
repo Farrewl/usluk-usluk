@@ -38,7 +38,12 @@
 
 # --- GUI dashboard (slim_map murni Qt; TANPA webengine/folium) ---
 PyQt5==5.15.11
-PyQt5-Qt5==5.15.19
+# PyQt5-Qt5 (runtime Qt5): pin KHUSUS Linux. Sejak 5.15.11 paket ini
+# tidak lagi dirilis dgn wheel Windows (hanya macos/manylinux); wheel
+# PyQt5 di Windows sudah self-contained (Qt dibungkus dlm wheel) dan
+# dependency-nya >=5.15.2,<5.16 -> pip otomatis memakai 5.15.2 (satu-
+# satunya versi ber-wheel win_amd64).
+PyQt5-Qt5==5.15.19; sys_platform == "linux"
 PyQt5_sip==12.19.0
 
 # --- Komputer vision (YOLO .pt tetap Python; headless saja) ---

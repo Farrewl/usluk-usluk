@@ -72,7 +72,8 @@
     $('batt').style.color = batt == null ? '' :
       batt >= 50 ? 'var(--ok)' : batt >= 20 ? 'var(--warn)' : 'var(--bad)';
     $('state').textContent = d.state || '--';
-    $('link').textContent = d.mavlink_ok ? 'LINK' : 'NO-LINK';
+    $('link').textContent = d.mavlink_ok
+      ? 'LINK' : ('NO-LINK' + (d.mav_reason || ''));
     $('link').style.color = d.mavlink_ok ? 'var(--ok)' : 'var(--bad)';
 
     $('sogKn').textContent = Number(d.sog_kn || 0).toFixed(2) + ' kn';

@@ -668,11 +668,12 @@ class MainWindow(QMainWindow):
             if "->" not in self.cam_status_label.text():
                 self.cam_status_label.setText(f"Kamera: {cam_st} | {src}")
             mav_ok = bool(data.get('mavlink_ok', False))
-            port = getattr(self.nav_thread.config, "SERIAL_PORT", "?")
-            if "reconnect" not in self.mav_status_label.text():
-                self.mav_status_label.setText(
-                    f"Pixhawk: {port} "
-                    f"({'LINK' if mav_ok else 'NO-LINK'} | {src})")
+            port = (data.get('mav_port')
+                    or getattr(self.nav_thread.config, "SERIAL_PORT", "?"))
+            reason = str(data.get('mav_reason', '') or '')
+            status = "LINK" if mav_ok else f"NO-LINK{reason}"
+            self.mav_status_label.setText(
+                f"Pixhawk: {port} ({status} | {src})")
         except Exception:
             pass
 
@@ -803,8 +804,9 @@ class MainWindow(QMainWindow):
         mav_ok = bool(data.get('mavlink_ok', False))
         gps_fix = bool(data.get('gps_fix', False))
         gcs_on = bool(data.get('gcs_forward', False))
+        reason = str(data.get('mav_reason', '') or '')
         self.misi_link.setText(
-            f"Autopilot: {'NYALA' if mav_ok else 'MATI'} | "
+            f"Autopilot: {'NYALA' if mav_ok else 'MATI' + reason} | "
             f"GPS: {'FIX' if gps_fix else 'MENCARI'} | "
             f"QGC: {'FWD' if gcs_on else '--'}")
         self._set_chip(self.chip_link, "link",

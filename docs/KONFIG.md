@@ -40,7 +40,7 @@ Nilai default di tabel = default kode saat `tuning_params.json` kosong.
 
 | Parameter | Default | Arti |
 |---|---|---|
-| `SERIAL_PORT` | `COM8` | Port Pixhawk (Windows). Pi: `/dev/ttyACM0` |
+| `SERIAL_PORT` | `COM8` | Port Pixhawk. Kosongkan/`COM8` → auto-deteksi. Linux: pilih otomatis dari pyserial (mis. `/dev/ttyACM1`), index ACM tak diandalkan |
 | `BAUD_RATE` | `57600` | Baud MAVLink |
 | `OFFBOARD_STREAM_RATE_HZ` | `30` | Rate stream perintah offboard |
 | `MAV_CONNECT_TIMEOUT_S` | `2.0` | Batas sekali coba connect (loop tidak freeze) |

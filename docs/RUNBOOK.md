@@ -158,6 +158,8 @@ QT_QPA_PLATFORM=offscreen timeout 10 ./.venv/bin/python3 main.py
 | `C_AVAILABLE=False` | Library C belum/ gagal di-build → `make -C core linux` |
 | Chip kamera "BELUM ADA" | Kamera tak terdeteksi / index salah; coba Scan kamera di GUI |
 | Chip telemetri NO-LINK | Port salah, Pixhawk belum siap, atau kabel; cek `SERIAL_PORT` |
+| Telemetri `NO-LINK BUSY(QGC?)` | Port serial dipegang program lain (QGC/mavlink-router). `lsof /dev/ttyACM*` → tutup QGC, app retry ≤5 s. Atau pakai `GCS_FORWARD=1` agar QGC lewat UDP. |
+| Telemetri `NO-LINK NO-PORT` | Pixhawk tak terdeteksi OS. Cek `lsusb`/Device Manager; Linux: user harus di grup `uucp`/`dialout` |
 | Kapal tak mulai bergerak | Tunggu GPS 3D fix + attitude (`WAITING_GPS`); cek baterai nyata |
 | Deteksi buoy palsu (wajah) | Naikkan `BUOY_CONF_THRESHOLD` / `DETECTION_DEBUG=True` |
 | Deteksi tak konsisten | Naikkan `DETECTION_CONFIRM_DURATION_S`, turunkan `YOLO_INFERENCE_SIZE` |

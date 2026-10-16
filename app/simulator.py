@@ -234,6 +234,7 @@ class GroundSimNavigator:
         self._telem_use_real = False
         self._mav_port_logged = None
         self._mav_retry_mono = 0.0
+        self._mav_reason = ""
 
 
         self.manual_link = ManualLink(self.config)
@@ -274,6 +275,13 @@ class GroundSimNavigator:
         if now - getattr(self, "_mav_retry_mono", 0.0) < interval:
             return False
         self._mav_retry_mono = now
+        # Tutup koneksi lama sebelum ganti (cegah kebocoran handle serial).
+        if getattr(self, "mav", None) is not None:
+            try:
+                self.mav.close()
+            except Exception:
+                pass
+            self.mav = None
         try:
             self.mav = mavlink_mod.MavlinkTelemetry(
                 port=self.config.SERIAL_PORT, baud=self.config.BAUD_RATE)
@@ -307,6 +315,12 @@ class GroundSimNavigator:
                 self._mav_port_logged = self.mav.port
                 print(f"[MAV] Telemetri AKTIF via {self.mav.port} "
                       "(histeresis: butuh fix stabil dulu).")
+        elif getattr(self.mav, "busy", False):
+            self._mav_reason = " BUSY(QGC?)"
+        elif self.mav.port is None:
+            self._mav_reason = " NO-PORT"
+        else:
+            self._mav_reason = " NO-HB"
         return ok
 
     def _telem_decide_source(self, mav_has_data):
@@ -838,6 +852,9 @@ class GroundSimNavigator:
                                 else self.current_groundspeed),
                 "mavlink_ok": bool(getattr(self.mav, "connected", False))
                 if self.mav else False,
+                "mav_port": (getattr(self.mav, "port", None)
+                             if self.mav else None),
+                "mav_reason": getattr(self, "_mav_reason", ""),
                 "telem_source": "REAL" if use_real else "MOCK",
                 "gps_fix": (bool(self.mav.lat is not None)
                             if (use_real and self.mav is not None) else True),

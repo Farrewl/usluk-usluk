@@ -7,10 +7,14 @@ YOLO + model .pt). Dipakai GroundSimNavigator: kalau Pixhawk terhubung,
 roll/pitch/yaw mengikuti IMU sungguhan; kalau tidak, fallback mock.
 
 Koneksi (skill asv-mavlink):
-  - Port otomatis dideteksi: /dev/ttyACM* (USB Pixhawk) -> /dev/ttyUSB*
-    (FTDI) -> COM* (Windows). Pixhawk 6C lewat USB = /dev/ttyACM0 (MAVLink),
-    /dev/ttyACM1 = console debug (JANGAN dipakai).
+  - Port dipilih dari pyserial (hanya port yang BENAR-BENAR ada). Urutan:
+    preferred -> port ber-deskripsi autopilot (Auterion/PX4/Pixhawk/
+    ArduPilot) -> /dev/ttyACM* -> /dev/ttyUSB* -> COM* (Windows).
+    Index ACM TIDAK bisa diandalkan: Pixhawk 6C di mesin uji bisa muncul
+    sebagai /dev/ttyACM1, bukan ACM0 — karena itu deskripsi USB dipakai.
   - Baud 57600 standar; lewat USB baud diabaikan driver CDC.
+  - Port serial USB hanya bisa dipegang SATU proses. Bila QGroundControl /
+    mavlink-router masih membukanya, connect() melaporkan "SIBUK".
   - Setelah heartbeat, kita minta stream attitude/posisi 10 Hz via
     REQUEST_DATA_STREAM + MAV_CMD_SET_MESSAGE_INTERVAL (lebih andal di PX4).
 """
@@ -27,6 +31,13 @@ except ImportError:
     mavutil = None
     MAVLINK_AVAILABLE = False
 
+try:
+    from serial.tools import list_ports as _list_ports
+    _LIST_PORTS_OK = True
+except ImportError:
+    _list_ports = None
+    _LIST_PORTS_OK = False
+
 
 
 
@@ -36,49 +47,89 @@ except ImportError:
 GCS_DEFAULT_IP = "127.0.0.1"
 GCS_DEFAULT_PORT = 14550
 
+# Deskripsi/hwid USB yang menandakan autopilot (dipakai mengurutkan port).
+_AUTOPILOT_HINTS = (
+    "px4", "pixhawk", "auterion", "ardupilot", "3d robotics",
+    "holybro", "mro", "cubepilot", "cube",
+)
+# Port onboard/legacy yang tak relevan untuk Pixhawk (jangan dituju).
+_SKIP_PREFIXES = ("/dev/ttyS", "/dev/ttyAMA", "/dev/pts")
+
+
+def _enumerate():
+    """[(device, description)] — port serial USB nyata di mesin ini.
+
+    Pakai pyserial (akurat di Windows: cuma COM yang benar-benar ada,
+    bukan COM3..9 tebakan). Saring port onboard (ttyS/ttAMA) yang tak
+    pernah jadi Pixhawk. Bila pyserial tak ada, fallback ke glob
+    /dev/ttyACM* + /dev/ttyUSB*.
+    """
+    out = []
+    seen = set()
+    if _LIST_PORTS_OK:
+        for p in _list_ports.comports():
+            dev = p.device
+            if dev.startswith(_SKIP_PREFIXES) or dev in seen:
+                continue
+            seen.add(dev)
+            desc = " ".join(x for x in (p.description, p.manufacturer,
+                                        p.hwid) if x)
+            out.append((dev, desc))
+        if out:
+            return out
+    for pat in ("/dev/ttyACM*", "/dev/ttyUSB*"):
+        for dev in sorted(glob.glob(pat)):
+            if dev not in seen:
+                seen.add(dev)
+                out.append((dev, ""))
+    return out
+
+
+def _autopilot_score(desc):
+    """1 bila deskripsi/hwid mengandung nama autopilot, else 0."""
+    d = (desc or "").lower()
+    return 1 if any(h in d for h in _AUTOPILOT_HINTS) else 0
+
 
 def detect_serial_ports(preferred=None):
-    """Daftar SEMUA port serial kandidat (untuk dropdown pilihan Pixhawk).
+    """Daftar port serial kandidat (untuk dropdown), terurut prioritas.
 
-    Urutan: `preferred` dulu (bila ada) -> /dev/ttyACM* -> /dev/ttyUSB* ->
-    COM3..9 (Windows). Beda dengan detect_serial_port() yang hanya
-    mengembalikan 1 port (dipakai bila dropdown belum dipilih).
-    Return list[str] (bisa kosong bila tak ada hardware).
+    Prioritas: `preferred` (bila ada) -> port ber-deskripsi autopilot
+    (Auterion/PX4/Pixhawk/ArduPilot) -> /dev/ttyACM* -> /dev/ttyUSB* ->
+    COM* lain. Diambil dari pyserial sehingga Windows hanya menawarkan
+    COM yang benar-benar terpasang. Return list[str] (bisa kosong).
     """
+    entries = _enumerate()
+    devices = [d for d, _ in entries]
+    score = {d: _autopilot_score(dc) for d, dc in entries}
+
+    def _key(dev):
+        is_acm = 0 if ("ttyACM" in dev or dev.upper().startswith("COM")) else 1
+        return (-score.get(dev, 0), is_acm, dev)
+
     ports = []
-    if preferred and os.path.exists(preferred):
+    if preferred and (os.path.exists(preferred) or preferred in devices):
         ports.append(preferred)
-    for pat in ("/dev/ttyACM*", "/dev/ttyUSB*"):
-        for p in sorted(glob.glob(pat)):
-            if p not in ports:
-                ports.append(p)
-    if os.name == "nt":
-        if preferred and preferred not in ports:
-            ports.append(preferred)
-        for n in range(3, 10):
-            com = f"COM{n}"
-            if com not in ports:
-                ports.append(com)
+    for dev in sorted(devices, key=_key):
+        if dev not in ports:
+            ports.append(dev)
+    if not ports and os.name == "nt" and preferred:
+        ports.append(preferred)
     return ports
 
 
 def detect_serial_port(preferred=None):
-    """Pilih port serial Pixhawk.
+    """Pilih SATU port serial Pixhawk yang benar-benar ada.
 
-    Prioritas: `preferred` (bila ada di sistem) -> /dev/ttyACM* (USB CDC,
-    urut naik — Pixhawk biasanya ACM0) -> /dev/ttyUSB* (FTDI) -> COM* (Win).
-    Kalau tidak ada port yang eksis: Windows mengembalikan `preferred`
-    (driver membukanya saat koneksi), Linux mengembalikan None.
+    Urutan: `preferred` (bila ada di sistem) -> port ber-deskripsi autopilot
+    -> /dev/ttyACM* -> /dev/ttyUSB* -> COM* (Windows). Bila tidak ada yang
+    eksis: Windows mengembalikan `preferred` (driver membukanya saat koneksi),
+    Linux mengembalikan None.
     """
-    candidates = []
-    if preferred:
-        candidates.append(preferred)
-    candidates += sorted(glob.glob("/dev/ttyACM*"))
-    candidates += sorted(glob.glob("/dev/ttyUSB*"))
-    candidates += [f"COM{n}" for n in range(3, 10)]
-    for port in candidates:
-        if os.path.exists(port):
-            return port
+    devices = {d for d, _ in _enumerate()}
+    for dev in detect_serial_ports(preferred):
+        if dev in devices or os.path.exists(dev):
+            return dev
     if os.name == "nt" and preferred:
         return preferred
     return None
@@ -101,6 +152,8 @@ class MavlinkTelemetry:
         self.master = None
         self.connected = False
         self.last_heartbeat_time = 0.0
+        self.last_error = ""
+        self.busy = False
 
 
 
@@ -121,17 +174,29 @@ class MavlinkTelemetry:
 
     def connect(self, timeout_s=8.0):
         """Buka serial + tunggu heartbeat. True bila Pixhawk merespons."""
+        self.last_error = ""
+        self.busy = False
         if not MAVLINK_AVAILABLE:
+            self.last_error = "no-pymavlink"
             print("[MAV] pymavlink tidak terpasang — telemetri dimatikan.")
             return False
         if self.port is None:
+            self.last_error = "no-port"
             print("[MAV] Tidak ada port serial ditemukan.")
             return False
 
         try:
             self.master = mavutil.mavlink_connection(self.port, baud=self.baud)
         except Exception as exc:
-            print(f"[MAV] Gagal membuka {self.port}: {exc}")
+            self.last_error = str(exc)
+            errno = getattr(exc, "errno", None)
+            if errno == 16 or "busy" in str(exc).lower():
+                self.busy = True
+                print(f"[MAV] Port {self.port} SIBUK — kemungkinan "
+                      "QGroundControl / mavlink-router masih memakainya. "
+                      "Tutup QGC dulu; app akan retry otomatis.")
+            else:
+                print(f"[MAV] Gagal membuka {self.port}: {exc}")
             return False
 
         deadline = time.time() + timeout_s
@@ -148,6 +213,7 @@ class MavlinkTelemetry:
                       f"via {self.port} — attitude live.")
                 return True
             print(f"[MAV] Menunggu heartbeat {self.port} ...")
+        self.last_error = "no-heartbeat"
         print(f"[MAV] Tidak ada heartbeat dari {self.port} "
               f"dalam {timeout_s:.0f}s — pakai mock attitude.")
         return False

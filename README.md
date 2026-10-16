@@ -75,6 +75,14 @@ Cari IP mini-PC: tercetak di GUI (label "Web: ...") atau `ip addr`.
   ```
   lalu di QGC laptop: *Add Link → UDP → Listen port 14550*.
 
+> **Penting: port serial USB cuma boleh dipegang SATU program.** Kalau
+> QGroundControl (atau mavlink-router) sudah membuka `/dev/ttyACM*` / `COM*`,
+> app ASV tak bisa ikut konek — status jadi
+> `Pixhawk: /dev/ttyACM1 (NO-LINK BUSY(QGC?) | ...)`. **Tutup QGC dulu**
+> (app akan retry otomatis dalam ≤5 s), lalu pakai pola *GCS forward* di atas
+> agar QGC tetap dapat telemetri lewat UDP. Cek pemegang port:
+> `lsof /dev/ttyACM*` (Linux) — kalau muncul `QGroundControl`, itulah biangnya.
+
 ### Percepat startup & deteksi
 
 - **Fast-start kamera ON default** — kamera utama dibuka sekali (mode cache /

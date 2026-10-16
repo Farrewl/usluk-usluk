@@ -106,6 +106,8 @@ class VisionNavigator:
         self.mav = None
         self._mav_retry_mono = 0.0
         self._mav_port_logged = None
+        self._mav_port = None
+        self._mav_reason = ""
         self.current_lat = None
         self.current_lon = None
         self.current_yaw_rad = None
@@ -257,17 +259,27 @@ class VisionNavigator:
         if self.mav is not None and self.mav.connected:
             return True
         if mavlink_mod is None or not mavlink_mod.MAVLINK_AVAILABLE:
+            self._mav_reason = " NO-MAVLINK"
             return False
         now = time.monotonic()
         interval = float(getattr(self.config, "MAV_RETRY_INTERVAL_S", 5.0))
         if now - self._mav_retry_mono < interval:
             return False
         self._mav_retry_mono = now
+        # Tutup koneksi lama sebelum ganti (cegah kebocoran handle serial).
+        if self.mav is not None:
+            try:
+                self.mav.close()
+            except Exception:
+                pass
+            self.mav = None
         try:
             self.mav = mavlink_mod.MavlinkTelemetry(
                 port=self.config.SERIAL_PORT, baud=self.config.BAUD_RATE)
         except Exception:
+            self._mav_reason = " ERR"
             return False
+        self._mav_port = self.mav.port
         try:
             ok = self.mav.connect(
                 timeout_s=float(getattr(self.config,
@@ -275,6 +287,7 @@ class VisionNavigator:
         except Exception:
             ok = False
         if ok:
+            self._mav_reason = ""
             try:
                 self.manual_link.attach_mav(self.mav.master)
                 self.qgc_link.attach_mav(self.mav.master)
@@ -292,6 +305,12 @@ class VisionNavigator:
             if self._mav_port_logged != self.mav.port:
                 self._mav_port_logged = self.mav.port
                 log.info("Telemetri AKTIF via %s.", self.mav.port)
+        elif getattr(self.mav, "busy", False):
+            self._mav_reason = " BUSY(QGC?)"
+        elif self.mav.port is None:
+            self._mav_reason = " NO-PORT"
+        else:
+            self._mav_reason = " NO-HB"
         return ok
 
     def _poll_telemetry(self):
@@ -1539,6 +1558,8 @@ class VisionNavigator:
             "dist_to_wp_m": dist_to_wp,
             "groundspeed": groundspeed,
             "mavlink_ok": bool(getattr(mav, "connected", False)) if mav else False,
+            "mav_port": getattr(self, "_mav_port", None),
+            "mav_reason": getattr(self, "_mav_reason", ""),
             "telem_source": "REAL",
             "gps_fix": bool(self.current_lat is not None),
             "frame": frame,
@@ -1677,6 +1698,9 @@ class NavigatorThread(QThread):
         if hasattr(self.config, key):
             setattr(self.config, key, value)
             log.info("[TUNING] %s = %s", key, value)
+            if key == "SERIAL_PORT":
+                # Paksa percobaan sambung ulang SEGERA (abaikan interval retry).
+                self.navigator._mav_retry_mono = 0.0
         else:
             log.error("Config key '%s' tidak ada!", key)
 

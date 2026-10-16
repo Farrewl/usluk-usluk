@@ -16,7 +16,7 @@
 | `manual_link.py` | Kendali manual lokal (RC/gamepad) → (surge, yaw) | navigator, simulator |
 | `qgc_offboard.py` | Kendali manual dari QGC (Xbox → `MANUAL_CONTROL`) | navigator, simulator |
 | `detection_validation.py` | `validate_buoy()` filter pasca-YOLO + debug | navigator, simulator |
-| `pixhawk_check.py` | Cek parameter failsafe Pixhawk saat startup | navigator |
+| `pixhawk_check.py` | Cek parameter failsafe Pixhawk saat startup (spec per firmware: PX4/ArduPilot) | navigator |
 | `settings_dialog.py` | Panel tuning GUI | `main.py` |
 | `slim_map.py` | Widget peta ringan (tile) | `main.py` |
 | `gui_theme.py` | Tema/style GUI | `main.py` |
@@ -29,10 +29,10 @@
 
 | File | Fungsi |
 |---|---|
-| `server.py` | HTTP server stdlib: `/events` (SSE), `/video` (MJPEG), `/captures`, `/config` |
+| `server.py` | HTTP server stdlib: `/events` (SSE), `/video` (MJPEG), `/frame.jpg` (JPEG polling), `/captures`, `/config` |
 | `mock.py` | Feeder data palsu saat `ASV_MOCK=1` (demo tanpa kapal) |
-| `static/index.html` | Layout dashboard (header, position-log, grid, foto) |
-| `static/dashboard.js` | Klien SSE + isi DOM + popup geo-tag |
+| `static/index.html` | Layout dashboard (header, attitude/speed, grid, foto) |
+| `static/dashboard.js` | Klien SSE + video polling + isi DOM + popup geo-tag |
 | `static/grid.js` | Peta grid A1–E5 + trajectory + kompas (canvas) |
 | `static/geo.js` | Format koordinat/satuan di sisi browser |
 

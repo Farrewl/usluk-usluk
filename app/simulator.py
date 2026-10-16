@@ -473,13 +473,9 @@ class GroundSimNavigator:
         self.pixhawk_check ('OK' / daftar pelanggaran) + dicetak.
         Tidak memblokir loop utama (thread daemon).
         """
-        from .pixhawk_check import load_spec, check_params, summarize
-        try:
-            spec = load_spec()
-        except Exception as e:
-            self.pixhawk_check = f"spec gagal dibaca ({e})"
-            print(f"[PIXHAWK-CHECK] {self.pixhawk_check}")
-            return
+        from .pixhawk_check import (load_spec, check_params, summarize,
+                                    detect_autopilot, spec_path_for,
+                                    firmware_name)
         deadline = time.time() + 10.0
         while time.time() < deadline:
             mav = getattr(self, "mav", None)
@@ -487,13 +483,21 @@ class GroundSimNavigator:
                       or (mav.master if mav is not None else None))
             if master is not None and mav is not None \
                     and getattr(mav, "connected", False):
+                ap = detect_autopilot(master)
+                fw = firmware_name(ap)
+                try:
+                    spec = load_spec(spec_path_for(ap))
+                except Exception as e:
+                    self.pixhawk_check = f"spec gagal dibaca ({e})"
+                    print(f"[PIXHAWK-CHECK] {self.pixhawk_check}")
+                    return
                 try:
                     results = check_params(master, spec)
                 except Exception as e:
                     self.pixhawk_check = f"gagal ({e})"
                     print(f"[PIXHAWK-CHECK] {self.pixhawk_check}")
                     return
-                self.pixhawk_check = summarize(results)
+                self.pixhawk_check = f"[{fw}] {summarize(results)}"
                 print(f"[PIXHAWK-CHECK] {self.pixhawk_check}")
                 for r in results:
                     if r["status"] != "ok":

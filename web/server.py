@@ -6,6 +6,7 @@ Nol dependency baru: pakai `http.server` + `cv2` (sudah ada untuk kamera).
 - GET /config          -> identitas tim, lintasan, geometri grid/waypoint
 - GET /events          -> Server-Sent Events, snapshot telemetri @ SSE_HZ
 - GET /video           -> MJPEG dari frame NAV terakhir @ VIDEO_HZ
+- GET /frame.jpg       -> satu frame JPEG terbaru (dipakai klien polling)
 - GET /captures        -> daftar foto misi + geo-tag (sidecar JSON)
 - GET /captures/<dir>/<name> -> file gambar capture
 
@@ -121,6 +122,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._stream_sse()
         elif path == "/video":
             self._stream_mjpeg()
+        elif path in ("/frame.jpg", "/frame.jpeg", "/snapshot.jpg"):
+            self._send_frame_jpeg()
         elif path == "/captures":
             self._send_json({"captures": list_captures()})
         elif path.startswith("/captures/"):
@@ -151,6 +154,41 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:
             return
 
+    def _send_frame_jpeg(self):
+        """Kirim SATU frame terbaru sebagai JPEG (untuk polling klien web).
+
+        Lebih tahan dibanding MJPEG pada WiFi goyah: klien meminta ulang
+        per frame, jadi koneksi yang putus otomatis pulih tanpa layar beku.
+        """
+        img, _seq = state_bus.get_frame()
+        if img is None:
+            self._send_json({"error": "no frame"}, 503)
+            return
+        width = int(getattr(self.server, "video_width", 640))
+        try:
+            if width and img.shape[1] > width:
+                scale = width / float(img.shape[1])
+                img = cv2.resize(img, (width, int(img.shape[0] * scale)),
+                                 interpolation=cv2.INTER_AREA)
+            ok, buf = cv2.imencode(".jpg", img,
+                                   [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+        except Exception:
+            ok = False
+        if not ok:
+            self._send_json({"error": "encode"}, 500)
+            return
+        body = buf.tobytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except Exception:
+            pass
+
     def _stream_mjpeg(self):
         hz = max(1.0, float(getattr(self.server, "video_hz", 10.0)))
         width = int(getattr(self.server, "video_width", 640))
@@ -158,6 +196,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type",
                          "multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         last_seq = -1

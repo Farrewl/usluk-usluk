@@ -165,4 +165,5 @@ QT_QPA_PLATFORM=offscreen timeout 10 ./.venv/bin/python3 main.py
 | Deteksi tak konsisten | Naikkan `DETECTION_CONFIRM_DURATION_S`, turunkan `YOLO_INFERENCE_SIZE` |
 | FPS kamera rendah | Cek `CAMERA_TARGET_FPS`; naikkan `SECONDARY_PREVIEW_INTERVAL` |
 | RTL palsu saat akselerasi | Naikkan `FAILSAFE_LOW_BATT_HOLD_S` |
-| Log `[PIXHAWK-CHECK] KRITIS` | Aktifkan param failsafe yang disarankan di QGC |
+| Log `[PIXHAWK-CHECK] KRITIS` | Aktifkan param failsafe yang disarankan di QGC (nama param beda per firmware: PX4 `NAV_DLL_ACT` dll, ArduPilot `FS_*`) |
+| Cek param tampil `TIDAK DIJAWAB` semua | Firmware vs spec tak cocok, atau port dipakai QGC. Lihat folder GUI `Pixhawk:`; tutup QGC lalu ulangi |

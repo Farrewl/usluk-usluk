@@ -216,6 +216,19 @@ Nilai default di tabel = default kode saat `tuning_params.json` kosong.
 
 ## Failsafe
 
+Pengecekan parameter failsafe **di Pixhawk** (`app/pixhawk_check.py`) memilih
+file spec sesuai firmware, dideteksi dari HEARTBEAT (`autopilot`):
+- PX4 (autopilot=12) → `config/pixhawk_required_px4.txt`
+  (`NAV_DLL_ACT`, `NAV_RCL_ACT`, `COM_LOW_BAT_ACT`, `BAT_LOW_THR`,
+  `BAT_CRIT_THR`, `GF_ACTION`).
+- ArduPilot (autopilot=3) → `config/pixhawk_required.txt`
+  (`FS_GCS_ENABLE`, `FS_THR_ENABLE`, `FS_CRASH_CHECK`, `ARMING_CHECK`, ...).
+
+Hasil cek tampil di GUI sebagai `[PX4] ...` / `[ArduPilot] ...`. HANYA
+MEMBACA — ubah lewat QGC bila melanggar.
+
+Failsafe **di sisi app** (independen dari firmware):
+
 | Parameter | Default | Arti |
 |---|---|---|
 | `FAILSAFE_ENABLED` | `True` | Aktifkan failsafe otomatis |

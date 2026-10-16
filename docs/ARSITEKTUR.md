@@ -51,7 +51,7 @@ lihat `docs/RUNBOOK.md`.
 | `app/manual_link.py` | Kendali manual lokal (RC/gamepad) → (surge, yaw) |
 | `app/qgc_offboard.py` | Kendali manual dari QGC (Xbox → MAVLink `MANUAL_CONTROL`) |
 | `app/detection_validation.py` | Filter pasca-YOLO: warna/bentuk buoy + debug |
-| `app/pixhawk_check.py` | Cek parameter failsafe Pixhawk saat startup |
+| `app/pixhawk_check.py` | Cek parameter failsafe Pixhawk saat startup (spec per firmware) |
 | `app/settings.py` | Semua parameter + path (satu sumber kebenaran) |
 | `app/settings_dialog.py` | Panel tuning GUI (tab) |
 | `app/slim_map.py` | Widget peta ringan (tile) |
@@ -237,6 +237,7 @@ QT_QPA_PLATFORM=offscreen python main.py
 
 `web/server.py` (stdlib `http.server`, tanpa dependency baru) mengekspos
 `/events` (SSE dari `app/state_bus.py`), `/video` (MJPEG frame NAV),
-`/captures` (foto + geo-tag), `/config` (identitas tim, lintasan, grid).
-Nyala otomatis saat GUI jalan; buka `http://<ip-laptop>:8080`. Mode demo
-tanpa kapal: `ASV_MOCK=1`.
+`/frame.jpg` (satu frame JPEG — dipakai klien polling, lebih tahan WiFi
+goyah daripada satu stream MJPEG panjang), `/captures` (foto + geo-tag),
+`/config` (identitas tim, lintasan, grid). Nyala otomatis saat GUI jalan;
+buka `http://<ip-laptop>:8080`. Mode demo tanpa kapal: `ASV_MOCK=1`.

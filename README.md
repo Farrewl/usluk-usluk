@@ -61,10 +61,35 @@ Tim pakai **1 mini-PC (compute)** + **laptop (operator)** lewat router/hotspot:
 | Peran | Mesin | Cara |
 |---|---|---|
 | **Compute** (kamera, Pixhawk, ESC, misi) | mini-PC Linux | `./scripts/setup_minimal.sh` sekali → `./scripts/run_gui.sh`. Auto-misi jalan; dashboard web nyala di `:8080`. |
-| **Monitor** (operator) | laptop apa pun | buka browser `http://<ip-mini-pc>:8080` — telemetri, video, log posisi, grid. Tanpa install apa pun. |
+| **Monitor** (operator) | laptop apa pun | buka browser `http://<ip-mini-pc>:8080` — telemetri, video, grid. Tanpa install apa pun. |
 | **Debug / tes** | laptop Windows/Linux | Windows: `setup_minimal.ps1` + `run.bat`; Linux: `setup_minimal.sh` + `run_gui.sh`. |
 
-Cari IP mini-PC: tercetak di GUI (label "Web: ...") atau `ip addr`.
+### Menyambungkan laptop operator ke mini-PC (WiFi)
+
+Mini-PC dan laptop **harus di jaringan WiFi yang SAMA** (satu SSID/hotspot).
+Tidak perlu kabel; laptop cuma butuh browser.
+
+1. **Cari IP mini-PC** (salah satu):
+   - label **"Web: http://\<ip\>:8080"** di GUI mini-PC (paling cepat), atau
+   - di terminal mini-PC: `hostname -I` / `ip addr show wlan0` → lihat `inet ...`.
+2. **Di laptop**: buka `http://<ip-mini-pc>:8080` (mis. `http://192.168.1.42:8080`).
+3. **Kalau tak bisa dibuka**:
+   - Pastikan SSID sama & tak ada "client isolation"/AP isolation di router.
+   - Cek dasar dari laptop: `ping <ip-mini-pc>` lalu `curl http://<ip>:8080/config`.
+   - Firewall mini-PC: `sudo ufw allow 8080/tcp` (atau matikan sementara).
+   - Pastikan `WEB_HOST` = `0.0.0.0` dan `WEB_ENABLED` = `true` di
+     `config/site.json`.
+4. **Tanpa router?** Mini-PC bisa jadi hotspot sendiri:
+   ```bash
+   nmcli device wifi hotspot ifname wlan0 ssid ASV-Aterkia password aterkia123
+   ```
+   Lalu laptop connect ke WiFi `ASV-Aterkia`, buka `http://10.42.0.1:8080`.
+5. **mDNS** (opsional, kalau `avahi-daemon` aktif): bisa juga
+   `http://<hostname-mini-pc>.local:8080` tanpa hafal IP.
+
+> Catatan: bila tak ada rute internet, label IP di GUI tetap benar karena
+> `_lan_ip()` punya fallback (hostname / `hostname -I`), bukan cuma 8.8.8.8.
+
 
 ### QGroundControl
 

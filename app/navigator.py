@@ -755,25 +755,29 @@ class VisionNavigator:
             return {"yaw_bias": 0.0, "memory_s": 0.0, "active": False}
 
     def _pixhawk_param_check_worker(self):
-        from .pixhawk_check import load_spec, check_params, summarize
-        try:
-            spec = load_spec()
-        except Exception as e:
-            self.pixhawk_check = f"spec gagal dibaca ({e})"
-            log.warning("[PIXHAWK-CHECK] %s", self.pixhawk_check)
-            return
+        from .pixhawk_check import (load_spec, check_params, summarize,
+                                    detect_autopilot, spec_path_for,
+                                    firmware_name)
         deadline = time.time() + 10.0
         while time.time() < deadline:
             mav = self.mav
             master = mav.master if mav is not None else None
             if master is not None and mav is not None and mav.connected:
+                ap = detect_autopilot(master)
+                fw = firmware_name(ap)
+                try:
+                    spec = load_spec(spec_path_for(ap))
+                except Exception as e:
+                    self.pixhawk_check = f"spec gagal dibaca ({e})"
+                    log.warning("[PIXHAWK-CHECK] %s", self.pixhawk_check)
+                    return
                 try:
                     results = check_params(master, spec)
                 except Exception as e:
                     self.pixhawk_check = f"gagal ({e})"
                     log.warning("[PIXHAWK-CHECK] %s", self.pixhawk_check)
                     return
-                self.pixhawk_check = summarize(results)
+                self.pixhawk_check = f"[{fw}] {summarize(results)}"
                 log.info("[PIXHAWK-CHECK] %s", self.pixhawk_check)
                 return
             time.sleep(0.5)

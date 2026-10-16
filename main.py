@@ -468,15 +468,37 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _lan_ip():
+        """IP LAN mini-PC yang bisa dibuka laptop operator (best-effort)."""
+        import socket
+        # Cara 1: pilih interface menurut rute default (UDP connect tak
+        # kirim paket). Bekerja walau tanpa internet asal ada rute.
+        for probe in (("8.8.8.8", 80), ("1.1.1.1", 80)):
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(probe)
+                ip = s.getsockname()[0]
+                s.close()
+                if ip and not ip.startswith("127."):
+                    return ip
+            except Exception:
+                pass
+        # Cara 2: resolusi hostname (biasanya IP WiFi/hotspot).
         try:
-            import socket
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
+            ip = socket.gethostbyname(socket.gethostname())
+            if ip and not ip.startswith("127."):
+                return ip
         except Exception:
-            return "127.0.0.1"
+            pass
+        # Cara 3: hostname -I (Linux, tanpa rute default).
+        try:
+            import subprocess
+            out = subprocess.check_output(["hostname", "-I"], text=True)
+            for tok in out.split():
+                if "." in tok and not tok.startswith("127."):
+                    return tok
+        except Exception:
+            pass
+        return "127.0.0.1"
 
     def on_track_apply(self):
         """Ganti lintasan A/B: muat waypoint + leg misi + persist site.json."""
@@ -736,7 +758,8 @@ class MainWindow(QMainWindow):
         pc = str(data.get('pixhawk_check', '') or '')
         if pc and self.side_param.text() != pc:
             self.side_param.setText(pc)
-            pc_c = (theme.COLOR_OK if pc == "OK"
+            pc_ok = pc == "OK" or pc.endswith("OK")
+            pc_c = (theme.COLOR_OK if pc_ok
                     else theme.COLOR_BAD if "KRITIS" in pc
                     else theme.COLOR_WARN)
             self.side_param.setStyleSheet(

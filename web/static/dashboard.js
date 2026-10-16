@@ -46,23 +46,6 @@
       Number(info.cog_deg).toFixed(1) + '\u00b0';
   }
 
-  function updateSteps(m) {
-    if (!m) return;
-    const set = (step, done) => {
-      const li = document.querySelector('.steps li[data-step="' + step + '"]');
-      if (li) li.classList.toggle('done', !!done);
-    };
-    set('prep', m.prep);
-    set('start', m.start);
-    set('balls', m.balls >= 10);
-    set('surface', m.surface);
-    set('under', m.under);
-    set('dock', m.dock);
-    $('ballsTick').textContent = m.balls + ' / 10';
-    $('surfTick').textContent = m.surface ? 'DONE' : '-';
-    $('underTick').textContent = m.under ? 'DONE' : '-';
-  }
-
   function onData(d) {
     if (d.team) $('teamName').textContent = d.team;
     if (d.pt) $('teamPt').textContent = d.pt;
@@ -86,7 +69,6 @@
     $('pos').textContent = (d.lat == null) ? '--' :
       Geo.dd(d.lat, d.lon);
 
-    updateSteps(d.mission);
     if (grid) grid.push(d.lat, d.lon, d.cog_deg);
 
     if (d.last_photo) {
@@ -105,6 +87,29 @@
     es.onopen = () => { badge.classList.remove('off'); badge.textContent = '\u25cf LIVE'; };
     es.onerror = () => { badge.classList.add('off'); badge.textContent = '\u25cf OFFLINE'; };
     es.onmessage = (ev) => { try { onData(JSON.parse(ev.data)); } catch (e) {} };
+  }
+
+  // Video: ambil satu frame JPEG per giliran (bukan MJPEG panjang).
+  // Koneksi putus -> otomatis dicoba lagi, jadi layar tak pernah "beku"
+  // seperti pada satu stream multipart yang terputus di WiFi goyah.
+  function startVideo() {
+    const img = $('video');
+    if (!img) return;
+    const loader = new Image();
+    let fails = 0;
+    const tick = () => {
+      loader.onload = () => {
+        fails = 0;
+        img.src = loader.src;
+        setTimeout(tick, 20);
+      };
+      loader.onerror = () => {
+        fails += 1;
+        setTimeout(tick, Math.min(3000, 300 * fails));
+      };
+      loader.src = '/frame.jpg?t=' + Date.now();
+    };
+    tick();
   }
 
   fetch('/config').then(r => r.json()).then(c => {
@@ -130,4 +135,6 @@
       }
     });
   }).catch(() => {});
+
+  startVideo();
 })();

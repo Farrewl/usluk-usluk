@@ -32,8 +32,6 @@ log = get_logger()
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(ROOT_DIR, "config")
-TMP_MAP_FILE = os.path.join(ROOT_DIR, "data", "temp_map.html")
-os.makedirs(os.path.dirname(TMP_MAP_FILE), exist_ok=True)
 
 SITE = cfg.SITE
 WAYPOINTS = cfg.track_waypoints(SITE.get("TRACK"))
@@ -788,11 +786,6 @@ class MainWindow(QMainWindow):
                 self.nav_thread.save_config_to_file()
             except Exception:
                 pass
-        try:
-            if os.path.exists(TMP_MAP_FILE):
-                os.remove(TMP_MAP_FILE)
-        except Exception:
-            pass
         event.accept()
 
 

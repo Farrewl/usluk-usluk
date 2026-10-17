@@ -55,12 +55,26 @@ try:
 except Exception:
     mavlink_mod = None
 
-try:
-    from ultralytics import YOLO
-    YOLO_AVAILABLE = True
-except Exception:
-    YOLO = None
-    YOLO_AVAILABLE = False
+# ultralytics/torch mahal (~1–3 s import + ~250 MB RAM). Diimpor LAZY di
+# thread loader model (bukan saat `import app.navigator`) supaya GUI + telemetri
+# + kamera tampil cepat, deteksi menyusul di background.
+YOLO = None
+YOLO_AVAILABLE = True
+
+
+def _import_yolo():
+    """Impor ultralytics sekali (lazy); kembalikan kelas YOLO atau None."""
+    global YOLO, YOLO_AVAILABLE
+    if YOLO is not None:
+        return YOLO
+    try:
+        from ultralytics import YOLO as _Y
+        YOLO = _Y
+        YOLO_AVAILABLE = True
+    except Exception:
+        YOLO = None
+        YOLO_AVAILABLE = False
+    return YOLO
 
 log = get_logger()
 
@@ -231,6 +245,16 @@ class VisionNavigator:
         self._models_loading = True
 
         def _loader():
+            yolo_cls = _import_yolo()
+            if yolo_cls is None:
+                log.warning("ultralytics tidak tersedia — deteksi YOLO mati.")
+                self._models_loading = False
+                return
+            try:
+                import torch
+                torch.set_num_threads(int(getattr(self, "_cpu_threads", 2)))
+            except Exception:
+                pass
             for attr, path, label in (
                     ("gate_model", self.config.MODEL_PATH, "GATE BUOY"),
                     ("box_model", self.config.BOX_MODEL_PATH, "BOX HIJAU"),
@@ -241,7 +265,7 @@ class VisionNavigator:
                 try:
                     log.info("Memuat model %s (lazy)...", label)
                     setattr(self, attr,
-                            YOLO(path, task='detect').to(self.config.YOLO_DEVICE))
+                            yolo_cls(path, task='detect').to(self.config.YOLO_DEVICE))
                 except Exception as e:
                     log.warning("Gagal memuat model %s: %s", label, e)
                 if attr == "gate_model" and self.yolo_worker is not None:
@@ -991,23 +1015,19 @@ class VisionNavigator:
 
 
     def _configure_cpu_threads(self):
-        """Batasi thread torch/OpenCV agar tak oversubscribe di mini-PC."""
+        """Batasi thread cv2 (torch diatur di thread loader model)."""
         n = int(getattr(self.config, "PERF_THREADS", 0) or 0)
         if n <= 0:
             try:
                 n = max(1, (os.cpu_count() or 2) // 2)
             except Exception:
                 n = 2
+        self._cpu_threads = n
         try:
             cv2.setNumThreads(n)
         except Exception:
             pass
-        try:
-            import torch
-            torch.set_num_threads(n)
-        except Exception:
-            pass
-        log.info("CPU threads (torch/cv2) = %d", n)
+        log.info("CPU threads (cv2) = %d", n)
 
 
 

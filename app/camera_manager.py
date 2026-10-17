@@ -183,7 +183,7 @@ class CameraSlot:
 
 
 class CameraManager:
-    """Pegang primary + secondary; API dipakai GroundSimNavigator."""
+    """Pegang kamera primary + secondary."""
 
     def __init__(self, config):
         self.config = config

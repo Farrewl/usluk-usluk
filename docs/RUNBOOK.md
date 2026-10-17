@@ -67,16 +67,11 @@ Dua file lintasan: `config/trackA.json` (start dock merah) dan
 # Manual:  ./.venv/bin/python3 -O main.py
 ```
 
-### Pilih backend (env `ASV_BACKEND`)
+### Backend
 
-| Nilai | Backend | Kapan dipakai |
-|---|---|---|
-| `nav` (default) | `app.navigator.NavigatorThread` | Kapal produksi (Pixhawk + MAVLink) |
-| `sim` / `simulator` / `ground` | `app.simulator.GroundSimNavigatorThread` | Uji darat (kamera+YOLO asli, posisi mock) |
-
-```bash
-ASV_BACKEND=sim ./scripts/run_gui.sh     # mode simulator darat
-```
+Selalu **navigator produksi** (`app.navigator.NavigatorThread`, Pixhawk +
+MAVLink). Tidak ada mode mock/simulator — data selalu dari kamera & Pixhawk
+nyata.
 
 ---
 
@@ -120,13 +115,15 @@ ASV_BACKEND=sim ./scripts/run_gui.sh     # mode simulator darat
   - kotak biru (bawah air) & waypoint: `data/waypoint_captures/`
 - Tidak ada upload ke server. Geo-tag tiap foto (Day/Date/Time, koordinat
   DD & DM, SOG, COG) ditulis sebagai sidecar `.json` di samping gambar dan
-  tampil di dashboard web.
+  masuk ke `data/monitor/photos.json` (dibaca dashboard web).
 
-### Dashboard web
+### Dashboard web (repo terpisah)
 
-Server nyala otomatis saat GUI jalan (lihat `config/site.json`). Buka
-`http://<ip-laptop>:8080` di jaringan router tim. Demo tanpa kapal:
-`ASV_MOCK=1 ./scripts/run_gui.sh`.
+Repo ini **tidak berisi web**. App kapal menulis kondisi lengkapnya ke
+`data/monitor/` (lihat `docs/MONITOR.md`). Dashboard web adalah **repo
+terpisah** di mini-PC yang sama; ia membaca `telemetry.json`, `frame.jpg`,
+`photos.json`, `events.jsonl`. Cek cepat dari terminal:
+`./.venv/bin/python3 scripts/monitor_read.py --watch`.
 
 ---
 

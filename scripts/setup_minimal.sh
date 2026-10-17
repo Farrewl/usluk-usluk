@@ -86,5 +86,5 @@ echo "[5/5] Verifikasi import inti + inferensi YOLO..."
 echo
 echo "Selesai. Total: $(du -sh .venv | cut -f1)"
 echo "Jalankan GUI :  ./scripts/run_gui.sh"
-echo "Web dashboard:  http://<ip-laptop>:8080  (saat GUI jalan)"
+echo "Ekspor monitor: data/monitor/  (lihat docs/MONITOR.md)  cek: scripts/monitor_read.py"
 echo "Jalankan tes :  .venv/bin/python -m unittest discover -s tests"

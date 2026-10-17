@@ -277,7 +277,7 @@ def draw_detections_raw(frame, boxes, names):
     """Gambar SEMUA kotak deteksi YOLO + label confidence (mentah).
 
     `boxes` = list (cls, conf, xyxy) apa adanya dari model, TANPA filter
-    validasi. Dipakai untuk tampilan GUI/web agar operator selalu melihat
+    validasi. Dipakai untuk tampilan GUI/monitor agar operator selalu melihat
     apa yang dideteksi model berikut skor yakinnya — keputusan navigasi
     tetap pakai jalur validasi (validate_buoy/_gate_keep) yang terpisah.
     """

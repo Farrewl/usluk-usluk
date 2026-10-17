@@ -5,36 +5,28 @@
 | File | Fungsi | Dipakai oleh |
 |---|---|---|
 | `settings.py` | Semua parameter & path (satu sumber kebenaran) | Semua modul |
-| `navigator.py` | Navigator produksi: state machine + MAVLink offboard (Pixhawk) | `main.py` (backend `nav`) |
-| `simulator.py` | `GroundSimNavigator` (kamera asli) + `MockSimNavigator` (tanpa hardware) | `main.py` (backend `sim`) |
-| `yolo_worker.py` | Worker inferensi YOLO async (thread murni, satu untuk semua model) | navigator, simulator |
-| `output_link.py` | Output ke Pixhawk: `SET_ATTITUDE_TARGET`, RTL, disarm | navigator, simulator |
-| `safety.py` | Failsafe otomatis (stale-link / low-batt) | navigator, simulator |
-| `camera.py` | Buka kamera V4L2/DSHOW, negosiasi resolusi, flip | navigator, simulator |
-| `camera_manager.py` | Kelola kamera primer/sekunder, fallback, reconnect | navigator, simulator |
-| `mavlink_telemetry.py` | Baca MAVLink non-blocking (attitude, posisi, baterai) | navigator, simulator |
-| `manual_link.py` | Kendali manual lokal (RC/gamepad) → (surge, yaw) | navigator, simulator |
-| `qgc_offboard.py` | Kendali manual dari QGC (Xbox → `MANUAL_CONTROL`) | navigator, simulator |
-| `detection_validation.py` | `validate_buoy()` filter pasca-YOLO + debug | navigator, simulator |
+| `navigator.py` | Navigator produksi: state machine + MAVLink offboard (Pixhawk) | `main.py` |
+| `yolo_worker.py` | Worker inferensi YOLO async (thread murni, satu untuk semua model) | navigator |
+| `output_link.py` | Output ke Pixhawk: `SET_ATTITUDE_TARGET`, RTL, disarm | navigator |
+| `safety.py` | Failsafe otomatis (stale-link / low-batt) | navigator |
+| `camera.py` | Buka kamera V4L2/DSHOW, negosiasi resolusi, flip | navigator |
+| `camera_manager.py` | Kelola kamera primer/sekunder, fallback, reconnect | navigator |
+| `mavlink_telemetry.py` | Baca MAVLink non-blocking (attitude, posisi, baterai) | navigator |
+| `manual_link.py` | Kendali manual lokal (RC/gamepad) → (surge, yaw) | navigator |
+| `qgc_offboard.py` | Kendali manual dari QGC (Xbox → `MANUAL_CONTROL`) | navigator |
+| `detection_validation.py` | `validate_buoy()` filter pasca-YOLO + debug | navigator |
 | `pixhawk_check.py` | Cek parameter failsafe Pixhawk saat startup (spec per firmware: PX4/ArduPilot) | navigator |
+| `monitor_export.py` | Ekspor **file bridge** → `data/monitor/` (telemetry/frame/photos/events) untuk web terpisah | navigator |
+| `telemetry_snapshot.py` | Rakit snapshot JSON lengkap kapal (identitas…health, semua `params`) | `monitor_export` |
 | `settings_dialog.py` | Panel tuning GUI | `main.py` |
 | `slim_map.py` | Widget peta ringan (tile) | `main.py` |
 | `gui_theme.py` | Tema/style GUI | `main.py` |
 | `logutil.py` | Logger + throttle | Semua modul |
-| `aterkia_core.py` | **Tipis** ctypes wrapper ke `core/libaterkia.so` / `aterkia_core.dll`, tanpa logika | navigator, simulator |
-| `state_bus.py` | Bus status terbaru (thread-safe) navigator → web | navigator, `web/` |
+| `aterkia_core.py` | **Tipis** ctypes wrapper ke `core/libaterkia.so` / `aterkia_core.dll`, tanpa logika | navigator |
 | `geotag.py` | Geo-tag foto (Day/Date/Time, koordinat DD & DM, SOG, COG) | navigator |
 
-## `web/` — Dashboard monitoring (SSE + MJPEG)
-
-| File | Fungsi |
-|---|---|
-| `server.py` | HTTP server stdlib: `/events` (SSE), `/video` (MJPEG), `/frame.jpg` (JPEG polling), `/captures`, `/config` |
-| `mock.py` | Feeder data palsu saat `ASV_MOCK=1` (demo tanpa kapal) |
-| `static/index.html` | Layout dashboard (header, attitude/speed, grid, foto) |
-| `static/dashboard.js` | Klien SSE + video polling + isi DOM + popup geo-tag |
-| `static/grid.js` | Peta grid A1–E5 + trajectory + kompas (canvas) |
-| `static/geo.js` | Format koordinat/satuan di sisi browser |
+> Dashboard web **tidak lagi di repo ini** — ia repo terpisah yang membaca
+> `data/monitor/` (kontrak: `docs/MONITOR.md`).
 
 ## `core/` — Inti C/C++ (komputasi deterministik)
 
@@ -60,7 +52,7 @@
 
 | File | Isi |
 |---|---|
-| `site.json` | Identitas tim (nama, PT), lintasan aktif, host/port web, grid |
+| `site.json` | Identitas tim (nama, PT), lintasan aktif, pengaturan ekspor monitor (`MONITOR_*`), grid |
 | `trackA.json` / `trackB.json` | Waypoint + leg misi per lintasan (vision/foto box/dock) |
 | `tuning_params.json` | Parameter tuning (GUI simpan otomatis; hanya `TUNING_PARAM_KEYS`) |
 | `plan.csv` | Waypoint lama (cadangan; kini waypoint dari `track*.json`) |
@@ -73,6 +65,7 @@
 - `calib/` — gambar kalibrasi HSV
 - `tiles/` — tile peta
 - `session_videos/` — rekaman sesi (bila diaktifkan)
+- `monitor/` — ekspor file bridge untuk dashboard web terpisah (`telemetry.json`, `frame.jpg`, `photos.json`, `events.jsonl`)
 
 ## `scripts/` — Helper dev/operasional
 
@@ -80,7 +73,8 @@
 |---|---|
 | `setup_minimal.sh` / `.ps1` | Bikin `.venv` minimal (torch CPU) + build inti C + verifikasi (idempoten) |
 | `verify_env.py` | Verifikasi `.venv` (import inti + YOLO); dipakai setup Linux & Windows |
-| `run_gui.sh` / `run.bat` | Jalankan GUI (Linux / Windows); web dashboard ikut nyala |
+| `run_gui.sh` / `run.bat` | Jalankan GUI (Linux / Windows) |
+| `monitor_read.py` | Lihat/tail data `data/monitor/` dari terminal (debug / rujukan repo web) |
 
 ## `tests/` — Cross-check C vs Python
 
@@ -106,6 +100,7 @@ Model lama/percobaan (`box_biru.pt`, `box_merah.pt`, `best_greendock.pt`) tidak 
 |---|---|
 | `ARSITEKTUR.md` | Alur data, modul, inti C, kamera, visi, output, failsafe, hardware |
 | `MODUL.md` | (Ini) tabel modul per folder |
+| `MONITOR.md` | Kontrak ekspor monitoring (file bridge) untuk repo web terpisah |
 | `KONFIG.md` | Arti tiap parameter di `tuning_params.json` |
 | `STATES.md` | 18 state misi + transisi (kenapa kapal bertingkah begitu) |
 | `RUNBOOK.md` | Cara menjalankan produksi + checklist lapangan |

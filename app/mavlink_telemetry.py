@@ -1,10 +1,8 @@
 """
 app/mavlink_telemetry.py — Baca telemetri MAVLink dari Pixhawk (PX4/ArduPilot).
 
-Tujuan: memberi GUI / simulator data attitude (roll, pitch, yaw) dan posisi
-NYATA dari Pixhawk tanpa harus menjalankan navigator penuh (yang butuh
-YOLO + model .pt). Dipakai GroundSimNavigator: kalau Pixhawk terhubung,
-roll/pitch/yaw mengikuti IMU sungguhan; kalau tidak, fallback mock.
+Tujuan: memberi GUI data attitude (roll, pitch, yaw) dan posisi NYATA dari
+Pixhawk tanpa harus menjalankan navigator penuh (yang butuh YOLO + model .pt).
 
 Koneksi (skill asv-mavlink):
   - Port dipilih dari pyserial (hanya port yang BENAR-BENAR ada). Urutan:
@@ -215,7 +213,7 @@ class MavlinkTelemetry:
             print(f"[MAV] Menunggu heartbeat {self.port} ...")
         self.last_error = "no-heartbeat"
         print(f"[MAV] Tidak ada heartbeat dari {self.port} "
-              f"dalam {timeout_s:.0f}s — pakai mock attitude.")
+              f"dalam {timeout_s:.0f}s.")
         return False
 
     def close(self):

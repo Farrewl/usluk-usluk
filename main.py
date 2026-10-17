@@ -20,12 +20,7 @@ os.environ.setdefault("QT_LOGGING_RULES", "qt.network.ssl.warning=false")
 
 
 
-_ASV_BACKEND = os.environ.get("ASV_BACKEND", "nav").strip().lower()
-if _ASV_BACKEND in ("sim", "simulator", "ground"):
-    from app.simulator import GroundSimNavigatorThread as NavigatorThread
-else:
-    from app.navigator import NavigatorThread
-    _ASV_BACKEND = "nav"
+from app.navigator import NavigatorThread
 
 from app.slim_map import SlimMapWidget
 from app.settings_dialog import SettingsDialog
@@ -203,7 +198,6 @@ class MainWindow(QMainWindow):
         self._setup_status_bar()
         self._refresh_map_waypoints()
         self.nav_thread.start()
-        self._start_web_dashboard()
 
 
 
@@ -338,7 +332,7 @@ class MainWindow(QMainWindow):
         l.addWidget(self.misi_link)
         ml.addWidget(f)
 
-        f, l = _card("Lintasan & Web")
+        f, l = _card("Lintasan")
         trow = QHBoxLayout()
         self.track_combo = QComboBox()
         self.track_combo.addItems(["A", "B"])
@@ -349,11 +343,6 @@ class MainWindow(QMainWindow):
         trow.addWidget(self.track_combo, 1)
         trow.addWidget(self.track_apply_btn)
         l.addLayout(trow)
-        self.web_label = QLabel("Web: --")
-        self.web_label.setStyleSheet(
-            "font-family: monospace; color: #8b949e; background: transparent;")
-        self.web_label.setWordWrap(True)
-        l.addWidget(self.web_label)
         ml.addWidget(f)
 
         f, l = _card("Kamera")
@@ -446,60 +435,6 @@ class MainWindow(QMainWindow):
 
 
 
-    def _start_web_dashboard(self):
-        self.dash_server = None
-        try:
-            c = self.nav_thread.config
-            if not getattr(c, "WEB_ENABLED", True):
-                self.web_label.setText("Web: OFF (site.json)")
-                return
-            from web.server import DashboardServer
-            if getattr(c, "WEB_MOCK", False):
-                from web.mock import start_mock
-                start_mock(c)
-            self.dash_server = DashboardServer(c)
-            host, port = self.dash_server.start()
-            ip = self._lan_ip()
-            self.web_label.setText(
-                f"Web: http://{ip}:{port} (hotspot tim)\nbind {host}:{port}")
-        except Exception as e:
-            log.error("Web dashboard gagal start: %s", e)
-            self.web_label.setText(f"Web: GAGAL ({e})")
-
-    @staticmethod
-    def _lan_ip():
-        """IP LAN mini-PC yang bisa dibuka laptop operator (best-effort)."""
-        import socket
-        # Cara 1: pilih interface menurut rute default (UDP connect tak
-        # kirim paket). Bekerja walau tanpa internet asal ada rute.
-        for probe in (("8.8.8.8", 80), ("1.1.1.1", 80)):
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.connect(probe)
-                ip = s.getsockname()[0]
-                s.close()
-                if ip and not ip.startswith("127."):
-                    return ip
-            except Exception:
-                pass
-        # Cara 2: resolusi hostname (biasanya IP WiFi/hotspot).
-        try:
-            ip = socket.gethostbyname(socket.gethostname())
-            if ip and not ip.startswith("127."):
-                return ip
-        except Exception:
-            pass
-        # Cara 3: hostname -I (Linux, tanpa rute default).
-        try:
-            import subprocess
-            out = subprocess.check_output(["hostname", "-I"], text=True)
-            for tok in out.split():
-                if "." in tok and not tok.startswith("127."):
-                    return tok
-        except Exception:
-            pass
-        return "127.0.0.1"
-
     def on_track_apply(self):
         """Ganti lintasan A/B: muat waypoint + leg misi + persist site.json."""
         name = str(self.track_combo.currentText()).strip().upper()
@@ -528,7 +463,6 @@ class MainWindow(QMainWindow):
             wps = cfg.track_waypoints(name)
             self.nav_thread.update_waypoints(wps)
             self._refresh_map_waypoints()
-            self.web_label.setText(self.web_label.text())
             log.info("Lintasan -> %s (%d waypoint)", name, len(wps))
         except Exception as e:
             log.error("Ganti lintasan gagal: %s", e)
@@ -846,11 +780,6 @@ class MainWindow(QMainWindow):
         try:
             self.nav_thread.stop()
             self.nav_thread.wait()
-        except Exception:
-            pass
-        try:
-            if getattr(self, "dash_server", None) is not None:
-                self.dash_server.stop()
         except Exception:
             pass
         if hasattr(self.nav_thread, 'save_config_to_file'):

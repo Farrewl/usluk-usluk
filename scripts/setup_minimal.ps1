@@ -142,5 +142,5 @@ Invoke-Step @($Vpy, "scripts\verify_env.py")
 
 Write-Host ""
 Write-Host "Selesai. Jalankan GUI :  .venv\Scripts\python.exe -O -u main.py"
-Write-Host "Web dashboard         :  http://<ip-laptop>:8080  (saat GUI jalan)"
+Write-Host "Ekspor monitor        :  data\monitor\  (lihat docs\MONITOR.md)  cek: scripts\monitor_read.py"
 Write-Host "Jalankan tes          :  .venv\Scripts\python.exe -m unittest discover -s tests"

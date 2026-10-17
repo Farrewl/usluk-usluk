@@ -1,7 +1,7 @@
 """app/geotag.py — Geo-tag foto misi (Day/Date/Time, koordinat DD & DM, SOG, COG).
 
 Dipakai navigator saat menulis foto kotak hijau/biru. Menulis sidecar JSON
-samping file JPEG supaya dashboard web bisa menampilkan popup geo-tag.
+samping file JPEG supaya monitoring bisa menampilkan popup geo-tag.
 """
 
 import datetime

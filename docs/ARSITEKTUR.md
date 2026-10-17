@@ -39,9 +39,9 @@ lihat `docs/RUNBOOK.md`.
 
 | File | Tanggung jawab |
 |---|---|
-| `main.py` | Entry GUI PyQt5: peta folium, video dual (nav + bawah), panel tuning, waypoint recorder, pemilih backend |
+| `main.py` | Entry GUI PyQt5: peta ringan, video dual (nav + bawah), panel tuning, waypoint recorder |
 | `app/navigator.py` | **Navigator produksi**: loop 30 Hz, state machine C, pipeline visi, offboard ke Pixhawk, foto lokal |
-| `app/simulator.py` | Dev darat: `GroundSimNavigator` (kamera+YOLO asli, posisi mock) & `MockSimNavigator` (tanpa hardware) |
+| `app/monitor_export.py` | Ekspor **file bridge** ke `data/monitor/` (telemetry/frame/photos/events) untuk dashboard web terpisah |
 | `app/yolo_worker.py` | Worker inferensi YOLO async (thread murni, satu untuk semua model) |
 | `app/output_link.py` | Output ke Pixhawk: `SET_ATTITUDE_TARGET`, RTL, disarm |
 | `app/safety.py` | Failsafe otomatis (stale-link / low-batt) |
@@ -57,6 +57,7 @@ lihat `docs/RUNBOOK.md`.
 | `app/slim_map.py` | Widget peta ringan (tile) |
 | `app/gui_theme.py`, `app/logutil.py` | Tema GUI & logger/throttle |
 | `app/aterkia_core.py` | **Tipis** ctypes wrapper ke `core/libaterkia.so` (Linux) / `aterkia_core.dll` (Windows), tanpa logika |
+| `app/telemetry_snapshot.py` | Rakit snapshot JSON lengkap (identitas…health + semua `params`) |
 
 Oracle uji (dulu di `app/`, kini pindah ke `tests/_ref/`): `geo.py`,
 `gate_sequencer.py`, `filtering.py`, `fuzzy.py`, `state_machine.py`.
@@ -103,7 +104,7 @@ dan gagal secara eksplisit (bukan angka palsu).
   (`_probe_index_quality`, hanya backend native V4L2/DSHOW), pilih index dengan
   luas piksel terbesar yang tetap ≥ `CAMERA_MIN_ACCEPT_FPS`, lalu negosiasi
   detail di index itu. `CAMERA_INDEX` dihormati sebagai preferensi.
-- Dipakai navigator & simulator via `open_camera(..., auto_highest=True)`;
+- Dipakai navigator via `open_camera(..., auto_highest=True)`;
   ukuran hasil negosiasi menimpa `FRAME_WIDTH/HEIGHT`.
 - Default: target **30 fps**, min accept **25 fps**. Hasil umum di dev:
   `1280×720 MJPG @ 30 fps`.
@@ -120,7 +121,7 @@ dan gagal secara eksplisit (bukan angka palsu).
   bukan menahan loop. Video kamera tetap mengalir walau inferensi lambat.
 - Hasil tiap model dicap waktu (monotonic); caller menolak hasil basi
   (`YOLO_RESULT_MAX_AGE_S`).
-- Dipakai bersama navigator produksi & simulator (satu sumber logika).
+- Satu sumber logika untuk navigasi.
 - Threading murni (bukan `QThread`) agar bisa diuji tanpa `QApplication`.
 
 ### Filter pasca-YOLO buoy (`app/detection_validation.py`)
@@ -164,7 +165,6 @@ tolak (maks 1×/detik).
 - **Low-batt**: persen ATAU tegangan di bawah ambang, **ditahan** selama
   `FAILSAFE_LOW_BATT_HOLD_S` (agar spike sesaat tak memicu RTL palsu).
 - Pulih otomatis bila kondisi normal. Aksi RTL didelegasikan ke `OutputLink`.
-- Dipakai bersama navigator produksi & simulator.
 
 Pixhawk **tetap** pemegang failsafe utama (RCIN + geofence bawaan); companion
 hanya lapisan tambahan.
@@ -228,16 +228,17 @@ QT_QPA_PLATFORM=offscreen python main.py
 - `config/trackA.json` / `trackB.json` — waypoint + leg misi per lintasan.
 - `config/tuning_params.json` — parameter tuning tersimpan (dari `save_params`).
 - `weights/*.pt` — model YOLO. **Masuk git** agar clone langsung jalan.
-- `data/` — output runtime (captures, foto waypoint, video sesi, peta sementara).
-  Di-ignore git.
+- `data/` — output runtime (captures, foto waypoint, video sesi, peta sementara,
+  `monitor/`). Di-ignore git.
 - `core/libaterkia.so` — di-ignore git (build lokal; `setup_minimal.sh`
   membangunnya otomatis).
 
-## 10. Dashboard Web
+## 10. Ekspor Monitoring (file bridge)
 
-`web/server.py` (stdlib `http.server`, tanpa dependency baru) mengekspos
-`/events` (SSE dari `app/state_bus.py`), `/video` (MJPEG frame NAV),
-`/frame.jpg` (satu frame JPEG — dipakai klien polling, lebih tahan WiFi
-goyah daripada satu stream MJPEG panjang), `/captures` (foto + geo-tag),
-`/config` (identitas tim, lintasan, grid). Nyala otomatis saat GUI jalan;
-buka `http://<ip-laptop>:8080`. Mode demo tanpa kapal: `ASV_MOCK=1`.
+Repo ini **tidak lagi berisi dashboard web**. `app/monitor_export.py`
+(`get_exporter(config)`) menulis kondisi kapal ke `data/monitor/` secara
+**atomik**; `app/telemetry_snapshot.py` merakit snapshot lengkap (identitas,
+pose, gerak, power, link, misi, visi, kamera, foto terakhir, **semua `params`**,
+health). Dashboard web adalah **repo terpisah** (mini-PC yang sama) yang
+membaca file itu. Kontrak lengkap: `docs/MONITOR.md`. Cek dari terminal:
+`./.venv/bin/python3 scripts/monitor_read.py --watch`.

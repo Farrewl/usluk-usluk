@@ -6,7 +6,7 @@ membaca (PARAM_REQUEST_READ) lalu melaporkan pelanggaran terhadap spec di
 (PX4). Firmware dideteksi dari HEARTBEAT (field `autopilot`) supaya nama
 parameter yang dipakai sesuai — PX4 dan ArduPilot punya nama berbeda.
 
-Alur (dipanggil dari thread background navigator/simulator saat mav tersambung):
+Alur (dipanggil dari thread background navigator saat mav tersambung):
   1. deteksi firmware (autopilot id) -> pilih file spec
   2. kirim PARAM_REQUEST_READ untuk tiap nama (lewat master.mav.*)
   3. baca balasan PARAM_VALUE sampai timeout_s / semua lengkap

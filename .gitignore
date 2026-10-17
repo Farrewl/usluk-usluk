@@ -44,6 +44,11 @@ Thumbs.db
 .idea/
 *.swp
 
+# Arsip referensi lokal (jangan di-commit)
+*.zip
+*.7z
+*.rar
+
 # Build artifacts (lokal, beda tiap mesin)
 *.so
 *.dll

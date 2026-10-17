@@ -24,7 +24,7 @@ Model YOLO & library inti **ikut di build**: cukup 2 langkah.
 # 1. Setup .venv minimal (torch CPU) + build inti C + verifikasi
 ./scripts/setup_minimal.sh
 
-# 2. Jalankan GUI (web dashboard otomatis nyala di :8080)
+# 2. Jalankan GUI (menulis ekspor monitoring ke data/monitor/)
 ./scripts/run_gui.sh
 ```
 
@@ -54,31 +54,29 @@ Lintasan & identitas tim diatur di `config/site.json` (+ `config/trackA.json`,
 
 ---
 
-## Cara Menjalankan (3 Peran Tim)
+## Cara Menjalankan (mini-PC + laptop)
 
-Tim pakai **1 mini-PC (compute)** + **laptop (operator)** lewat router/hotspot:
+App kapal jalan di **mini-PC** (kamera, Pixhawk, ESC, misi). Laptop operator
+hanya membuka browser ke **dashboard web**, yang merupakan **repo terpisah**
+dan membaca data dari `data/monitor/` (lihat "Ekspor Monitoring" di bawah).
 
 | Peran | Mesin | Cara |
 |---|---|---|
-| **Compute** (kamera, Pixhawk, ESC, misi) | mini-PC Linux | `./scripts/setup_minimal.sh` sekali → `./scripts/run_gui.sh`. Auto-misi jalan; dashboard web nyala di `:8080`. |
-| **Monitor** (operator) | laptop apa pun | buka browser `http://<ip-mini-pc>:8080` — telemetri, video, grid. Tanpa install apa pun. |
-| **Debug / tes** | laptop Windows/Linux | Windows: `setup_minimal.ps1` + `run.bat`; Linux: `setup_minimal.sh` + `run_gui.sh`. |
+| **Kapal** (kamera, Pixhawk, ESC, misi) | mini-PC Linux | `./scripts/setup_minimal.sh` sekali → `./scripts/run_gui.sh`. Auto-misi jalan + tulis `data/monitor/`. |
+| **Dashboard** (web) | mini-PC yang sama | **repo terpisah** — baca `data/monitor/telemetry.json` + `frame.jpg` + `photos.json`, sajikan ke browser. |
+| **Operator** | laptop apa pun | buka browser ke IP mini-PC (port dashboard). Tanpa install apa pun. |
 
 ### Menyambungkan laptop operator ke mini-PC (WiFi)
 
 Mini-PC dan laptop **harus di jaringan WiFi yang SAMA** (satu SSID/hotspot).
-Tidak perlu kabel; laptop cuma butuh browser.
 
-1. **Cari IP mini-PC** (salah satu):
-   - label **"Web: http://\<ip\>:8080"** di GUI mini-PC (paling cepat), atau
-   - di terminal mini-PC: `hostname -I` / `ip addr show wlan0` → lihat `inet ...`.
-2. **Di laptop**: buka `http://<ip-mini-pc>:8080` (mis. `http://192.168.1.42:8080`).
+1. **Cari IP mini-PC**: `hostname -I` atau `ip addr show wlan0` (lihat `inet`).
+2. **Di laptop**: buka alamat dashboard, mis. `http://192.168.1.42:8080`
+   (port sesuai deploy repo web).
 3. **Kalau tak bisa dibuka**:
    - Pastikan SSID sama & tak ada "client isolation"/AP isolation di router.
-   - Cek dasar dari laptop: `ping <ip-mini-pc>` lalu `curl http://<ip>:8080/config`.
-   - Firewall mini-PC: `sudo ufw allow 8080/tcp` (atau matikan sementara).
-   - Pastikan `WEB_HOST` = `0.0.0.0` dan `WEB_ENABLED` = `true` di
-     `config/site.json`.
+   - `ping <ip-mini-pc>` lalu cek port dari laptop.
+   - Firewall mini-PC: `sudo ufw allow 8080/tcp` (port dashboard).
 4. **Tanpa router?** Mini-PC bisa jadi hotspot sendiri:
    ```bash
    nmcli device wifi hotspot ifname wlan0 ssid ASV-Aterkia password aterkia123
@@ -86,9 +84,6 @@ Tidak perlu kabel; laptop cuma butuh browser.
    Lalu laptop connect ke WiFi `ASV-Aterkia`, buka `http://10.42.0.1:8080`.
 5. **mDNS** (opsional, kalau `avahi-daemon` aktif): bisa juga
    `http://<hostname-mini-pc>.local:8080` tanpa hafal IP.
-
-> Catatan: bila tak ada rute internet, label IP di GUI tetap benar karena
-> `_lan_ip()` punya fallback (hostname / `hostname -I`), bukan cuma 8.8.8.8.
 
 
 ### QGroundControl
@@ -127,22 +122,6 @@ Tidak perlu kabel; laptop cuma butuh browser.
 
 ---
 
-## Pilih Backend
-
-Lewat variabel lingkungan `ASV_BACKEND`:
-
-```bash
-ASV_BACKEND=nav ./scripts/run_gui.sh    # default — kapal produksi (Pixhawk + MAVLink)
-ASV_BACKEND=sim ./scripts/run_gui.sh    # simulator darat (kamera+YOLO asli, posisi mock)
-```
-
-| Nilai | Backend |
-|---|---|
-| `nav` (default) | `app.navigator.NavigatorThread` |
-| `sim` / `simulator` / `ground` | `app.simulator.GroundSimNavigatorThread` |
-
----
-
 ## Inti C (`core/`) — wajib di-build
 
 Komputasi deterministik & kritis-waktu ada di C, diverifikasi **bit-per-bit**
@@ -172,7 +151,7 @@ Modul: `nav_math`, `gate_vision`, `fuzzy`, `state_machine` (18 state),
 | YOLO 4 model (.pt) | ✅ | ✅ | torch CPU (wheel index PyTorch) |
 | Setup `.venv` | ✅ `setup_minimal.sh` | ✅ `setup_minimal.ps1` | idempoten, skip yang sudah ada |
 | Model YOLO | ✅ ikut repo | ✅ ikut repo | ter-commit, tanpa unduh |
-| Dashboard web (SSE+MJPEG) | ✅ | ✅ | buka `http://<ip>:8080` |
+| Ekspor monitoring (file bridge) | ✅ | ✅ | tulis `data/monitor/` untuk dashboard web terpisah |
 | Telemetri Pixhawk | ✅ `/dev/ttyACM*` | ✅ `COM3–9` | deteksi otomatis |
 | Kamera | ✅ UID by-id | ✅ index angka | negosiasi resolusi otomatis |
 | Library C (`aterkia`) | ✅ `make -C core linux` | ✅ DLL di-repo | Windows: `core/aterkia_core.dll` self-contained sudah di-commit; rebuild opsional (MinGW) |
@@ -185,10 +164,9 @@ Modul: `nav_math`, `gate_vision`, `fuzzy`, `state_machine` (18 state),
 
 ```
 usluk-usluk/
-├── main.py                 # ENTRY POINT — GUI (pilih backend via ASV_BACKEND)
+├── main.py                 # ENTRY POINT — GUI (kapal produksi)
 ├── app/                    # Paket Python
 │   ├── navigator.py        # Navigator produksi (Pixhawk + state machine)
-│   ├── simulator.py        # Simulator darat (GroundSim + MockSim)
 │   ├── yolo_worker.py      # Worker inferensi YOLO async
 │   ├── output_link.py      # SET_ATTITUDE_TARGET / RTL / disarm
 │   ├── safety.py           # Failsafe (stale-link / low-batt)
@@ -196,22 +174,20 @@ usluk-usluk/
 │   ├── mavlink_telemetry.py
 │   ├── manual_link.py / qgc_offboard.py
 │   ├── detection_validation.py
+│   ├── monitor_export.py   # Ekspor file bridge -> data/monitor/ (web terpisah)
+│   ├── telemetry_snapshot.py  # Rakit snapshot JSON lengkap
 │   ├── settings.py         # Semua parameter (satu sumber)
 │   └── aterkia_core.py     # ctypes wrapper ke core/
 ├── core/                   # Inti C/C++ (deterministik)
 │   ├── include/*.h
 │   ├── src/*.c             # nav_math, gate_vision, fuzzy, state_machine, ...
 │   └── libaterkia.so       # build lokal (di-ignore git)
-├── web/                    # Dashboard monitoring (SSE + MJPEG, stdlib)
-│   ├── server.py           # HTTP server + endpoint /events /video /captures
-│   ├── mock.py             # feeder data palsu (env ASV_MOCK=1)
-│   └── static/             # index.html + dashboard.js + grid.js + geo.js
 ├── config/
-│   ├── site.json           # identitas tim, lintasan, host/port web
+│   ├── site.json           # identitas tim, lintasan, pengaturan monitor
 │   ├── trackA.json / trackB.json  # waypoint + leg misi per lintasan
 │   └── tuning_params.json  # Parameter tuning (simpan otomatis)
 ├── weights/                # Model YOLO (*.pt) — IKUT git
-├── data/                   # Output runtime (foto) — di-ignore git
+├── data/                   # Output runtime (foto + data/monitor) — di-ignore git
 ├── scripts/                # setup_minimal.sh/.ps1, run_gui.sh, run.bat, verify_env.py
 ├── docs/                   # Dokumentasi (lihat bawah)
 └── tests/                  # Cross-check C↔Python (test_core_*.py + _ref/)
@@ -219,24 +195,27 @@ usluk-usluk/
 
 ---
 
-## Dashboard Web (monitoring KKI)
+## Ekspor Monitoring (file bridge)
 
-Saat GUI jalan, server dashboard otomatis nyala (`config/site.json`:
-`WEB_HOST`/`WEB_PORT`, default `0.0.0.0:8080`). Panitia/peserta buka
-`http://<ip-laptop>:8080` di jaringan router tim.
+Repo ini **tidak lagi berisi dashboard web**. App kapal hanya **menulis**
+kondisi lengkapnya ke `data/monitor/`, yang dibaca oleh **repo web terpisah**
+(jalan di mini-PC yang sama):
 
-- `/events` — Server-Sent Events, snapshot telemetri @ `SSE_HZ` (default 5 Hz)
-- `/video` — MJPEG dari kamera NAV @ `VIDEO_HZ` (default 10 Hz)
-- `/captures` — daftar foto misi + geo-tag (sidecar JSON)
-- `/config` — identitas tim, lintasan, geometri grid & waypoint
+| File | Isi | Frekuensi |
+|---|---|---|
+| `telemetry.json` | snapshot LENGKAP (identitas, pose, gerak, baterai, link, misi, visi, kamera, `params` semua parameter, health) | `MONITOR_HZ` (default 5) |
+| `frame.jpg` | frame kamera NAV ter-annotasi YOLO | `MONITOR_FRAME_HZ` (default 10) |
+| `frame_bawah.jpg` | kamera bawah (bila ada) | idem |
+| `photos.json` | indeks foto misi + geo-tag | tiap foto |
+| `events.jsonl` | log kejadian (append) | saat terjadi |
 
-Isi: header tim/PT + pemilih lintasan A/B + baterai + video; Position-Log
-misi 1–6 (Preparation, Start, Floating Ball Set 0–10, Surface Imaging,
-Underwater Imaging, Finish); SOG (knot & km/h), COG, attitude; grid
-A1–E5 25×25 m + trajectory realtime + kompas; popup foto geo-tag (Day,
-Date `DD/MM/YYYY`, Time, Coordinate DD & DM, SOG, COG).
+Semua ditulis **atomik** (`*.tmp` → `os.replace`) sehingga pembaca tak pernah
+melihat file separuh. Pengaturan di `config/site.json`: `MONITOR_ENABLED`,
+`MONITOR_DIR`, `MONITOR_HZ`, `MONITOR_FRAME`, `MONITOR_FRAME_HZ`,
+`MONITOR_FRAME_WIDTH`, `MONITOR_JPEG_QUALITY`, `MONITOR_EVENTS`.
 
-Demo tanpa kapal: `ASV_MOCK=1 ./scripts/run_gui.sh` (data + frame sintetis).
+Skema lengkap JSON ada di **`docs/MONITOR.md`** — itu kontrak untuk repo web.
+Foto mentah tetap di `data/captures/` + `data/waypoint_captures/`.
 
 ---
 

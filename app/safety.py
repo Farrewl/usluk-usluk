@@ -1,9 +1,8 @@
 """app/safety.py — Failsafe otomatis (stale-link / low-batt) untuk navigator.
 
-Menyatukan logika yang dulu terduplikasi di `navigator.py` + `simulator.py`:
-evaluasi kondisi tak-aman tiap frame, lalu (bila aktif) minta thrust nol +
-RTL best-effort lewat `OutputLink`. Ambang semua di `app/settings.py`
-(tab Failsafe), tanpa magic number di sini.
+Menyatukan logika failsafe: evaluasi kondisi tak-aman tiap frame, lalu
+(bila aktif) minta thrust nol + RTL best-effort lewat `OutputLink`. Ambang
+semua di `app/settings.py` (Misi → Failsafe), tanpa magic number di sini.
 
 Pemicu:
   1. stale-link — tak ada ATTITUDE/GLOBAL_POSITION selama

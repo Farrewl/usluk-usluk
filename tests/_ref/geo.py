@@ -1,7 +1,7 @@
 """
 tests/_ref/geo.py — Utilitas geodetik murni (tanpa dependensi eksternal).
 
-Dipakai oleh app/navigator.py dan app/simulator.py agar rumus matematika
+Dipakai oleh app/navigator.py agar rumus matematika
 navigasi TIDAK terduplikasi di tiga tempat seperti sebelumnya.
 
 Semua fungsi memakai model bola Bumi dengan radius rata-rata 6371 km.
@@ -48,7 +48,7 @@ def distance_bearing(lat1, lon1, lat2, lon2):
 def destination(lat, lon, distance_m, bearing_rad):
     """Koordinat tujuan setelah berjalan `distance_m` dengan `bearing_rad`.
 
-    Balikan dari distance_bearing: dipakai simulator untuk menggerakkan
+    Balikan dari distance_bearing: dipakai untuk menggerakkan
     posisi mock sesuai kecepatan & heading kapal.
     """
     lat1 = math.radians(lat)

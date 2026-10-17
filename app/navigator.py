@@ -1,8 +1,7 @@
 """app/navigator.py — Navigator PRODUKSI (kapal asli, jalur kendali Pixhawk).
 
-Berbeda dari `app/simulator.py` (darat/uji): di sini posisi & heading datang
-dari Pixhawk NYATA (MAVLink), bukan mock; perintah gerak dikirim lewat
-`SET_ATTITUDE_TARGET` (Pixhawk tetap pemegang ESC/mixer), dan keputusan
+Posisi & heading datang dari Pixhawk NYATA (MAVLink); perintah gerak dikirim
+lewat `SET_ATTITUDE_TARGET` (Pixhawk tetap pemegang ESC/mixer), dan keputusan
 transisi state misi didelegasikan ke mesin-state C
 (`core/src/state_machine.c` via `app/aterkia_core.py`).
 
@@ -34,7 +33,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from . import settings as cfg
 from . import aterkia_core as core
 from . import geotag
-from . import state_bus
+from . import monitor_export
 from .logutil import get_logger, throttled
 from .camera import (
     make_fallback_frame,
@@ -101,6 +100,10 @@ class VisionNavigator:
         self.current_state = "WAITING_GPS"
         self.running = False
         self._configure_cpu_threads()
+        try:
+            monitor_export.get_exporter(config)
+        except Exception:
+            pass
 
 
         self.mav = None
@@ -798,14 +801,14 @@ class VisionNavigator:
         return frame
 
     def _geotag_and_register(self, kind, path):
-        """Tulis sidecar geo-tag + publikasikan ke bus web."""
+        """Tulis sidecar geo-tag + daftarkan ke ekspor monitoring."""
         gs = float(getattr(self, "current_groundspeed", 0.0) or 0.0)
         cog = math.degrees(self.current_yaw_rad or 0.0)
         info = geotag.finalize_capture(
             kind, path, self.current_lat, self.current_lon,
             gs * 1.943844, gs * 3.6, cog)
         try:
-            state_bus.set_photo(info)
+            monitor_export.register_photo(info)
         except Exception:
             pass
         return info
@@ -1517,7 +1520,7 @@ class VisionNavigator:
     def _annotated_frame(self, frame):
         """Frame ter-annotasi (kotak deteksi) bila ada hasil YOLO segar.
 
-        Sebelumnya frame mentah selalu dipublish ke GUI/web meski worker
+        Sebelumnya frame mentah selalu dipublish ke GUI/monitor meski worker
         menyimpan versi ter-annotasi — operator tidak pernah melihat kotak.
         Ambil hasil terbaru semua model yang umurnya <= 1 s; kalau ada,
         publish versi annotate (bukan frame mentah).
@@ -1594,46 +1597,47 @@ class VisionNavigator:
         pkt["sog_kmh"] = gs * 3.6
         pkt["cog_deg"] = pkt["yaw_deg"]
         pkt["wp_total"] = len(self.waypoints or [])
-        self._publish_web(pkt, frame, state, op_mode, status)
+        self._publish_monitor(pkt, frame, sec, state, op_mode, status)
         try:
             data_signal.emit(pkt)
         except Exception:
             pass
 
-    def _publish_web(self, pkt, frame, state, op_mode, status):
-        """Push snapshot + frame ke bus dashboard web (tanpa blokir loop)."""
+    def _publish_monitor(self, pkt, frame, sec, state, op_mode, status):
+        """Ekspor snapshot + frame ke file bridge (data/monitor) tanpa blokir."""
         try:
             if state == "RED_BOX_DOCKED":
                 self._dock_done = True
             wp_idx = int(getattr(self, "current_waypoint_index", 0) or 0)
-            state_bus.update({
-                "team": getattr(self.config, "TEAM_NAME", ""),
-                "pt": getattr(self.config, "TEAM_PT", ""),
-                "track": getattr(self.config, "TRACK", "A"),
-                "track_start": getattr(self.config, "TRACK_START", None),
-                "lat": pkt.get("lat"), "lon": pkt.get("lon"),
-                "yaw_deg": pkt.get("yaw_deg"), "pitch_deg": pkt.get("pitch_deg"),
-                "roll_deg": pkt.get("roll_deg"),
-                "sog_kn": pkt.get("sog_kn"), "sog_kmh": pkt.get("sog_kmh"),
-                "cog_deg": pkt.get("cog_deg"),
-                "groundspeed": pkt.get("groundspeed"),
-                "battery_pct": pkt.get("battery_pct"),
-                "voltage_v": pkt.get("voltage_v"), "current_a": pkt.get("current_a"),
-                "state": state, "wp_idx": wp_idx, "wp_total": pkt.get("wp_total"),
-                "mavlink_ok": pkt.get("mavlink_ok"), "gps_fix": pkt.get("gps_fix"),
-                "op_mode": op_mode,
-                "failsafe_active": pkt.get("failsafe_active"), "status": status,
-            })
-            state_bus.update_mission(
-                prep=bool(pkt.get("mavlink_ok") or pkt.get("gps_fix")),
-                start=(wp_idx >= 1),
-                balls=int(getattr(self, "_gate_passed_count", 0)),
-                surface=bool(getattr(self, "_surface_taken", False)),
-                under=bool(getattr(self, "_under_taken", False)),
-                dock=bool(getattr(self, "_dock_done", False)),
-            )
-            if frame is not None:
-                state_bus.set_frame(frame)
+            mission = {
+                "prep": bool(pkt.get("mavlink_ok") or pkt.get("gps_fix")),
+                "start": (wp_idx >= 1),
+                "balls": int(getattr(self, "_gate_passed_count", 0)),
+                "surface": bool(getattr(self, "_surface_taken", False)),
+                "under": bool(getattr(self, "_under_taken", False)),
+                "dock": bool(getattr(self, "_dock_done", False)),
+            }
+            vision = {"gate_passed": mission["balls"], "models": {}}
+            try:
+                now = time.monotonic()
+                for mid in (self._MID_GATE, self._MID_BOX,
+                            self._MID_BLUE, self._MID_RED):
+                    st = self.yolo_worker.latest_status(mid)
+                    if st is None:
+                        vision["models"][mid] = {"detected": False, "n": 0}
+                        continue
+                    detected, _annotated, boxes, ts = st
+                    vision["models"][mid] = {
+                        "detected": bool(detected),
+                        "n": len(boxes or []),
+                        "age_s": round(max(0.0, now - ts), 3),
+                    }
+            except Exception:
+                pass
+            camera = {"status": pkt.get("cam_status")}
+            monitor_export.publish(pkt, frame=frame, frame_secondary=sec,
+                                   mission=mission, vision=vision,
+                                   camera=camera)
         except Exception:
             pass
 
@@ -1669,6 +1673,10 @@ class VisionNavigator:
             except Exception:
                 pass
         self.cap = None
+        try:
+            monitor_export.shutdown()
+        except Exception:
+            pass
 
 
     def rescan_cameras(self):
@@ -1688,7 +1696,7 @@ class VisionNavigator:
 
 
 class NavigatorThread(QThread):
-    """Wrapper QThread untuk `VisionNavigator` (kontrak sama dgn simulator)."""
+    """Wrapper QThread untuk `VisionNavigator`."""
 
     newData = pyqtSignal(dict)
 

@@ -33,12 +33,15 @@ _DEFAULT_SITE = {
     "TEAM_NAME": "Aterkia",
     "TEAM_PT": "Universitas Diponegoro",
     "TRACK": "A",
-    "WEB_ENABLED": True,
-    "WEB_HOST": "0.0.0.0",
-    "WEB_PORT": 8080,
-    "SSE_HZ": 5,
-    "VIDEO_HZ": 10,
-    "VIDEO_WIDTH": 640,
+    # Ekspor monitoring ke web terpisah (file bridge, lihat docs/MONITOR.md)
+    "MONITOR_ENABLED": True,
+    "MONITOR_DIR": "data/monitor",
+    "MONITOR_HZ": 5.0,
+    "MONITOR_FRAME": True,
+    "MONITOR_FRAME_HZ": 10.0,
+    "MONITOR_FRAME_WIDTH": 640,
+    "MONITOR_JPEG_QUALITY": 70,
+    "MONITOR_EVENTS": True,
     "GRID_CELL_M": 5,
     "GRID_COLS": 5,
     "GRID_ROWS": 5,
@@ -49,9 +52,9 @@ _SITE_ENV = {
     "ASV_TEAM": "TEAM_NAME",
     "ASV_PT": "TEAM_PT",
     "ASV_TRACK": "TRACK",
-    "ASV_WEB_ENABLED": "WEB_ENABLED",
-    "ASV_WEB_HOST": "WEB_HOST",
-    "ASV_WEB_PORT": "WEB_PORT",
+    "ASV_MONITOR": "MONITOR_ENABLED",
+    "ASV_MONITOR_DIR": "MONITOR_DIR",
+    "ASV_MONITOR_HZ": "MONITOR_HZ",
 }
 
 
@@ -258,7 +261,7 @@ TUNING_PARAM_KEYS = frozenset({
 def save_params(config):
     """Simpan parameter tuning (hanya key di TUNING_PARAM_KEYS) ke file JSON.
 
-    Dipanggil saat GUI ditutup dan oleh thread simulator. Atribut internal
+    Dipanggil saat GUI ditutup. Atribut internal
     (path model, port, host, index kamera) sengaja TIDAK ikut tersimpan
     supaya tuning_params.json tetap portable antar mesin & antar tim.
     """
@@ -284,18 +287,18 @@ class Config:
         self.TEAM_NAME = SITE["TEAM_NAME"]
         self.TEAM_PT = SITE["TEAM_PT"]
         self.TRACK = SITE["TRACK"]
-        self.WEB_ENABLED = bool(SITE["WEB_ENABLED"])
-        self.WEB_HOST = SITE["WEB_HOST"]
-        self.WEB_PORT = int(SITE["WEB_PORT"])
-        self.SSE_HZ = float(SITE["SSE_HZ"])
-        self.VIDEO_HZ = float(SITE["VIDEO_HZ"])
-        self.VIDEO_WIDTH = int(SITE["VIDEO_WIDTH"])
+        self.MONITOR_ENABLED = bool(SITE["MONITOR_ENABLED"])
+        self.MONITOR_DIR = str(SITE["MONITOR_DIR"])
+        self.MONITOR_HZ = float(SITE["MONITOR_HZ"])
+        self.MONITOR_FRAME = bool(SITE["MONITOR_FRAME"])
+        self.MONITOR_FRAME_HZ = float(SITE["MONITOR_FRAME_HZ"])
+        self.MONITOR_FRAME_WIDTH = int(SITE["MONITOR_FRAME_WIDTH"])
+        self.MONITOR_JPEG_QUALITY = int(SITE["MONITOR_JPEG_QUALITY"])
+        self.MONITOR_EVENTS = bool(SITE["MONITOR_EVENTS"])
         self.GRID_CELL_M = float(SITE["GRID_CELL_M"])
         self.GRID_COLS = int(SITE["GRID_COLS"])
         self.GRID_ROWS = int(SITE["GRID_ROWS"])
         self.SHOW_SPEED_KMH = bool(SITE["SHOW_SPEED_KMH"])
-        self.WEB_MOCK = os.environ.get("ASV_MOCK", "").strip().lower() in (
-            "1", "true", "yes", "on")
         _trk = load_track(self.TRACK)
         self.TRACK_DATA = _trk
         self.TRACK_START = {"lat": _trk.get("start_lat"),
@@ -331,7 +334,7 @@ class Config:
         self.CAMERA_FAST_START = _env_fast not in ("0", "false", "off", "no")
 
         # Deteksi kontinu: model GATE ikut dijalankan saat pra-misi
-        # (WAITING_GPS dst) dan frame ter-annotasi dipublish ke GUI+web.
+        # (WAITING_GPS dst) dan frame ter-annotasi dipublish ke GUI + monitor.
         # Matikan: ASV_DETECT=0.
         _env_det = os.environ.get("ASV_DETECT", "").strip().lower()
         self.DETECT_CONTINUOUS = _env_det not in ("0", "false", "off", "no")

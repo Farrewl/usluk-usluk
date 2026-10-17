@@ -62,7 +62,7 @@ def _gamepad_lib():
 class ManualLink:
     """Jembatan manual: baca RC/gamepad, olah di C, kembalikan setpoint.
 
-    Pemakaian (simulator/navigator, tiap loop 20 Hz):
+    Pemakaian (tiap loop 20 Hz):
         link = ManualLink(config)
         link.attach_mav(master)          # pymavlink connection (boleh None)
         out = link.update(dt)            # dict surge/yaw/mode/rc_ok/...

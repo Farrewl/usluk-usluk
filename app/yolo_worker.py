@@ -8,8 +8,7 @@ menang, lama dibuang). Loop utama hanya `submit()` lalu `latest()` — tidak
 pernah menunggu inferensi. Hasil tiap model dicap waktu (monotonic) supaya
 caller bisa menolak hasil basi.
 
-Threading MURNI (bukan QThread) agar bisa dipakai navigator produksi maupun
-simulator darat dan diuji tanpa `QApplication`.
+Threading MURNI (bukan QThread) agar diuji tanpa `QApplication`.
 
 Kontrak:
   - submit(model_id, model, frame, conf, imgsz): antrekan 1 job; bila
@@ -20,7 +19,7 @@ Kontrak:
     (filter tetap di caller via validate_buoy agar perilaku identik dengan
     jalur sinkron lama).
   - latest_status(model_id): (detected, annotated, boxes, ts) atau None —
-    dipakai simulator darat untuk tampilan + hindar-rintangan.
+    dipakai untuk tampilan HUD + hindar-rintangan.
   - latest_boxes_any(max_age_s): kotak terbaru semua model (hindar-rintangan).
   - bind_gate_model(model): tandai model gate (butuh >=2 buoy utk "detected").
   - start() / stop_and_wait(): lifecycle thread.
@@ -136,7 +135,7 @@ class YoloWorker:
     def latest_status(self, model_id):
         """(detected, annotated, boxes, ts) atau None bila belum pernah.
 
-        Dipakai simulator darat (tampilan + status). Tanpa batas umur —
+        Dipakai untuk tampilan HUD + status. Tanpa batas umur —
         caller memakai cache terakhir bila None.
         """
         with self._lock:

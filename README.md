@@ -21,7 +21,7 @@ offboard.
 Model YOLO & library inti **ikut di build**: cukup 2 langkah.
 
 ```bash
-# 1. Setup .venv minimal (torch CPU) + build inti C + verifikasi
+# 1. Setup .venv ringan (tanpa torch) + build inti C + verifikasi
 ./scripts/setup_minimal.sh
 
 # 2. Jalankan GUI (menulis ekspor monitoring ke data/monitor/)
@@ -111,8 +111,8 @@ Mini-PC dan laptop **harus di jaringan WiFi yang SAMA** (satu SSID/hotspot).
   `ASV_CAM_FAST=0`.
 - **Deteksi kontinu ON default** — model GATE ikut dijalankan saat pra-misi
   (WAITING_GPS dan waypoint-nav) dan frame ber-kotak deteksi tampil di GUI
-  **dan** web MJPEG. Matikan: `ASV_DETECT=0`. Model YOLO dimuat di thread
-  (lazy); kotak muncul begitu model siap (~10 s pertama).
+  **dan** file bridge `data/monitor/frame.jpg`. Matikan: `ASV_DETECT=0`.
+  Model YOLO dimuat di thread (lazy); kotak muncul begitu model siap.
 - **Kotak = semua deteksi mentah + confidence** (label `kls 0.87`) — bukan
   hanya yang lulus validasi warna. Validasi HSV tetap dipakai untuk keputusan
   navigasi, tampilan selalu jujur apa adanya.
@@ -148,7 +148,7 @@ Modul: `nav_math`, `gate_vision`, `fuzzy`, `state_machine` (18 state),
 | Komponen | Linux | Windows | Catatan |
 |---|---|---|---|
 | GUI PyQt (`main.py`) | ✅ | ✅ | sama persis |
-| YOLO 4 model (.pt) | ✅ | ✅ | torch CPU (wheel index PyTorch) |
+| YOLO 4 model (ONNX) | ✅ | ✅ | ONNX + `cv2.dnn`, **tanpa torch** |
 | Setup `.venv` | ✅ `setup_minimal.sh` | ✅ `setup_minimal.ps1` | idempoten, skip yang sudah ada |
 | Model YOLO | ✅ ikut repo | ✅ ikut repo | ter-commit, tanpa unduh |
 | Ekspor monitoring (file bridge) | ✅ | ✅ | tulis `data/monitor/` untuk dashboard web terpisah |
@@ -168,6 +168,7 @@ usluk-usluk/
 ├── app/                    # Paket Python
 │   ├── navigator.py        # Navigator produksi (Pixhawk + state machine)
 │   ├── yolo_worker.py      # Worker inferensi YOLO async
+│   ├── yolo_onnx.py        # Inferensi YOLOv8 ONNX via cv2.dnn (tanpa torch)
 │   ├── output_link.py      # SET_ATTITUDE_TARGET / RTL / disarm
 │   ├── safety.py           # Failsafe (stale-link / low-batt)
 │   ├── camera.py / camera_manager.py
@@ -186,7 +187,7 @@ usluk-usluk/
 │   ├── site.json           # identitas tim, lintasan, pengaturan monitor
 │   ├── trackA.json / trackB.json  # waypoint + leg misi per lintasan
 │   └── tuning_params.json  # Parameter tuning (simpan otomatis)
-├── weights/                # Model YOLO (*.pt) — IKUT git
+├── weights/                # Model YOLO: *.onnx (runtime) + *.pt (sumber) — IKUT git
 ├── data/                   # Output runtime (foto + data/monitor) — di-ignore git
 ├── scripts/                # setup_minimal.sh/.ps1, run_gui.sh, run.bat, verify_env.py
 ├── docs/                   # Dokumentasi (lihat bawah)

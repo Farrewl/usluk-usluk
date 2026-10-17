@@ -618,7 +618,7 @@ class MainWindow(QMainWindow):
 
         try:
             cam_st = str(data.get('cam_status', 'OK'))
-            src = str(data.get('telem_source', 'MOCK'))
+            src = str(data.get('telem_source', '-'))
             if "->" not in self.cam_status_label.text():
                 self.cam_status_label.setText(f"Kamera: {cam_st} | {src}")
             mav_ok = bool(data.get('mavlink_ok', False))

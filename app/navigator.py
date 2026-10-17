@@ -55,26 +55,23 @@ try:
 except Exception:
     mavlink_mod = None
 
-# ultralytics/torch mahal (~1–3 s import + ~250 MB RAM). Diimpor LAZY di
-# thread loader model (bukan saat `import app.navigator`) supaya GUI + telemetri
-# + kamera tampil cepat, deteksi menyusul di background.
-YOLO = None
-YOLO_AVAILABLE = True
+# Inferensi YOLO lewat ONNX + cv2.dnn (TANPA torch/ultralytics). Lihat
+# app/yolo_onnx.py. Ini memangkas ~250 MB RAM & waktu import. Model tetap
+# dimuat di thread loader agar GUI + telemetri tampil lebih dulu.
+try:
+    from .yolo_onnx import OnnxDetector
+    YOLO_AVAILABLE = True
+except Exception:
+    OnnxDetector = None
+    YOLO_AVAILABLE = False
 
 
-def _import_yolo():
-    """Impor ultralytics sekali (lazy); kembalikan kelas YOLO atau None."""
-    global YOLO, YOLO_AVAILABLE
-    if YOLO is not None:
-        return YOLO
+def _names_for(path):
+    """Nama kelas untuk model ONNX (dari settings.YOLO_NAMES by basename)."""
     try:
-        from ultralytics import YOLO as _Y
-        YOLO = _Y
-        YOLO_AVAILABLE = True
+        return cfg.YOLO_NAMES.get(os.path.basename(path), {})
     except Exception:
-        YOLO = None
-        YOLO_AVAILABLE = False
-    return YOLO
+        return {}
 
 log = get_logger()
 
@@ -245,16 +242,10 @@ class VisionNavigator:
         self._models_loading = True
 
         def _loader():
-            yolo_cls = _import_yolo()
-            if yolo_cls is None:
-                log.warning("ultralytics tidak tersedia — deteksi YOLO mati.")
+            if OnnxDetector is None:
+                log.warning("yolo_onnx tidak tersedia — deteksi YOLO mati.")
                 self._models_loading = False
                 return
-            try:
-                import torch
-                torch.set_num_threads(int(getattr(self, "_cpu_threads", 2)))
-            except Exception:
-                pass
             for attr, path, label in (
                     ("gate_model", self.config.MODEL_PATH, "GATE BUOY"),
                     ("box_model", self.config.BOX_MODEL_PATH, "BOX HIJAU"),
@@ -263,9 +254,8 @@ class VisionNavigator:
                     ("blue_box_model", self.config.BLUE_BOX_MODEL_PATH,
                      "BOX BIRU")):
                 try:
-                    log.info("Memuat model %s (lazy)...", label)
-                    setattr(self, attr,
-                            yolo_cls(path, task='detect').to(self.config.YOLO_DEVICE))
+                    log.info("Memuat model %s (ONNX)...", label)
+                    setattr(self, attr, OnnxDetector(path, _names_for(path)))
                 except Exception as e:
                     log.warning("Gagal memuat model %s: %s", label, e)
                 if attr == "gate_model" and self.yolo_worker is not None:
@@ -275,7 +265,7 @@ class VisionNavigator:
                         pass
             self._models_loaded = True
             self._models_loading = False
-            log.info("Lazy-load model selesai.")
+            log.info("Load model ONNX selesai.")
 
         threading.Thread(target=_loader, daemon=True, name="lazy-models").start()
 

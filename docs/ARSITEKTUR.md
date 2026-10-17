@@ -227,7 +227,9 @@ QT_QPA_PLATFORM=offscreen python main.py
 - `config/site.json` — identitas tim (nama/PT), lintasan aktif, host/port web.
 - `config/trackA.json` / `trackB.json` — waypoint + leg misi per lintasan.
 - `config/tuning_params.json` — parameter tuning tersimpan (dari `save_params`).
-- `weights/*.pt` — model YOLO. **Masuk git** agar clone langsung jalan.
+- `weights/*.onnx` — model YOLO (runtime, via `cv2.dnn`). `weights/*.pt` —
+  sumber training (dipakai saat ekspor ulang ONNX). **Masuk git** agar clone
+  langsung jalan.
 - `data/` — output runtime (captures, foto waypoint, video sesi, peta sementara,
   `monitor/`). Di-ignore git.
 - `core/libaterkia.so` — di-ignore git (build lokal; `setup_minimal.sh`

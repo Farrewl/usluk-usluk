@@ -10,7 +10,7 @@ Panduan praktis dari nol sampai siap di air. Untuk arsitektur lihat
 ### Linux / Raspberry Pi
 
 ```bash
-./scripts/setup_minimal.sh          # bikin .venv minimal (torch CPU) + verifikasi
+./scripts/setup_minimal.sh          # bikin .venv ringan (tanpa torch) + verifikasi
 ```
 
 ### Windows (PowerShell, dari root repo)
@@ -19,9 +19,9 @@ Panduan praktis dari nol sampai siap di air. Untuk arsitektur lihat
 powershell -ExecutionPolicy Bypass -File scripts\setup_minimal.ps1
 ```
 
-Hasil: `.venv` ±1,3 GB dengan GUI PyQt, YOLO 4 model, MAVLink. Inti C
-(`core/libaterkia.so`) ikut di-build oleh script. Rincian di
-`requirements.txt`.
+Hasil: `.venv` ±540 MB (tanpa torch — hemat >2×) dengan GUI PyQt, YOLO 4
+model (ONNX), MAVLink. Inti C (`core/libaterkia.so`) ikut di-build oleh
+script. Rincian di `requirements.txt`.
 
 **Idempoten — aman dijalankan ulang.** Script memakai ulang `.venv` yang sudah
 ada (tidak menimpa) dan melewati instalasi bila paket inti sudah bisa
@@ -47,8 +47,9 @@ HANYA kalau ada perubahan C: `mingw32-make -C core windows`.
 
 ### Model YOLO (ikut di repo)
 
-4 model sudah ada di `weights/` (`buoy.pt`, `box_hijau.pt`,
-`best_blue_dark.pt`, `best_red_new.pt`) — **tak perlu unduh**.
+4 model sudah ada di `weights/` — runtime pakai `*.onnx` (`buoy.onnx`,
+`box_hijau.onnx`, `best_blue_dark.onnx`, `best_red_new.onnx`), sumber
+training `*.pt` ikut pula. **Tak perlu unduh**.
 
 ### Waypoint & lintasan
 

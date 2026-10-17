@@ -13,10 +13,10 @@ Nilai default di tabel = default kode saat `tuning_params.json` kosong.
 
 | Parameter | Default | Misi |
 |---|---|---|
-| `MODEL_PATH` | `weights/buoy.pt` | Gate (≥2 pelampung) |
-| `BOX_MODEL_PATH` | `weights/box_hijau.pt` | Foto kotak hijau |
-| `BLUE_BOX_MODEL_PATH` | `weights/best_blue_dark.pt` | Foto kotak biru (gelap) |
-| `RED_DOCK_MODEL_PATH` | `weights/best_red_new.pt` | Docking kotak merah |
+| `MODEL_PATH` | `weights/buoy.onnx` | Gate (≥2 pelampung) |
+| `BOX_MODEL_PATH` | `weights/box_hijau.onnx` | Foto kotak hijau |
+| `BLUE_BOX_MODEL_PATH` | `weights/best_blue_dark.onnx` | Foto kotak biru (gelap) |
+| `RED_DOCK_MODEL_PATH` | `weights/best_red_new.onnx` | Docking kotak merah |
 
 ---
 
@@ -45,7 +45,6 @@ Nilai default di tabel = default kode saat `tuning_params.json` kosong.
 | `OFFBOARD_STREAM_RATE_HZ` | `30` | Rate stream perintah offboard |
 | `MAV_CONNECT_TIMEOUT_S` | `2.0` | Batas sekali coba connect (loop tidak freeze) |
 | `MAV_RETRY_INTERVAL_S` | `5.0` | Jeda antar percobaan connect |
-| `TELEM_HYSTERESIS_FRAMES` | `5` | Frame bagus/gagal beruntun sebelum pindah sumber MOCK↔REAL |
 
 ---
 

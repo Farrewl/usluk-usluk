@@ -7,6 +7,7 @@
 | `settings.py` | Semua parameter & path (satu sumber kebenaran) | Semua modul |
 | `navigator.py` | Navigator produksi: state machine + MAVLink offboard (Pixhawk) | `main.py` |
 | `yolo_worker.py` | Worker inferensi YOLO async (thread murni, satu untuk semua model) | navigator |
+| `yolo_onnx.py` | Inferensi YOLOv8 ONNX via `cv2.dnn` (`OnnxDetector`, tanpa torch); API meniru ultralytics | navigator, yolo_worker |
 | `output_link.py` | Output ke Pixhawk: `SET_ATTITUDE_TARGET`, RTL, disarm | navigator |
 | `safety.py` | Failsafe otomatis (stale-link / low-batt) | navigator |
 | `camera.py` | Buka kamera V4L2/DSHOW, negosiasi resolusi, flip | navigator |
@@ -71,8 +72,8 @@
 
 | File | Fungsi |
 |---|---|
-| `setup_minimal.sh` / `.ps1` | Bikin `.venv` minimal (torch CPU) + build inti C + verifikasi (idempoten) |
-| `verify_env.py` | Verifikasi `.venv` (import inti + YOLO); dipakai setup Linux & Windows |
+| `setup_minimal.sh` / `.ps1` | Bikin `.venv` ringan (tanpa torch) + build inti C + verifikasi (idempoten) |
+| `verify_env.py` | Verifikasi `.venv` (import inti + inferensi YOLO ONNX); dipakai setup Linux & Windows |
 | `run_gui.sh` / `run.bat` | Jalankan GUI (Linux / Windows) |
 | `monitor_read.py` | Lihat/tail data `data/monitor/` dari terminal (debug / rujukan repo web) |
 
@@ -87,12 +88,14 @@
 
 | File | Misi |
 |---|---|
-| `buoy.pt` | Gate (2 pelampung) |
-| `box_hijau.pt` | Foto kotak hijau |
-| `best_blue_dark.pt` | Foto kotak biru (gelap) |
-| `best_red_new.pt` | Docking kotak merah |
+| `buoy.onnx` | Gate (2 pelampung) |
+| `box_hijau.onnx` | Foto kotak hijau |
+| `best_blue_dark.onnx` | Foto kotak biru (gelap) |
+| `best_red_new.onnx` | Docking kotak merah |
 
-Model lama/percobaan (`box_biru.pt`, `box_merah.pt`, `best_greendock.pt`) tidak dipakai.
+Tiap model punya pasangan `*.pt` (sumber training, dipakai saat ekspor ulang
+`.onnx`). Runtime hanya memakai `.onnx` via `cv2.dnn` (tanpa torch). Model
+lama/percobaan (`box_biru`, `box_merah`, `best_greendock`) sudah dihapus.
 
 ## `docs/`
 

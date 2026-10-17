@@ -20,6 +20,16 @@ CONFIG_DIR = os.path.join(ROOT_DIR, "config")
 WEIGHTS_DIR = os.path.join(ROOT_DIR, "weights")
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 
+# Nama kelas tiap model ONNX (urutan index HARUS sama dengan saat training).
+# Ditaruh di sini (bukan dibaca dari metadata .onnx) agar runtime tak butuh
+# paket `onnx`. Kunci = nama file di weights/.
+YOLO_NAMES = {
+    "buoy.onnx": {0: "green_ball", 1: "red_ball"},
+    "box_hijau.onnx": {0: "Box Hijau", 1: "Buoy Hijau", 2: "Buoy Merah"},
+    "best_blue_dark.onnx": {0: "Blue-Box"},
+    "best_red_new.onnx": {0: "Red-Box"},
+}
+
 TUNING_FILE = os.path.join(CONFIG_DIR, "tuning_params.json")
 SITE_FILE = os.path.join(CONFIG_DIR, "site.json")
 
@@ -252,7 +262,6 @@ TUNING_PARAM_KEYS = frozenset({
     "SECONDARY_PREVIEW_INTERVAL",
 
     "MAV_CONNECT_TIMEOUT_S", "MAV_RETRY_INTERVAL_S",
-    "TELEM_HYSTERESIS_FRAMES",
 
     "PERF_THREADS",
 })
@@ -312,10 +321,10 @@ class Config:
         self.PERF_THREADS = int(saved.get('PERF_THREADS', 0) or 0)
 
 
-        self.MODEL_PATH = os.path.join(WEIGHTS_DIR, 'buoy.pt')
-        self.BOX_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'box_hijau.pt')
-        self.BLUE_BOX_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best_blue_dark.pt')
-        self.RED_DOCK_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best_red_new.pt')
+        self.MODEL_PATH = os.path.join(WEIGHTS_DIR, 'buoy.onnx')
+        self.BOX_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'box_hijau.onnx')
+        self.BLUE_BOX_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best_blue_dark.onnx')
+        self.RED_DOCK_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best_red_new.onnx')
         self.CAMERA_INDEX = 1
 
 
@@ -355,8 +364,6 @@ class Config:
 
         self.MAV_CONNECT_TIMEOUT_S = saved.get('MAV_CONNECT_TIMEOUT_S', 2.0)
         self.MAV_RETRY_INTERVAL_S = saved.get('MAV_RETRY_INTERVAL_S', 5.0)
-        self.TELEM_HYSTERESIS_FRAMES = saved.get(
-            'TELEM_HYSTERESIS_FRAMES', 5)
 
 
         self.WAYPOINT_PHOTO_CAMERA_INDEX = 2
@@ -527,8 +534,6 @@ class Config:
 
 
         self.YOLO_RESULT_MAX_AGE_S = saved.get('YOLO_RESULT_MAX_AGE_S', 0.5)
-        self.YOLO_HALF_PRECISION = False
-        self.YOLO_DEVICE = 'cpu'
         self.RED_BALL_CLASS_ID = 1
         self.GREEN_BALL_CLASS_ID = 0
         self.GREEN_BOX_CLASS_ID = 0

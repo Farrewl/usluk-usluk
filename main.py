@@ -625,13 +625,18 @@ class MainWindow(QMainWindow):
 
 
         try:
-            self.video_panel.set_frame(data.get('frame'))
+            # frame=None saat tick di-throttle (VIDEO_GUI_HZ) — jangan
+            # clear panel (biar pixmap lama tampil, tanpa kedip).
+            if data.get("video_due", True):
+                self.video_panel.set_frame(data.get('frame'))
         except Exception:
             pass
 
         try:
             sec = data.get('frame_secondary')
-            if sec is not None:
+            if not data.get("video_due", True):
+                pass  # tick throttled: biarkan panel bawah tampil apa adanya
+            elif sec is not None:
 
 
 

@@ -173,6 +173,10 @@ CAMERA_MAX_AUTO_HEIGHT = 1080
 CAMERA_MIN_ACCEPT_FPS = 25
 GUI_TELEMETRY_HZ = 5
 GUI_MAP_HZ = 1
+# Rate kirim frame video ke panel GUI (resize + QImage + setPixmap di thread
+# Qt = kerja berat). Loop navigasi/deteksi TETAP di NAV_LOOP_FPS; hanya
+# kiriman pixmap ke GUI yang di-throttle. 0 = tanpa throttle.
+VIDEO_GUI_HZ = 12
 CAMERA_FLIP_MODE = 1
 
 
@@ -255,6 +259,7 @@ TUNING_PARAM_KEYS = frozenset({
     "YOLO_FRAME_SKIP", "YOLO_INFERENCE_SIZE", "YOLO_RESULT_MAX_AGE_S",
 
     "SECONDARY_PREVIEW_INTERVAL", "SECONDARY_FPS", "SECONDARY_CACHE_WIDTH",
+    "VIDEO_GUI_HZ",
 
     "MAV_CONNECT_TIMEOUT_S", "MAV_RETRY_INTERVAL_S",
 
@@ -544,6 +549,7 @@ class Config:
             'SECONDARY_PREVIEW_INTERVAL', 3)
         self.SECONDARY_FPS = saved.get('SECONDARY_FPS', 15)
         self.SECONDARY_CACHE_WIDTH = saved.get('SECONDARY_CACHE_WIDTH', 640)
+        self.VIDEO_GUI_HZ = saved.get('VIDEO_GUI_HZ', VIDEO_GUI_HZ)
 
 
 

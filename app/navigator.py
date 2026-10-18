@@ -215,6 +215,8 @@ class VisionNavigator:
             "", "0", "false", "off", "no")
         self._fps_dbg = {"n": 0, "t0": time.monotonic(),
                          "read": 0.0, "detect": 0.0, "emit": 0.0}
+        # Throttle video ke GUI (lihat _emit): ts kiriman pixmap terakhir.
+        self._video_gui_last = 0.0
         self._avoid_last_mono = time.monotonic()
 
 
@@ -1656,6 +1658,19 @@ class VisionNavigator:
               batt=None):
         frame = self._annotated_frame(frame)
         mav = self.mav
+        # Throttle kiriman video ke GUI (VIDEO_GUI_HZ). Kerja berat ada di
+        # thread Qt (resize INTER_AREA + QImage + setPixmap) — dikirim tiap
+        # loop (30 Hz x 2 panel) membuat Qt thread jenuh dan loop navigator
+        # berebut CPU. Telemetri/status TETAP full-rate; hanya frame video
+        # yang di-throttle. Deteksi & navigasi tak terpengaruh (frame lokal
+        # tetap dipakai penuh di loop).
+        _now = time.monotonic()
+        _hz = float(getattr(self.config, "VIDEO_GUI_HZ", 0) or 0)
+        if _hz > 0.0 and (_now - self._video_gui_last) < (1.0 / _hz):
+            video_due = False
+        else:
+            video_due = True
+            self._video_gui_last = _now
         pkt = {
             "lat": self.current_lat, "lon": self.current_lon,
             "yaw_deg": math.degrees(self.current_yaw_rad or 0.0),
@@ -1670,8 +1685,9 @@ class VisionNavigator:
             "mav_reason": getattr(self, "_mav_reason", ""),
             "telem_source": "REAL",
             "gps_fix": bool(self.current_lat is not None),
-            "frame": frame,
-            "frame_secondary": sec,
+            "frame": frame if video_due else None,
+            "frame_secondary": sec if video_due else None,
+            "video_due": video_due,
             "cam_status": cam_st,
             "op_mode": op_mode,
             "manual_active": bool(man.get("active", False)),

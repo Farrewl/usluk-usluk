@@ -183,11 +183,23 @@ class CameraSlot:
 
 
 class CameraManager:
-    """Pegang kamera primary + secondary."""
+    """Pegang kamera primary + secondary.
+
+    Primary (NAV) dibaca blocking dari loop navigator sesuai kebutuhan.
+
+    Secondary (BAWAH) dibaca TERUS-MENERUS oleh thread daemon terpisah
+    (`_sec_thread`) lalu disimpan sebagai cache kecil. `read_secondary()`
+    HANYA mengembalikan cache (non-blocking) - loop navigasi tak PERNAH
+    menunggu `cap.read()` kamera bawah. Ini kuncinya: baca kamera bawah
+    yang blocking (apalagi bandwidth USB terbagi 2 UVC) dulu menahan loop
+    NAV sehingga fps jatuh ke ~2. Lock dipisah (`_lock_prim` vs
+    `_lock_sec`) supaya baca bawah tak pernah menahan baca primary.
+    """
 
     def __init__(self, config):
         self.config = config
-        self._lock = threading.Lock()
+        self._lock_prim = threading.Lock()
+        self._lock_sec = threading.Lock()
         prim_idx = getattr(config, "CAMERA_INDEX", 0)
         sec_idx = getattr(config, "WAYPOINT_PHOTO_CAMERA_INDEX", 1)
         fps = getattr(config, "CAMERA_TARGET_FPS", 30)
@@ -195,15 +207,64 @@ class CameraManager:
         self.primary = CameraSlot("NAV", prim_idx, target_fps=fps,
                                   auto_highest=True, flip_mode=flip)
 
+        # Kamera bawah dibuka cap fps rendah + cache kecil untuk tekan
+        # bandwidth USB saat berbagi controller dengan NAV.
+        sec_fps = int(getattr(config, "SECONDARY_FPS", 15) or 15)
+        sec_w = int(getattr(config, "SECONDARY_CACHE_WIDTH", 640) or 640)
+        self._sec_fps = max(1, sec_fps)
+        self._cache_width = max(160, sec_w)
         self.secondary = CameraSlot("BAWAH", sec_idx, width=640,
-                                    height=480, flip_mode=flip)
+                                    height=480, target_fps=self._sec_fps,
+                                    flip_mode=flip)
         self._reported_retry = {"NAV": False, "BAWAH": False}
 
+        # Cache frame bawah + thread pembaca (di balik lock kecil).
+        self._cache_lock = threading.Lock()
+        self._sec_latest = None
+        self._sec_latest_ts = 0.0
+        self._sec_running = threading.Event()
+        self._sec_running.set()
+        self._sec_thread = threading.Thread(
+            target=self._sec_loop, daemon=True, name="sec-reader")
+        self._sec_thread.start()
 
+    # ---- thread reader kamera bawah --------------------------------
+    def _sec_loop(self):
+        """Baca kamera bawah terus-menerus -> cache. Tak menyentuh NAV."""
+        interval = 1.0 / float(self._sec_fps)
+        while self._sec_running.is_set():
+            t0 = time.monotonic()
+            try:
+                with self._lock_sec:
+                    ok, frame, _st = self.secondary.read()
+                if ok and frame is not None:
+                    small = self._downscale(frame, self._cache_width)
+                    with self._cache_lock:
+                        self._sec_latest = small
+                        self._sec_latest_ts = time.monotonic()
+            except Exception:
+                pass
+            dt = time.monotonic() - t0
+            if dt < interval:
+                time.sleep(interval - dt)
+
+    @staticmethod
+    def _downscale(frame, max_width):
+        """Resize bila lebih lebar dari max_width (INTER_AREA)."""
+        try:
+            h, w = frame.shape[:2]
+            if w > max_width:
+                scale = max_width / float(w)
+                nh, nw = int(h * scale), int(w * scale)
+                return cv2.resize(frame, (nw, nh),
+                                  interpolation=cv2.INTER_AREA)
+        except Exception:
+            pass
+        return frame
 
     def read_primary(self, fb_width=1280, fb_height=720):
         """Frame navigasi + teks status jujur untuk fallback."""
-        with self._lock:
+        with self._lock_prim:
             ok, frame, st = self.primary.read()
         if ok and frame is not None:
             self._reported_retry["NAV"] = False
@@ -228,21 +289,25 @@ class CameraManager:
         return False, fb, st
 
     def read_secondary(self, max_width=320):
-        """Frame kecil bawah air (downscale) atau None bila tak ada."""
-        with self._lock:
-            ok, frame, st = self.secondary.read()
-        if not ok or frame is None:
-            return False, None, st
-        try:
-            h, w = frame.shape[:2]
-            if w > max_width:
-                scale = max_width / float(w)
-                nh, nw = int(h * scale), int(w * scale)
-                frame = cv2.resize(frame, (nw, nh),
-                                   interpolation=cv2.INTER_AREA)
-        except Exception:
-            pass
+        """Ambil cache kamera bawah (NON-BLOCKING) atau None bila belum ada.
+
+        Tidak memanggil cap.read() - frame datang dari thread `_sec_loop`.
+        `max_width` hanya membatasi lebar hasil; cache disimpan pada
+        lebar `SECONDARY_CACHE_WIDTH` (640).
+        """
+        with self._cache_lock:
+            frame = self._sec_latest
+        if frame is None:
+            return False, None, "NO_CAM"
+        if max_width and frame.shape[1] > max_width:
+            frame = self._downscale(frame, max_width)
         return True, frame, "OK"
+
+    def secondary_fresh(self, max_age_s=1.0):
+        """True bila cache kamera bawah masih segar (< max_age_s)."""
+        with self._cache_lock:
+            ts = self._sec_latest_ts
+        return ts > 0 and (time.monotonic() - ts) <= max_age_s
 
 
 
@@ -254,7 +319,7 @@ class CameraManager:
             return []
 
     def select_primary(self, index):
-        with self._lock:
+        with self._lock_prim:
             ok = self.primary.select(index)
             try:
                 self.config.CAMERA_INDEX = int(index)
@@ -265,7 +330,7 @@ class CameraManager:
         return ok
 
     def select_secondary(self, index):
-        with self._lock:
+        with self._lock_sec:
             ok = self.secondary.select(index)
             try:
                 self.config.WAYPOINT_PHOTO_CAMERA_INDEX = int(index)
@@ -276,15 +341,23 @@ class CameraManager:
         return ok
 
     def status(self):
-        with self._lock:
-            return {
-                "primary": self.primary.status(),
-                "secondary": self.secondary.status(),
-            }
+        with self._lock_prim:
+            prim = self.primary.status()
+        with self._lock_sec:
+            sec = self.secondary.status()
+        return {"primary": prim, "secondary": sec}
 
     def close(self):
-        with self._lock:
+        try:
+            self._sec_running.clear()
+            th = self._sec_thread
+            if th is not None and th.is_alive():
+                th.join(timeout=1.0)
+        except Exception:
+            pass
+        with self._lock_prim:
             self.primary.close()
+        with self._lock_sec:
             self.secondary.close()
 
 

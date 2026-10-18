@@ -221,18 +221,6 @@ def _apply_mode(cap, fourcc_val, width, height, target_fps):
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     except Exception:
         pass
-    try:
-        if platform.system() != "Windows":
-            try:
-                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1.0)
-            except Exception:
-                pass
-            try:
-                cap.set(cv2.CAP_PROP_EXPOSURE, -1.0)
-            except Exception:
-                pass
-    except Exception:
-        pass
 
 
 def _measure_fps(cap, seconds=0.6):
@@ -493,18 +481,6 @@ def _open_fast_primary(index, target_fps):
                 c.set(cv2.CAP_PROP_FPS, float(target_fps))
             try:
                 c.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            except Exception:
-                pass
-            try:
-                if platform.system() != "Windows":
-                    try:
-                        c.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1.0)
-                    except Exception:
-                        pass
-                    try:
-                        c.set(cv2.CAP_PROP_EXPOSURE, -1.0)
-                    except Exception:
-                        pass
             except Exception:
                 pass
         except Exception:

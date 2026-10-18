@@ -210,6 +210,11 @@ class VisionNavigator:
 
 
         self.avoid_state = {"yaw_bias": 0.0, "memory_s": 0.0}
+        # Instrumen loop (ASV_FPS_DEBUG=1): akumulasi ms per tahap + Hz.
+        self._fps_dbg_on = os.environ.get("ASV_FPS_DEBUG", "") not in (
+            "", "0", "false", "off", "no")
+        self._fps_dbg = {"n": 0, "t0": time.monotonic(),
+                         "read": 0.0, "detect": 0.0, "emit": 0.0}
         self._avoid_last_mono = time.monotonic()
 
 
@@ -1100,6 +1105,35 @@ class VisionNavigator:
 
 
 
+    def _fps_debug_tick(self, t_read, t_detect, t_emit):
+        """Instrumentasi loop (hanya bila env ASV_FPS_DEBUG=1).
+
+        Sekali/dtk cetak rata-rata ms tiap tahap + Hz loop nyata. Dipakai
+        untuk tunjuk bottleneck (baca kamera vs deteksi vs emit/GUI) tanpa
+        nebak. Diamkan bila env tak diset — nol biaya di produksi.
+        """
+        d = self._fps_dbg
+        d["n"] += 1
+        d["read"] += t_read
+        d["detect"] += t_detect
+        d["emit"] += t_emit
+        now = time.monotonic()
+        if now - d["t0"] < 1.0:
+            return
+        n = max(1, d["n"])
+        elapsed = now - d["t0"]
+        log.info(
+            "[FPS-DEBUG] loop=%.1fHz | baca=%.1fms deteksi=%.1fms "
+            "emit/GUI=%.1fms | sisa=%.1fms",
+            d["n"] / elapsed,
+            1000.0 * d["read"] / n, 1000.0 * d["detect"] / n,
+            1000.0 * d["emit"] / n,
+            max(0.0, 1000.0 * elapsed / n
+                - 1000.0 * (d["read"] + d["detect"] + d["emit"]) / n))
+        d["n"] = 0
+        d["read"] = d["detect"] = d["emit"] = 0.0
+        d["t0"] = now
+
     def run(self, data_signal):
         log.info("Navigator PRODUKSI start (OFFBOARD via Pixhawk).")
         self.running = True
@@ -1112,13 +1146,23 @@ class VisionNavigator:
         while self.running and (self.current_lat is None
                                 or self.current_yaw_rad is None):
             self._poll_telemetry()
+            _t0 = time.monotonic() if self._fps_dbg_on else 0.0
             frame, sec, cam_st = self._read_frames()
+            _t_read = (time.monotonic() - _t0) if self._fps_dbg_on else 0.0
             self.output.send(0.0, self.current_yaw_rad or 0.0, force_send=True)
+            _t0e = time.monotonic() if self._fps_dbg_on else 0.0
             self._emit(data_signal, frame, sec, cam_st, "WAITING_GPS",
                        0.0, 0.0, 0.0, "WAITING_GPS", "AUTO",
                        {"active": False}, {"active": False}, "", {"active": False})
+            _t_emit = (time.monotonic() - _t0e) if self._fps_dbg_on else 0.0
             if frame is not None and not cam_st.startswith("NO"):
+                _t0d = time.monotonic() if self._fps_dbg_on else 0.0
                 self._request_detections(frame)
+                if self._fps_dbg_on:
+                    self._fps_debug_tick(_t_read, time.monotonic() - _t0d,
+                                         _t_emit)
+            elif self._fps_dbg_on:
+                self._fps_debug_tick(_t_read, 0.0, _t_emit)
             deadline = pace_to_fps(deadline)
             time.sleep(0.02)
 
@@ -1172,7 +1216,10 @@ class VisionNavigator:
                 # Startup aman / operator tekan HOLD: kapal ditahan.
                 op_mode = "HOLD"
 
+            _t0 = time.monotonic() if self._fps_dbg_on else 0.0
             frame, sec, cam_st = self._read_frames()
+            _t_read = (time.monotonic() - _t0) if self._fps_dbg_on else 0.0
+            _t_detect = 0.0
             now = time.time()
             n_wp = len(self.waypoints)
 
@@ -1218,7 +1265,10 @@ class VisionNavigator:
             gate_distance = box_distance = float('inf')
 
             if op_mode == "AUTO":
+                _t0 = time.monotonic() if self._fps_dbg_on else 0.0
                 self._request_detections(frame)
+                if self._fps_dbg_on:
+                    _t_detect = time.monotonic() - _t0
             st = self.current_state
             inp = {}
 
@@ -1552,10 +1602,14 @@ class VisionNavigator:
             self.output.send(thrust, target_yaw, lateral_thrust=lateral)
             self._visualize(frame, detections, best_gate, best_box,
                             jarak_ke_wp, box_distance, print_status)
+            _t0 = time.monotonic() if self._fps_dbg_on else 0.0
             self._emit(data_signal, frame, sec, cam_st, self.current_state,
                        jarak_ke_wp, float(self.current_groundspeed),
                        getattr(self.mav, "groundspeed", 0.0), print_status,
                        op_mode, man, qgc, fs_reason, avoid, batt)
+            if self._fps_dbg_on:
+                self._fps_debug_tick(_t_read, _t_detect,
+                                     time.monotonic() - _t0)
 
             deadline = pace_to_fps(deadline)
 

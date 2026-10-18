@@ -3,6 +3,7 @@ import os
 import time
 
 import cv2
+import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QSplitter, QFrame,
                              QPushButton, QTabWidget, QComboBox)
@@ -117,8 +118,17 @@ class VideoPanel(QWidget):
                         frame, (int(w * scale), int(h * scale)),
                         interpolation=cv2.INTER_AREA)
                 h, w, ch = disp.shape
-            q_img = QImage(disp.data, w, h, ch * w,
-                           QImage.Format_RGB888).rgbSwapped()
+            try:
+                fmt = QImage.Format_BGR888
+            except AttributeError:
+                fmt = None
+            if fmt is not None:
+                if not disp.flags["C_CONTIGUOUS"]:
+                    disp = np.ascontiguousarray(disp)
+                q_img = QImage(disp.data, w, h, disp.strides[0], fmt)
+            else:
+                q_img = QImage(disp.data, w, h, ch * w,
+                               QImage.Format_RGB888).rgbSwapped()
             self.video_label.setPixmap(QPixmap.fromImage(q_img))
         except Exception:
             pass
@@ -255,6 +265,15 @@ class MainWindow(QMainWindow):
             " background: transparent;")
         l.addWidget(self.side_param)
         layout.addWidget(f)
+
+        self.start_btn = QPushButton("▶ MULAI AUTO")
+        self.start_btn.setObjectName("startBtn")
+        self.start_btn.setCheckable(True)
+        if not getattr(self.nav_thread.config, "STARTUP_HOLD", True):
+            self.start_btn.setChecked(True)
+            self.start_btn.setText("⏸ HOLD")
+        self.start_btn.clicked.connect(self.on_start_toggle)
+        layout.addWidget(self.start_btn)
 
         self.kill_btn = QPushButton("⏹ KILL")
         self.kill_btn.setObjectName("killBtn")
@@ -451,8 +470,6 @@ class MainWindow(QMainWindow):
                 c.PHOTO_BOX_LEGS = trk["photo_box_legs"]
             if "blue_box_photo_legs" in trk:
                 c.BLUE_BOX_PHOTO_LEGS = trk["blue_box_photo_legs"]
-            if "red_box_nav_after_wp" in trk:
-                c.RED_BOX_NAV_AFTER_WP = trk["red_box_nav_after_wp"]
             wps = cfg.track_waypoints(name)
             self.nav_thread.update_waypoints(wps)
             self._refresh_map_waypoints()
@@ -468,6 +485,26 @@ class MainWindow(QMainWindow):
         self._settings_dlg.show()
         self._settings_dlg.raise_()
         self._settings_dlg.activateWindow()
+
+    def on_start_toggle(self):
+        """▶ MULAI AUTO / ⏸ HOLD dari operator.
+
+        Saat startup kapal HOLD (aman); tombol ini melepasnya ke AUTO/
+        OFFBOARD. Saat ditekan lagi kapal kembali HOLD. QGroundControl
+        ikut ter-mirror karena Pixhawk broadcast HEARTBEAT custom_mode.
+        """
+        on = self.start_btn.isChecked()
+        self.start_btn.setText("⏸ HOLD" if on else "▶ MULAI AUTO")
+        try:
+            n = self.nav_thread.navigator
+            if on:
+                if hasattr(n, "start_auto"):
+                    n.start_auto()
+            else:
+                if hasattr(n, "stop_auto"):
+                    n.stop_auto()
+        except Exception as e:
+            print(f"[START] Gagal toggle auto: {e}")
 
     def on_manual_kill_toggle(self):
         """KILL / Estop dari GUI: masuk jalur C (mode_manager KILL) +

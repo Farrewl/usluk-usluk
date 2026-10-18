@@ -211,16 +211,14 @@ class SettingsDialog(QDialog):
                       -5.0, 5.0, 0.1)
         self._add_row(f, "YAW_SEARCH:", "BLUE_BOX_YAW_SEARCH",
                       -180, 180, 5, is_int=True)
-        self._add_header(f, "Misi Docking (Box Merah)")
-        self._add_row(f, "ALIGN_THRUST:", "DOCK_ALIGN_THRUST", 0.0, 1.0, 0.05)
+        self._add_row(f, "DOCK_DISTANCE_M:", "BLUE_BOX_DOCK_DISTANCE_M",
+                      0.1, 5.0, 0.1)
+        self._add_row(f, "LATERAL_THRUST:", "BLUE_BOX_LATERAL_THRUST",
+                      -1.0, 1.0, 0.05)
         self._add_row(f, "HOLD_DURATION_S:", "DOCK_HOLD_DURATION_S",
                       0.0, 20.0, 0.5)
-        self._add_row(f, "BOX_WIDTH_METERS:", "RED_BOX_WIDTH_METERS",
-                      0.1, 2.0, 0.05)
-        self._add_row(f, "DOCK_DISTANCE_M:", "RED_BOX_DOCK_DISTANCE_M",
-                      0.1, 5.0, 0.1)
-        self._add_row(f, "YAW_SEARCH:", "YAW_SEARCH_DOCK",
-                      -180, 180, 5, is_int=True)
+        self._add_row(f, "NAV_LOOP_FPS:", "NAV_LOOP_FPS",
+                      5, 60, 1, is_int=True)
 
         f = self._form_page("YOLO+Sistem")
         self._add_header(f, "YOLO & System")

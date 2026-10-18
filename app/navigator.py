@@ -102,7 +102,6 @@ class VisionNavigator:
     _MID_GATE = "gate"
     _MID_BOX = "box"
     _MID_BLUE = "blue"
-    _MID_RED = "red"
 
     def __init__(self, config):
         self.config = config
@@ -139,7 +138,6 @@ class VisionNavigator:
         self.gate_model = None
         self.box_model = None
         self.blue_box_model = None
-        self.red_dock_model = None
         self._models_loading = False
         self._models_loaded = False
         self.yolo_worker = YoloWorker(self.config)
@@ -194,13 +192,13 @@ class VisionNavigator:
         self.blue_box_confirm_timer = None
         self.blue_box_lost_timer = None
         self._wp_photo_taken = False
-        self._blue_photo_taken = False
-
 
         self.manual_link = ManualLink(config)
         self.qgc_link = QgcOffboard(config)
         self.manual_gui_request = False
         self.kill_request = False
+        # Startup aman: kapal HOLD dulu; operator wajib tekan MULAI (AUTO).
+        self.auto_started = not bool(getattr(config, "STARTUP_HOLD", True))
         self.manual_last = {"surge": 0.0, "yaw": 0.0, "active": False,
                             "mode": 0, "mode_name": "AUTO", "rc_ok": False,
                             "source": "AUTO"}
@@ -249,8 +247,6 @@ class VisionNavigator:
             for attr, path, label in (
                     ("gate_model", self.config.MODEL_PATH, "GATE BUOY"),
                     ("box_model", self.config.BOX_MODEL_PATH, "BOX HIJAU"),
-                    ("red_dock_model", self.config.RED_DOCK_MODEL_PATH,
-                     "BOX MERAH"),
                     ("blue_box_model", self.config.BLUE_BOX_MODEL_PATH,
                      "BOX BIRU")):
                 try:
@@ -407,10 +403,13 @@ class VisionNavigator:
                     self.config.BUOY_CONF_SMALL_THRESHOLD)
         elif st in ("APPROACH_BOX_SEARCH", "APPROACH_BOX_ALIGN"):
             want = (self._MID_BOX, self.box_model, 0.25)
-        elif st in ("APPROACH_BLUE_BOX_SEARCH", "APPROACH_BLUE_BOX_ALIGN"):
+        elif st in ("APPROACH_BLUE_BOX_SEARCH", "APPROACH_BLUE_BOX_ALIGN",
+                    "APPROACH_BLUE_BOX_APPROACH"):
+            # Docking biru = deteksi lewat KAMERA BAWAH (bukan depan).
             want = (self._MID_BLUE, self.blue_box_model, 0.25)
-        elif st in ("APPROACH_RED_BOX_SEARCH", "APPROACH_RED_BOX_ALIGN"):
-            want = (self._MID_RED, self.red_dock_model, 0.25)
+            bot = self._bottom_frame()
+            if bot is not None:
+                frame = bot
         if want is None:
             return
         mid, model, conf = want
@@ -529,8 +528,6 @@ class VisionNavigator:
             return self._parse_detections(self._take_latest(self._MID_BOX))
         if model is self.blue_box_model:
             return self._parse_detections(self._take_latest(self._MID_BLUE))
-        if model is self.red_dock_model:
-            return self._parse_detections(self._take_latest(self._MID_RED))
         return {}
 
 
@@ -636,20 +633,56 @@ class VisionNavigator:
         self.last_used_p_gain = self.config.VISION_P_GAIN
         return self._apply_yaw_pid(raw_correction_rad, self.config.VISION_P_GAIN)
 
-    def _calculate_yaw_correction_red_box(self, best_box, distance_m):
-        if not isinstance(best_box, dict) or 'cx' not in best_box:
+    def _blue_approach_thrust(self, distance_m):
+        """Deselerasi maju: thrust makin kecil saat makin dekat kotak biru.
+
+        thrust = clamp(map(distance, [DOCK_DIST, APPROACH_DIST],
+                            [0, BLUE_BOX_ALIGN_THRUST]))
+        """
+        dock_d = float(getattr(self.config, "BLUE_BOX_DOCK_DISTANCE_M", 0.6))
+        appr_d = float(getattr(self.config, "BLUE_BOX_APPROACH_DISTANCE_M", 1.5))
+        max_t = float(getattr(self.config, "BLUE_BOX_ALIGN_THRUST", 0.3))
+        if appr_d <= dock_d:
             return 0.0
-        midpoint_x = best_box['cx']
-        raw_correction_rad = core.yaw_correction_c(
-            midpoint_x, self.image_center_x, distance_m,
+        t = (distance_m - dock_d) / (appr_d - dock_d)
+        t = max(0.0, min(1.0, t))
+        return max_t * t
+
+    def _single_buoy_avoid(self, detections, base_yaw):
+        """Hanya 1 buoy terlihat (tak form gate): belok menjauh.
+
+        - Buoy HIJAU terlihat sendiri -> belok KANAN (buang hijau ke kiri).
+        - Buoy MERAH terlihat sendiri -> belok KIRI  (buang merah ke kanan).
+        Aktif hanya bila buoy cukup dekat (<= SINGLE_BUOY_CLEARANCE_M).
+        Return (yaw_baru, status) atau (None, None) bila tak aktif.
+        """
+        if not bool(getattr(self.config, "SINGLE_BUOY_ENABLED", True)):
+            return None, None
+        min_area = self.config.MIN_BUOY_AREA_PX
+        red = [b for b in detections.get(self.config.RED_BALL_CLASS_ID, [])
+               if b['area'] >= min_area]
+        green = [b for b in detections.get(self.config.GREEN_BALL_CLASS_ID, [])
+                 if b['area'] >= min_area]
+        if (red and green) or (not red and not green):
+            return None, None  # sudah gate penuh, atau tak ada buoy
+        # Pilih buoy terdekat (area terbesar sebagai proksi jarak).
+        solo = (red or green)[0]
+        for b in (red or green):
+            if b['area'] > solo['area']:
+                solo = b
+        # Estimasi jarak monokular dari lebar buoy (asumsi lebar fisik gate).
+        dist = self._get_distance_to_box(
+            solo, float(getattr(self.config, "GATE_WIDTH_METERS", 0.6)),
             self.config.FOCAL_LENGTH_PX)
-        dynamic_p_gain = self.config.VISION_P_GAIN
-        if FUZZY_ENABLED:
-            dynamic_p_gain = core.fuzzy_docking_gain(
-                min(max(distance_m, 0.0), 10.0),
-                abs(midpoint_x - self.image_center_x))
-        self.last_used_p_gain = dynamic_p_gain
-        return self._apply_yaw_pid(raw_correction_rad, dynamic_p_gain)
+        if dist > float(getattr(self.config, "SINGLE_BUOY_CLEARANCE_M", 2.5)):
+            return None, None
+        # Belok menjauh: hijau di kanan frame -> belok kanan; merah -> kiri.
+        is_green = bool(green)
+        steer = +1.0 if is_green else -1.0
+        bias = math.radians(20.0) * steer
+        yaw = self._normalize_angle(base_yaw + bias)
+        color = "HIJAU" if is_green else "MERAH"
+        return yaw, f"AVOID-{color} ({dist:.1f}m)"
 
     def _get_gate_nav_yaw(self, bearing_ke_wp, best_gate, gate_distance):
         start_lat, start_lon = self.leg_start_lat, self.leg_start_lon
@@ -803,6 +836,21 @@ class VisionNavigator:
 
 
 
+    def _bottom_frame(self):
+        """Frame kamera bawah (BAWAH) untuk deteksi docking biru, atau None.
+
+        Membaca kamera bawah tiap dipanggil (tanpa throttle preview) supaya
+        deteksi selalu pakai frame segar. Flip ikut CAMERA_FLIP_MODE.
+        """
+        if self.cam is None:
+            return None
+        try:
+            ok, frame, _ = self.cam.read_secondary(
+                max_width=int(getattr(self.config, "FRAME_WIDTH", 1280)))
+            return frame if ok and frame is not None else None
+        except Exception:
+            return None
+
     def _capture_secondary(self):
         cap = self.cam.secondary.cap if self.cam is not None else None
         if cap is None or not cap.isOpened():
@@ -910,22 +958,62 @@ class VisionNavigator:
 
 
 
+    def start_auto(self):
+        """Operator tekan MULAI: minta Pixhawk masuk mode misi (AUTO/GUIDED).
+
+        Sebelum ini kapal tetap HOLD (aman). Dipanggil dari GUI thread —
+        hanya menyalakan flag & kirim DO_SET_MODE; loop yang bergerak.
+        """
+        self.auto_started = True
+        try:
+            self.output.request_offboard()
+        except Exception as e:
+            log.warning("Gagal kirim OFFBOARD: %s", e)
+        log.info("Operator: MULAI AUTO — kapal lepas dari HOLD.")
+
+    def stop_auto(self):
+        """Operator tekan HOLD: kapal berhenti di tempat, kembali HOLD."""
+        self.auto_started = False
+        try:
+            self.output.request_hold()
+        except Exception as e:
+            log.warning("Gagal kirim HOLD: %s", e)
+        log.info("Operator: HOLD — kapal ditahan di tempat.")
+
+    def _sync_auto_from_qgc(self):
+        """Mirror custom_mode HEARTBEAT (QGC) -> auto_started.
+
+        Bila operator mengubah mode lewat QGroundControl (AUTO/GUIDED),
+        navigator ikut start; kalau ke MANUAL/HOLD, navigator ikut hold.
+        """
+        if self.mav is None:
+            return
+        mid = getattr(self.mav, "flight_mode_id", None)
+        if mid is None:
+            return
+        auto_ids = {int(getattr(self.config, "FLIGHT_MODE_AUTO", 10)),
+                    int(getattr(self.config, "FLIGHT_MODE_OFFBOARD", 15))}
+        hold_ids = {int(getattr(self.config, "FLIGHT_MODE_HOLD", 4)),
+                    int(getattr(self.config, "FLIGHT_MODE_MANUAL", 0))}
+        if mid in auto_ids:
+            self.auto_started = True
+        elif mid in hold_ids:
+            self.auto_started = False
+
     def _set_state(self, new_state):
         if self.current_state == new_state:
             return
         self.current_state = new_state
         if new_state == "TAKE_WAYPOINT_PHOTO":
             self._wp_photo_taken = False
-        elif new_state == "TAKE_BLUE_BOX_PHOTO":
-            self._blue_photo_taken = False
         log.info("STATE -> %s", new_state)
 
     def _apply_transition(self, res, state_before):
         """Terapkan efek samping dari `sm_transition` (C)."""
         if res["wp_inc"]:
             old = self.current_waypoint_index
-            if state_before in ("RETREAT", "BLUE_BOX_RETREAT",
-                                "RED_BOX_DOCKED", "TAKE_WAYPOINT_PHOTO"):
+            if state_before in ("RETREAT", "BLUE_BOX_DOCKED",
+                                "TAKE_WAYPOINT_PHOTO"):
                 self.leg_start_lat, self.leg_start_lon = (
                     self.current_lat, self.current_lon)
             elif 0 <= old < len(self.waypoints):
@@ -943,8 +1031,7 @@ class VisionNavigator:
 
 
     def _visualize(self, frame, detections, best_gate, best_box,
-                   best_red_box, jarak_ke_wp, box_distance,
-                   red_box_distance, print_status):
+                   jarak_ke_wp, box_distance, print_status):
         cv2.putText(frame, f"STATE: {self.current_state}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         wp_text = (f"Next WP: #{self.current_waypoint_index} "
@@ -982,22 +1069,13 @@ class VisionNavigator:
                 cv2.circle(frame, (best_box['cx'], best_box['cy']), 7,
                            (0, 255, 128), -1)
         elif (self.current_state.startswith("APPROACH_BLUE_BOX")
-              or self.current_state in ("TAKE_BLUE_BOX_PHOTO",
-                                        "BLUE_BOX_RETREAT")):
+              or self.current_state == "BLUE_BOX_DOCKED"):
             for box in detections.get(self.config.BLUE_BOX_CLASS_ID, []):
                 cv2.rectangle(frame, box['box'][0:2], box['box'][2:],
                               (255, 128, 0), 3)
             if best_box:
                 cv2.circle(frame, (best_box['cx'], best_box['cy']), 7,
                            (255, 128, 0), -1)
-        elif (self.current_state.startswith("APPROACH_RED_BOX")
-              or self.current_state == "RED_BOX_DOCKED"):
-            for box in detections.get(self.config.RED_BOX_CLASS_ID, []):
-                cv2.rectangle(frame, box['box'][0:2], box['box'][2:],
-                              (0, 128, 255), 3)
-            if best_red_box:
-                cv2.circle(frame, (best_red_box['cx'], best_red_box['cy']), 7,
-                           (0, 128, 255), -1)
         if self.video_writer is not None:
             self.video_writer.write(frame)
 
@@ -1089,6 +1167,11 @@ class VisionNavigator:
                            rc_ok=bool(qgc.get("rc_ok", False)), source="QGC")
                 op_mode = "MANUAL"
 
+            self._sync_auto_from_qgc()
+            if not self.auto_started:
+                # Startup aman / operator tekan HOLD: kapal ditahan.
+                op_mode = "HOLD"
+
             frame, sec, cam_st = self._read_frames()
             now = time.time()
             n_wp = len(self.waypoints)
@@ -1131,8 +1214,8 @@ class VisionNavigator:
             lateral = 0.0
             print_status = "???"
             detections = {}
-            best_gate = best_box = best_red_box = None
-            gate_distance = box_distance = red_box_distance = float('inf')
+            best_gate = best_box = None
+            gate_distance = box_distance = float('inf')
 
             if op_mode == "AUTO":
                 self._request_detections(frame)
@@ -1167,6 +1250,12 @@ class VisionNavigator:
                     best_gate, gate_distance = self._track_gate(detections)
                     target_yaw, print_status = self._get_gate_nav_yaw(
                         bearing_ke_wp, best_gate, gate_distance)
+                    if best_gate is None:
+                        # Tak ada pasangan gate — coba single-buoy avoid.
+                        avoid_yaw, avoid_st = self._single_buoy_avoid(
+                            detections, target_yaw)
+                        if avoid_yaw is not None:
+                            target_yaw, print_status = avoid_yaw, avoid_st
                     thrust = self.config.THRUST_VALUE
                 else:
                     thrust = 0.0
@@ -1188,9 +1277,6 @@ class VisionNavigator:
                 elapsed = now - self.task_timer
                 inp["wp_idx"] = self.current_waypoint_index
                 inp["n_wp"] = n_wp
-                inp["wp_is_red_after"] = (
-                    self.current_waypoint_index == self.config.RED_BOX_NAV_AFTER_WP)
-                inp["red_model"] = self.red_dock_model is not None
                 inp["wp_photo_over"] = (
                     elapsed > self.config.WAYPOINT_PHOTO_STOP_DURATION_S)
                 if elapsed < 0.5:
@@ -1326,7 +1412,6 @@ class VisionNavigator:
                         + math.radians(self.config.BLUE_BOX_YAW_SEARCH))
                     print_status = "BLUE_BOX_SEARCH (Rotating)"
 
-
             elif st == "APPROACH_BLUE_BOX_ALIGN":
                 detections = self._detect(frame, self.blue_box_model)
                 best_box = self._find_best_box(
@@ -1350,7 +1435,7 @@ class VisionNavigator:
                     else:
                         inp["blue_aligned"] = 1
                         thrust = 0.0
-                        print_status = "BLUE_BOX_ALIGN (Reached!)"
+                        print_status = "BLUE_BOX_ALIGN (Aligned!)"
                 else:
                     if self.blue_box_lost_timer is None:
                         self.blue_box_lost_timer = now
@@ -1366,101 +1451,54 @@ class VisionNavigator:
                         thrust = 0.0
                         print_status = "BLUE_BOX_ALIGN (Lost > 2s)"
 
-
-            elif st == "TAKE_BLUE_BOX_PHOTO":
-                thrust = 0.0
-                target_yaw = self.current_yaw_rad or 0.0
-                elapsed = now - self.task_timer
-                inp["blue_photo_over"] = (
-                    elapsed > (self.config.WAYPOINT_PHOTO_STOP_DURATION_S + 2.0))
-                if elapsed < 2.0:
-                    print_status = "PHOTO_BLUE (Stabilizing..)"
-                elif elapsed < 4.0:
-                    if not self._blue_photo_taken:
-                        self._smart_capture_blue()
-                        self._blue_photo_taken = True
-                    print_status = "PHOTO_BLUE (Snap!)"
-                else:
-                    print_status = f"PHOTO_BLUE (Holding {elapsed:.1f}s)"
-
-
-            elif st == "BLUE_BOX_RETREAT":
-                elapsed_start = now - self.task_timer
-                inp["brake_over"] = elapsed_start > 0.2
-                inp["neutral_over"] = elapsed_start > 0.4
-                inp["retreat_over"] = elapsed_start > self.config.RETREAT_DURATION_S
-                inp["red_model"] = self.red_dock_model is not None
-                target_yaw = self.current_yaw_rad or 0.0
-                if self.retreat_step == "START_BRAKE":
-                    thrust = self.config.RETREAT_THRUST
-                    print_status = "BLUE_RETREAT (Brake)"
-                elif self.retreat_step == "GOTO_NEUTRAL":
-                    thrust = 0.0
-                    print_status = "BLUE_RETREAT (Neutral)"
-                elif self.retreat_step == "START_REVERSE":
-                    thrust = self.config.RETREAT_THRUST
-                    print_status = "BLUE_RETREAT (Reverse)"
-                else:
-                    thrust = 0.0
-                    print_status = "BLUE_RETREAT"
-
-
-            elif st == "APPROACH_RED_BOX_SEARCH":
-                detections = self._detect(frame, self.red_dock_model)
-                best_red_box = self._find_best_box(
-                    detections, self.config.RED_BOX_CLASS_ID, True)
-                if best_red_box:
-                    inp["red_found"] = 1
-                    thrust = 0.0
-                    target_yaw = self.current_yaw_rad or 0.0
-                    print_status = "RED_DOCK_SEARCH (Found!)"
-                else:
-                    thrust = self.config.SEARCH_THRUST
-                    lateral = 0.0
-                    target_yaw = self._normalize_angle(
-                        (self.current_yaw_rad or 0.0)
-                        + math.radians(self.config.YAW_SEARCH_DOCK))
-                    print_status = "RED_DOCK_SEARCH (Rotating)"
-
-
-            elif st == "APPROACH_RED_BOX_ALIGN":
-                detections = self._detect(frame, self.red_dock_model)
-                best_red_box = self._find_best_box(
-                    detections, self.config.RED_BOX_CLASS_ID, True)
-                if best_red_box:
-                    inp["red_found"] = 1
-                    red_box_distance = self._get_distance_to_box(
-                        best_red_box, self.config.RED_BOX_WIDTH_METERS,
+            elif st == "APPROACH_BLUE_BOX_APPROACH":
+                # Docking: maju DESELERASI ke kotak biru (kamera bawah),
+                # parkir di samping (lateral offset) sampai jarak <= dock.
+                detections = self._detect(frame, self.blue_box_model)
+                best_box = self._find_best_box(
+                    detections, self.config.BLUE_BOX_CLASS_ID, True)
+                if best_box:
+                    self.blue_box_lost_timer = None
+                    inp["blue_found"] = 1
+                    box_distance = self._get_distance_to_box(
+                        best_box, self.config.BLUE_BOX_WIDTH_METERS,
                         self.config.FOCAL_LENGTH_PX)
-                    if red_box_distance > self.config.RED_BOX_DOCK_DISTANCE_M:
-                        raw = self._calculate_yaw_correction_red_box(
-                            best_red_box, red_box_distance)
-                        alpha = 0.5
-                        smooth = alpha * raw + (1.0 - alpha) * self.last_vision_correction_rad
-                        self.last_vision_correction_rad = smooth
-                        target_yaw = self._normalize_angle(
-                            (self.current_yaw_rad or 0.0) + smooth)
-                        thrust = self.config.DOCK_ALIGN_THRUST
-                        print_status = f"RED_DOCK_ALIGN (Dist: {red_box_distance:.2f}m)"
-                    else:
-                        inp["red_aligned"] = 1
-                        thrust = 0.0
-                        print_status = "RED_DOCK_ALIGN (Docked!)"
+                    raw = self._calculate_yaw_correction_blue_box(
+                        best_box, box_distance)
+                    alpha = self.config.VISION_SMOOTHING_ALPHA
+                    smooth = alpha * raw + (1.0 - alpha) * self.last_vision_correction_rad
+                    self.last_vision_correction_rad = smooth
+                    target_yaw = self._normalize_angle(
+                        (self.current_yaw_rad or 0.0) + smooth)
+                    lateral = float(
+                        getattr(self.config, "BLUE_BOX_LATERAL_THRUST", -0.2))
+                    thrust = self._blue_approach_thrust(box_distance)
+                    inp["blue_close"] = int(
+                        box_distance <= self.config.BLUE_BOX_DOCK_DISTANCE_M)
+                    print_status = (f"BLUE_DOCK (Dist {box_distance:.2f}m "
+                                    f"Thrust {thrust:.2f})")
                 else:
-                    thrust = 0.0
-                    print_status = "RED_DOCK_ALIGN (Lost Target!)"
+                    if self.blue_box_lost_timer is None:
+                        self.blue_box_lost_timer = now
+                    elapsed_lost = now - self.blue_box_lost_timer
+                    inp["blue_lost_over_2s"] = elapsed_lost >= 2.0
+                    if not inp["blue_lost_over_2s"]:
+                        target_yaw = self._normalize_angle(
+                            (self.current_yaw_rad or 0.0)
+                            + self.last_vision_correction_rad)
+                        thrust = self.config.BLUE_BOX_ALIGN_THRUST
+                        print_status = f"BLUE_DOCK (Lost {elapsed_lost:.1f}s)"
+                    else:
+                        thrust = 0.0
+                        print_status = "BLUE_DOCK (Lost > 2s)"
 
-
-            elif st == "RED_BOX_DOCKED":
+            elif st == "BLUE_BOX_DOCKED":
+                # Berhenti di samping kotak biru: thrust 0, TETAP armed.
                 thrust = 0.0
                 target_yaw = self.current_yaw_rad or 0.0
-                inp["wp_idx"] = self.current_waypoint_index
-                inp["n_wp"] = n_wp
                 inp["dock_hold_over"] = (
                     (now - self.task_timer) > self.config.DOCK_HOLD_DURATION_S)
-                print_status = f"RED_BOX_DOCKED ({now - self.task_timer:.1f}s)"
-
-
+                print_status = f"BLUE_BOX_DOCKED ({now - self.task_timer:.1f}s)"
             avoid = self._avoidance_scan()
             if (avoid.get("active") and op_mode == "AUTO"
                     and st in ("WAYPOINT_NAV", "WAYPOINT_TRANSITION")):
@@ -1513,8 +1551,7 @@ class VisionNavigator:
 
             self.output.send(thrust, target_yaw, lateral_thrust=lateral)
             self._visualize(frame, detections, best_gate, best_box,
-                            best_red_box, jarak_ke_wp, box_distance,
-                            red_box_distance, print_status)
+                            jarak_ke_wp, box_distance, print_status)
             self._emit(data_signal, frame, sec, cam_st, self.current_state,
                        jarak_ke_wp, float(self.current_groundspeed),
                        getattr(self.mav, "groundspeed", 0.0), print_status,
@@ -1542,7 +1579,7 @@ class VisionNavigator:
             best = None
             best_age = None
             for mid in (self._MID_GATE, self._MID_BOX,
-                        self._MID_BLUE, self._MID_RED):
+                        self._MID_BLUE):
                 st = self.yolo_worker.latest_status(mid)
                 if st is None:
                     continue
@@ -1616,7 +1653,7 @@ class VisionNavigator:
     def _publish_monitor(self, pkt, frame, sec, state, op_mode, status):
         """Ekspor snapshot + frame ke file bridge (data/monitor) tanpa blokir."""
         try:
-            if state == "RED_BOX_DOCKED":
+            if state == "BLUE_BOX_DOCKED":
                 self._dock_done = True
             wp_idx = int(getattr(self, "current_waypoint_index", 0) or 0)
             mission = {
@@ -1631,7 +1668,7 @@ class VisionNavigator:
             try:
                 now = time.monotonic()
                 for mid in (self._MID_GATE, self._MID_BOX,
-                            self._MID_BLUE, self._MID_RED):
+                            self._MID_BLUE):
                     st = self.yolo_worker.latest_status(mid)
                     if st is None:
                         vision["models"][mid] = {"detected": False, "n": 0}

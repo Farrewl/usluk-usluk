@@ -217,6 +217,22 @@ def _apply_mode(cap, fourcc_val, width, height, target_fps):
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
     if target_fps:
         cap.set(cv2.CAP_PROP_FPS, float(target_fps))
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    except Exception:
+        pass
+    try:
+        if platform.system() != "Windows":
+            try:
+                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1.0)
+            except Exception:
+                pass
+            try:
+                cap.set(cv2.CAP_PROP_EXPOSURE, -1.0)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _measure_fps(cap, seconds=0.6):
@@ -475,6 +491,22 @@ def _open_fast_primary(index, target_fps):
             c.set(cv2.CAP_PROP_FRAME_HEIGHT, int(h))
             if target_fps:
                 c.set(cv2.CAP_PROP_FPS, float(target_fps))
+            try:
+                c.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+            try:
+                if platform.system() != "Windows":
+                    try:
+                        c.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1.0)
+                    except Exception:
+                        pass
+                    try:
+                        c.set(cv2.CAP_PROP_EXPOSURE, -1.0)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         except Exception:
             pass
         ok_read = False
@@ -527,6 +559,10 @@ def _open_auto_negotiated(index, target_fps=None):
           f"{fps:.0f} fps ({codec_name}).")
     cap = _open_capture_mode(int(chosen_idx), fourcc_val, width, height, target)
     if cap is not None:
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
         _calibrate_exposure(cap)
     return cap
 
@@ -567,12 +603,14 @@ def open_camera(index, width=None, height=None, target_fps=None,
             continue
         if cap.isOpened():
             if width and height:
-
-
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(width))
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
             if target_fps:
                 cap.set(cv2.CAP_PROP_FPS, float(target_fps))
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
             _calibrate_exposure(cap)
             _restore_opencv_logs()
             return cap
@@ -676,21 +714,24 @@ TARGET_FPS = 30
 TARGET_INTERVAL_S = 1.0 / TARGET_FPS
 
 
-def pace_to_fps(next_deadline):
-    """Tidur sampai deadline monotonic; return deadline berikutnya.
+def _get_loop_fps():
+    try:
+        from . import settings as cfg
+        fps = float(getattr(cfg, "NAV_LOOP_FPS", TARGET_FPS) or TARGET_FPS)
+        if fps <= 0:
+            return TARGET_FPS
+        return fps
+    except Exception:
+        return TARGET_FPS
 
-    `next_deadline` = waktu monotonic (time.monotonic) target frame
-    berikutnya. Bila loop terlambat (overrun), deadline dimajukan tanpa
-    tidur agar tidak menumpuk. Pemakaian:
-        deadline = time.monotonic()
-        while ...:
-            ... # kerja 1 frame
-            deadline = pace_to_fps(deadline)
-    """
+def pace_to_fps(next_deadline, fps=None):
+    """Tidur sampai deadline monotonic; return deadline berikutnya."""
+    if fps is None:
+        fps = _get_loop_fps()
+    interval = 1.0 / fps if fps > 0 else TARGET_INTERVAL_S
     now = time.monotonic()
     sleep_s = next_deadline - now
     if sleep_s > 0:
         time.sleep(sleep_s)
-        return next_deadline + TARGET_INTERVAL_S
-
-    return now + TARGET_INTERVAL_S
+        return next_deadline + interval
+    return now + interval

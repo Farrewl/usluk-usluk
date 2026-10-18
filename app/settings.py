@@ -127,8 +127,8 @@ def load_track(name=None):
     name = str(name or SITE.get("TRACK") or "A").strip().upper()
     path = os.path.join(CONFIG_DIR, f"track{name}.json")
     trk = {"name": name, "start_color": "red", "waypoints": [],
-           "vision_legs": [1, 3, 5], "photo_box_legs": [6],
-           "blue_box_photo_legs": [8], "red_box_nav_after_wp": 8,
+           "vision_legs": [], "photo_box_legs": [6],
+           "blue_box_photo_legs": [8], "red_box_nav_after_wp": -1,
            "stop_and_photo_at_wp": [],
            "grid": {"origin": "START", "cell_m": 5, "cols": 5, "rows": 5}}
     if os.path.exists(path):
@@ -140,6 +140,8 @@ def load_track(name=None):
     else:
         print(f"PERINGATAN: {path} tidak ada, pakai default lintasan {name}.")
     trk["name"] = name
+    if not trk.get("vision_legs"):
+        trk["vision_legs"] = list(range(1, max(1, len(trk.get("waypoints", [])))))
     return trk
 
 
@@ -165,21 +167,12 @@ def track_waypoints(name=None):
 
 
 CAMERA_TARGET_FPS = 30
+NAV_LOOP_FPS = 30
 CAMERA_MAX_AUTO_WIDTH = 1920
 CAMERA_MAX_AUTO_HEIGHT = 1080
-
-
 CAMERA_MIN_ACCEPT_FPS = 25
-
-
 GUI_TELEMETRY_HZ = 5
 GUI_MAP_HZ = 1
-
-
-
-
-
-
 CAMERA_FLIP_MODE = 1
 
 
@@ -216,6 +209,7 @@ TUNING_PARAM_KEYS = frozenset({
     "BUOY_MIN_SATURATION", "BUOY_MAX_ASPECT_DEVIATION",
 
     "BUOY_CONF_SMALL_THRESHOLD", "BUOY_SMALL_AREA_PX",
+    "SINGLE_BUOY_ENABLED", "SINGLE_BUOY_CLEARANCE_M",
     "BUOY_TRACK_MATCH_PX", "BUOY_TRACK_BOOST",
 
     "BUOY_ADAPTIVE_ENABLED", "BUOY_BRIGHTNESS_THRESHOLD",
@@ -242,6 +236,7 @@ TUNING_PARAM_KEYS = frozenset({
     "BLUE_BOX_PHOTO_LEGS", "BLUE_BOX_WIDTH_METERS",
     "BLUE_BOX_APPROACH_DISTANCE_M", "BLUE_BOX_LATERAL_OFFSET_M",
     "BLUE_BOX_ALIGN_THRUST", "BLUE_BOX_SEARCH_THRUST", "BLUE_BOX_YAW_SEARCH",
+    "BLUE_BOX_DOCK_DISTANCE_M", "BLUE_BOX_LATERAL_THRUST",
 
     "RED_BOX_WIDTH_METERS", "RED_BOX_DOCK_DISTANCE_M", "DOCK_ALIGN_THRUST",
     "DOCK_HOLD_DURATION_S", "YAW_SEARCH_DOCK",
@@ -325,13 +320,17 @@ class Config:
         self.BOX_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'box_hijau.onnx')
         self.BLUE_BOX_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best_blue_dark.onnx')
         self.RED_DOCK_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best_red_new.onnx')
-        self.CAMERA_INDEX = 1
+        self.CAMERA_INDEX = saved.get('CAMERA_INDEX', 1)
 
 
 
         self.FRAME_WIDTH = 1280
         self.FRAME_HEIGHT = 720
         self.CAMERA_TARGET_FPS = CAMERA_TARGET_FPS
+        try:
+            self.NAV_LOOP_FPS = saved.get('NAV_LOOP_FPS', NAV_LOOP_FPS)
+        except Exception:
+            self.NAV_LOOP_FPS = CAMERA_TARGET_FPS
         self.CAMERA_MAX_AUTO_WIDTH = CAMERA_MAX_AUTO_WIDTH
         self.CAMERA_MAX_AUTO_HEIGHT = CAMERA_MAX_AUTO_HEIGHT
         self.CAMERA_MIN_ACCEPT_FPS = CAMERA_MIN_ACCEPT_FPS
@@ -352,9 +351,9 @@ class Config:
         self.CAMERA_FLIP_MODE = saved.get('CAMERA_FLIP_MODE', CAMERA_FLIP_MODE)
         self.ENABLE_SESSION_RECORDING = False
         self.SESSION_VIDEO_FPS = saved.get('SESSION_VIDEO_FPS', 10.0)
+        self.NAV_LOOP_FPS = saved.get('NAV_LOOP_FPS', NAV_LOOP_FPS)
 
-
-        self.SERIAL_PORT = 'COM8'
+        self.SERIAL_PORT = saved.get('SERIAL_PORT', '')
         self.BAUD_RATE = 57600
         self.OFFBOARD_STREAM_RATE_HZ = 30
 
@@ -366,7 +365,7 @@ class Config:
         self.MAV_RETRY_INTERVAL_S = saved.get('MAV_RETRY_INTERVAL_S', 5.0)
 
 
-        self.WAYPOINT_PHOTO_CAMERA_INDEX = 2
+        self.WAYPOINT_PHOTO_CAMERA_INDEX = saved.get('WAYPOINT_PHOTO_CAMERA_INDEX', 0)
 
 
         self.ACCEPTANCE_RADIUS_M = saved.get('ACCEPTANCE_RADIUS_M', 2.0)
@@ -412,6 +411,8 @@ class Config:
         self.BUOY_MIN_SATURATION_RED = saved.get('BUOY_MIN_SATURATION_RED', 0.35)
 
         self.BUOY_CONF_SMALL_THRESHOLD = saved.get('BUOY_CONF_SMALL_THRESHOLD', 0.20)
+        self.SINGLE_BUOY_ENABLED = saved.get('SINGLE_BUOY_ENABLED', True)
+        self.SINGLE_BUOY_CLEARANCE_M = saved.get('SINGLE_BUOY_CLEARANCE_M', 2.5)
         self.BUOY_SMALL_AREA_PX = saved.get('BUOY_SMALL_AREA_PX', 80)
 
 
@@ -476,6 +477,18 @@ class Config:
         self.BLUE_BOX_ALIGN_THRUST = saved.get('BLUE_BOX_ALIGN_THRUST', 0.3)
         self.BLUE_BOX_SEARCH_THRUST = saved.get('BLUE_BOX_SEARCH_THRUST', 0.2)
         self.BLUE_BOX_YAW_SEARCH = saved.get('BLUE_BOX_YAW_SEARCH', -90)
+        self.BLUE_BOX_DOCK_DISTANCE_M = saved.get('BLUE_BOX_DOCK_DISTANCE_M', 0.6)
+        self.BLUE_BOX_LATERAL_THRUST = saved.get('BLUE_BOX_LATERAL_THRUST', -0.2)
+        self.DOCK_HOLD_DURATION_S = saved.get('DOCK_HOLD_DURATION_S', 2.0)
+
+        # Mode ArduRover (ROVER): MANUAL=0 HOLD=4 AUTO=10 GUIDED=15 RTL=11.
+        # OFFBOARD disetarakan dengan GUIDED (ArduRover tak punya OFFBOARD).
+        self.FLIGHT_MODE_MANUAL = int(saved.get('FLIGHT_MODE_MANUAL', 0))
+        self.FLIGHT_MODE_HOLD = int(saved.get('FLIGHT_MODE_HOLD', 4))
+        self.FLIGHT_MODE_AUTO = int(saved.get('FLIGHT_MODE_AUTO', 10))
+        self.FLIGHT_MODE_OFFBOARD = int(saved.get('FLIGHT_MODE_OFFBOARD', 15))
+        # Startup aman: Kapal HOLD dulu; operator wajib tekan MULAI (AUTO).
+        self.STARTUP_HOLD = bool(saved.get('STARTUP_HOLD', True))
 
 
         self.RED_BOX_CLASS_ID = 0
@@ -484,7 +497,6 @@ class Config:
         self.RED_BOX_WIDTH_METERS = saved.get('RED_BOX_WIDTH_METERS', 0.6)
         self.RED_BOX_DOCK_DISTANCE_M = saved.get('RED_BOX_DOCK_DISTANCE_M', 1.0)
         self.DOCK_ALIGN_THRUST = saved.get('DOCK_ALIGN_THRUST', 0.4)
-        self.DOCK_HOLD_DURATION_S = saved.get('DOCK_HOLD_DURATION_S', 5.0)
         self.YAW_SEARCH_DOCK = saved.get('YAW_SEARCH_DOCK', 90)
 
 

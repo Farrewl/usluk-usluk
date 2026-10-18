@@ -704,20 +704,16 @@ SM_TAKE_PHOTO = 9
 SM_RETREAT = 10
 SM_APPROACH_BLUE_BOX_SEARCH = 11
 SM_APPROACH_BLUE_BOX_ALIGN = 12
-SM_TAKE_BLUE_BOX_PHOTO = 13
-SM_BLUE_BOX_RETREAT = 14
-SM_APPROACH_RED_BOX_SEARCH = 15
-SM_APPROACH_RED_BOX_ALIGN = 16
-SM_RED_BOX_DOCKED = 17
-SM_STATE_COUNT = 18
+SM_APPROACH_BLUE_BOX_APPROACH = 13
+SM_BLUE_BOX_DOCKED = 14
+SM_STATE_COUNT = 15
 
 SM_STATES = [
     "WAITING_GPS", "NO_TELEM", "NO_WAYPOINTS", "MISSION_COMPLETE",
     "WAYPOINT_NAV", "WAYPOINT_TRANSITION", "TAKE_WAYPOINT_PHOTO",
     "APPROACH_BOX_SEARCH", "APPROACH_BOX_ALIGN", "TAKE_PHOTO",
     "RETREAT", "APPROACH_BLUE_BOX_SEARCH", "APPROACH_BLUE_BOX_ALIGN",
-    "TAKE_BLUE_BOX_PHOTO", "BLUE_BOX_RETREAT", "APPROACH_RED_BOX_SEARCH",
-    "APPROACH_RED_BOX_ALIGN", "RED_BOX_DOCKED",
+    "APPROACH_BLUE_BOX_APPROACH", "BLUE_BOX_DOCKED",
 ]
 SM_STATE_NAMES = {i: name for i, name in enumerate(SM_STATES)}
 
@@ -732,12 +728,12 @@ SM_RETREAT_STEPS = ["IDLE", "START_BRAKE", "GOTO_NEUTRAL", "START_REVERSE"]
 
 _SM_INPUT_FIELDS = [
     "wp_idx", "n_wp", "at_waypoint", "wp_in_photo_box_legs",
-    "wp_in_blue_box_legs", "wp_in_stop_and_photo", "wp_is_red_after",
-    "green_model", "blue_model", "red_model",
+    "wp_in_blue_box_legs", "wp_in_stop_and_photo",
+    "green_model", "blue_model",
     "box_found", "box_confirmed", "box_aligned", "box_lost_over_2s",
     "blue_found", "blue_confirmed", "blue_aligned", "blue_lost_over_2s",
-    "red_found", "red_aligned",
-    "transition_over", "wp_photo_over", "blue_photo_over",
+    "blue_close",
+    "transition_over", "wp_photo_over",
     "brake_over", "neutral_over", "retreat_over", "dock_hold_over",
 ]
 

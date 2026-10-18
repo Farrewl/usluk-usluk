@@ -168,6 +168,7 @@ class MavlinkTelemetry:
         self._voltage_v = None
         self._current_a = None
         self._battery_pct = None
+        self._flight_mode_id = None
 
 
     def connect(self, timeout_s=8.0):
@@ -365,6 +366,11 @@ class MavlinkTelemetry:
                         self._battery_pct = float(rem)
                 elif mtype == "HEARTBEAT":
                     self.last_heartbeat_time = time.time()
+                    try:
+                        self._flight_mode_id = int(
+                            getattr(msg, "custom_mode", 0) or 0)
+                    except Exception:
+                        pass
                     if self._gcs is not None:
 
 
@@ -423,6 +429,11 @@ class MavlinkTelemetry:
     def voltage_v(self):
         """Tegangan pack (V) atau None bila belum ada data."""
         return self._voltage_v
+
+    @property
+    def flight_mode_id(self):
+        """custom_mode ArduRover terakhir dari HEARTBEAT, atau None."""
+        return self._flight_mode_id
 
     @property
     def current_a(self):

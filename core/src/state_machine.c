@@ -2,8 +2,9 @@
  * core/src/state_machine.c — Mesin state misi (port 1:1 app/state_machine.py)
  *
  * Logika transisi setara dengan run() di app/navigator.py:
- *   - 16 state misi + 3 guard (WAITING_GPS/NO_TELEM/NO_WAYPOINTS/MISSION_COMPLETE)
- *   - sub-machine mundur RETREAT & BLUE_BOX_RETREAT (brake->netral->mundur)
+ *   - 15 state misi + 3 guard (WAITING_GPS/NO_TELEM/NO_WAYPOINTS/MISSION_COMPLETE)
+ *   - kotak hijau = foto poin (TAKE_PHOTO -> RETREAT)
+ *   - kotak biru  = docking (ALIGN -> APPROACH -> DOCKED; thrust 0, armed)
  *   - tanpa magic number: semua ambang lewat sm_input_t dari pemanggil
  *   - tidak menyentuh thrust/vision/kamera (itu tetap Python, sesuai arsitektur)
  *
@@ -62,21 +63,13 @@ static sm_result_t sm_retreat_decision(sm_state_t state,
     }
     if (retreat_step == SM_STEP_START_REVERSE) {
         if (inp->retreat_over) {
-            r.wp_inc = 0;
+            /* RETREAT kotak hijau selesai -> WAYPOINT_NAV, wp++ (bila masih
+             * ada waypoint, pengecekan di loop utama), reset koreksi vision. */
+            r.next = SM_WAYPOINT_NAV;
+            r.wp_inc = 1;
             r.reset_task_timer = 0;
+            r.reset_vision = 1;
             r.retreat_step = SM_STEP_IDLE;
-            if (state == SM_BLUE_BOX_RETREAT && inp->red_model) {
-                /* BLUE_BOX_RETREAT selesai + model merah ada -> docking. */
-                r.next = SM_APPROACH_RED_BOX_SEARCH;
-                r.reset_vision = 1;
-            } else {
-                /* RETREAT selesai (atau biru tanpa model merah) -> WP_NAV,
-                 * wp++ (bila masih ada waypoint, pengecekan di loop utama),
-                 * reset koreksi vision. */
-                r.next = SM_WAYPOINT_NAV;
-                r.wp_inc = 1;
-                r.reset_vision = 1;
-            }
             return r;
         }
         r.next = state;
@@ -139,10 +132,7 @@ sm_result_t sm_transition(sm_state_t state, sm_retreat_step_t retreat_step,
 
     case SM_TAKE_WAYPOINT_PHOTO:
         if (inp->wp_photo_over) {
-            if (inp->wp_is_red_after && inp->red_model) {
-                r.next = SM_APPROACH_RED_BOX_SEARCH;
-                r.reset_vision = 1;
-            } else if (inp->wp_idx + 1 >= inp->n_wp) {
+            if (inp->wp_idx + 1 >= inp->n_wp) {
                 r.next = SM_MISSION_COMPLETE;
                 r.wp_inc = 1;
                 r.reset_vision = 1;
@@ -205,14 +195,14 @@ sm_result_t sm_transition(sm_state_t state, sm_retreat_step_t retreat_step,
     case SM_APPROACH_BLUE_BOX_ALIGN:
         if (inp->blue_found) {
             if (inp->blue_aligned) {
-                r.next = SM_TAKE_BLUE_BOX_PHOTO;
+                r.next = SM_APPROACH_BLUE_BOX_APPROACH;
                 r.reset_task_timer = 1;
                 r.reset_vision = 1;
             } else {
                 r.next = SM_APPROACH_BLUE_BOX_ALIGN;
             }
         } else if (inp->blue_lost_over_2s) {
-            r.next = SM_TAKE_BLUE_BOX_PHOTO;
+            r.next = SM_APPROACH_BLUE_BOX_APPROACH;
             r.reset_task_timer = 1;
             r.reset_vision = 1;
         } else {
@@ -220,54 +210,26 @@ sm_result_t sm_transition(sm_state_t state, sm_retreat_step_t retreat_step,
         }
         break;
 
-    case SM_TAKE_BLUE_BOX_PHOTO:
-        if (inp->blue_photo_over) {
-            r.next = SM_BLUE_BOX_RETREAT;
+    case SM_APPROACH_BLUE_BOX_APPROACH:
+        /* Deselerasi: maju bertahap sampai jarak <= ambang dock -> PARKIR. */
+        if (inp->blue_close) {
+            r.next = SM_BLUE_BOX_DOCKED;
             r.reset_task_timer = 1;
-            r.retreat_step = SM_STEP_START_BRAKE;
-        } else {
-            r.next = SM_TAKE_BLUE_BOX_PHOTO;
-        }
-        break;
-
-    case SM_BLUE_BOX_RETREAT:
-        r = sm_retreat_decision(state, retreat_step, inp);
-        break;
-
-    case SM_APPROACH_RED_BOX_SEARCH:
-        if (inp->red_found) {
-            r.next = SM_APPROACH_RED_BOX_ALIGN;
             r.reset_vision = 1;
         } else {
-            r.next = SM_APPROACH_RED_BOX_SEARCH;
+            r.next = SM_APPROACH_BLUE_BOX_APPROACH;
         }
         break;
 
-    case SM_APPROACH_RED_BOX_ALIGN:
-        if (!inp->red_found) {
-            r.next = SM_APPROACH_RED_BOX_SEARCH;
-        } else if (inp->red_aligned) {
-            r.next = SM_RED_BOX_DOCKED;
-            r.reset_task_timer = 1;
-        } else {
-            r.next = SM_APPROACH_RED_BOX_ALIGN;
-        }
-        break;
-
-    case SM_RED_BOX_DOCKED:
+    case SM_BLUE_BOX_DOCKED:
+        /* Berhenti di samping kotak biru; thrust 0 (tetap armed).
+         * Misi selesai -> mesin diam. */
         if (inp->dock_hold_over) {
-            if (inp->wp_idx + 1 >= inp->n_wp) {
-                r.next = SM_MISSION_COMPLETE;
-                r.wp_inc = 1;
-                r.reset_vision = 1;
-            } else {
-                r.next = SM_WAYPOINT_TRANSITION;
-                r.wp_inc = 1;
-                r.reset_vision = 1;
-                r.reset_task_timer = 1;
-            }
+            r.next = SM_MISSION_COMPLETE;
+            r.wp_inc = 1;
+            r.reset_vision = 1;
         } else {
-            r.next = SM_RED_BOX_DOCKED;
+            r.next = SM_BLUE_BOX_DOCKED;
         }
         break;
 
@@ -290,8 +252,7 @@ const char *sm_state_name(sm_state_t s) {
         "WAYPOINT_NAV", "WAYPOINT_TRANSITION", "TAKE_WAYPOINT_PHOTO",
         "APPROACH_BOX_SEARCH", "APPROACH_BOX_ALIGN", "TAKE_PHOTO",
         "RETREAT", "APPROACH_BLUE_BOX_SEARCH", "APPROACH_BLUE_BOX_ALIGN",
-        "TAKE_BLUE_BOX_PHOTO", "BLUE_BOX_RETREAT", "APPROACH_RED_BOX_SEARCH",
-        "APPROACH_RED_BOX_ALIGN", "RED_BOX_DOCKED"
+        "APPROACH_BLUE_BOX_APPROACH", "BLUE_BOX_DOCKED"
     };
     if (s < 0 || s >= SM_STATE_COUNT) {
         return "???";

@@ -142,6 +142,37 @@ class OutputLink:
 
 
 
+    def set_flight_mode(self, mode_id):
+        """Kirim DO_SET_MODE ke Pixhawk (mode ArduRover custom_mode).
+
+        `mode_id` = nilai custom_mode ArduRover (MANUAL=0, HOLD=4,
+        AUTO=10, GUIDED=15, RTL=11). Best-effort; QGroundControl ikut
+        ter-mirror karena Pixhawk broadcast HEARTBEAT berisi custom_mode.
+        """
+        if self.master is None or mavutil is None:
+            return False
+        try:
+            self.master.mav.command_long_send(
+                self.master.target_system, self.master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_SET_MODE, 0,
+                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                int(mode_id), 0, 0, 0, 0, 0)
+            return True
+        except Exception as e:
+            if throttled("set_mode_fail", 5.0):
+                log.warning("Gagal kirim DO_SET_MODE(%s): %s", mode_id, e)
+            return False
+
+    def request_hold(self):
+        """Tahan kapal di tempat (ArduRover HOLD). Dipanggil saat start & stop."""
+        return self.set_flight_mode(
+            int(getattr(self.config, "FLIGHT_MODE_HOLD", 4)))
+
+    def request_offboard(self):
+        """Masuk mode misi (ArduRover GUIDED / AUTO). Operator harus start manual."""
+        return self.set_flight_mode(
+            int(getattr(self.config, "FLIGHT_MODE_OFFBOARD", 15)))
+
     def request_rtl(self):
         """Minta mode RTL via MAV_CMD_DO_SET_MODE (best-effort, throttled).
 

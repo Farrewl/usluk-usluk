@@ -1,5 +1,5 @@
 /*
- * core/include/state_machine.h — Mesin state misi (16 state + guard)
+ * core/include/state_machine.h — Mesin state misi (15 state + guard)
  *
  * Port 1:1 dari app/state_machine.py (referensi murni yang diekstrak dari
  * run() di app/navigator.py). Hanya memutuskan "ke state mana berikutnya"
@@ -37,18 +37,15 @@ typedef enum {
     SM_RETREAT,
     SM_APPROACH_BLUE_BOX_SEARCH,
     SM_APPROACH_BLUE_BOX_ALIGN,
-    SM_TAKE_BLUE_BOX_PHOTO,
-    SM_BLUE_BOX_RETREAT,
-    SM_APPROACH_RED_BOX_SEARCH,
-    SM_APPROACH_RED_BOX_ALIGN,
-    SM_RED_BOX_DOCKED,
+    SM_APPROACH_BLUE_BOX_APPROACH,
+    SM_BLUE_BOX_DOCKED,
     SM_STATE_COUNT
 } sm_state_t;
 
 /* Sentinel: guard tidak menghalangi misi (boleh lanjut). */
 #define SM_NONE ((sm_state_t)-1)
 
-/* Sub-machine mundur (RETREAT / BLUE_BOX_RETREAT) — cocok dengan
+/* Sub-machine mundur (RETREAT kotak hijau) — cocok dengan
  * SR_* di app/state_machine.py. */
 typedef enum {
     SM_STEP_IDLE = 0,
@@ -59,6 +56,7 @@ typedef enum {
 
 /* Snapshot keputusan transisi. Nama field mengikuti kode navigator asli:
  * akhiran `_over` = timer melewati ambang; `_found`/`_aligned` = hasil vision.
+ * `blue_close` = jarak ke kotak biru <= ambang dock (decelerasi selesai).
  * URUTAN FIELD harus sama dengan SmInput.__init__ di Python (dipakai
  * untuk membangun struct identik saat cross-check ctypes). */
 typedef struct {
@@ -68,10 +66,8 @@ typedef struct {
     int wp_in_photo_box_legs;
     int wp_in_blue_box_legs;
     int wp_in_stop_and_photo;
-    int wp_is_red_after;
     int green_model;
     int blue_model;
-    int red_model;
     int box_found;
     int box_confirmed;
     int box_aligned;
@@ -80,11 +76,9 @@ typedef struct {
     int blue_confirmed;
     int blue_aligned;
     int blue_lost_over_2s;
-    int red_found;
-    int red_aligned;
+    int blue_close;
     int transition_over;
     int wp_photo_over;
-    int blue_photo_over;
     int brake_over;
     int neutral_over;
     int retreat_over;

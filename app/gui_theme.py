@@ -43,6 +43,12 @@ QPushButton#killBtn {
 }
 QPushButton#killBtn:hover { background: #e74c3c; }
 QPushButton#killBtn:checked { background: #ff3b30; }
+QPushButton#startBtn {
+    background: #1e8449; border: none; border-radius: 12px;
+    font-weight: bold; font-size: 15px; padding: 11px;
+}
+QPushButton#startBtn:hover { background: #27ae60; }
+QPushButton#startBtn:checked { background: #d68910; }
 QPushButton.toolBtn { padding: 4px 10px; font-size: 12px; border-radius: 8px; }
 QSplitter::handle { background: rgba(255, 255, 255, 0.08); }
 QTabWidget::pane { border: none; background: transparent; }
@@ -62,6 +68,31 @@ QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox {
     background: rgba(255, 255, 255, 0.07);
     border: 1px solid rgba(255, 255, 255, 0.14);
     border-radius: 8px; padding: 5px; color: #e6edf3;
+}
+/* Popup dropdown QComboBox — WAJIB ditata terpisah; tanpa ini popup
+   memakai latar putih bawaan Qt sementara teks tetap terang (#e6edf3)
+   sehingga tulisan tak terbaca (putih di atas putih). */
+QComboBox QAbstractItemView {
+    background: #16191c;
+    color: #e6edf3;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    outline: 0;
+    selection-background-color: rgba(0, 212, 170, 0.35);
+    selection-color: #ffffff;
+}
+QComboBox QAbstractItemView::item {
+    color: #e6edf3; padding: 4px 8px; min-height: 20px;
+}
+QComboBox QAbstractItemView::item:selected {
+    background: rgba(0, 212, 170, 0.35); color: #ffffff;
+}
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox::down-arrow {
+    image: none;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #8b949e;
+    margin-right: 6px;
 }
 QCheckBox { background: transparent; spacing: 8px; }
 QStatusBar { background: #0e1113; color: #8b949e; }

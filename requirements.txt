@@ -1,19 +1,18 @@
 # ============================================================
-# requirements.txt — resep dependensi ASV (RINGAN, tanpa torch).
+# requirements.txt — resep dependensi ASV (RINGAN, tanpa torch, Linux).
 #
-# Inferensi YOLO kini lewat ONNX + cv2.dnn (app/yolo_onnx.py), jadi
+# Inferensi YOLO lewat ONNX + cv2.dnn (app/yolo_onnx.py), jadi
 # torch/torchvision/ultralytics TIDAK lagi dibutuhkan saat runtime.
-# Hasil: RSS app ~537 MB -> ~217 MB, waktu start lebih cepat, dan
-# .venv ~1,3 GB -> ratusan MB.
+# Hasil: RSS app ~537 MB -> ~227 MB, waktu start lebih cepat, dan
+# .venv ~1,3 GB -> ~540 MB.
 #
 # Install:
-#   Linux  : ./scripts/setup_minimal.sh
-#   Windows: powershell -File scripts\setup_minimal.ps1
+#   ./scripts/setup_minimal.sh
 # Manual:
 #   python3 -m venv .venv
 #   .venv/bin/pip install -r requirements.txt
 # Verifikasi:
-#   .venv/bin/python -m unittest discover -s tests
+#   .venv/bin/python scripts/verify_env.py
 #
 # Catatan:
 #  - opencv WAJIB varian *headless* (GUI pakai PyQt5, bukan cv2 GUI);
@@ -26,11 +25,7 @@
 
 # --- GUI (slim_map murni Qt) ---
 PyQt5==5.15.11
-# PyQt5-Qt5 (runtime Qt5): pin KHUSUS Linux. Sejak 5.15.11 paket ini
-# tidak lagi dirilis dgn wheel Windows; wheel PyQt5 di Windows sudah
-# self-contained dan dependency-nya >=5.15.2,<5.16 -> pip otomatis
-# memakai 5.15.2 (satu-satunya versi ber-wheel win_amd64).
-PyQt5-Qt5==5.15.19; sys_platform == "linux"
+PyQt5-Qt5==5.15.19
 PyQt5_sip==12.19.0
 
 # --- Visi komputer (ONNX via cv2.dnn; headless saja) ---

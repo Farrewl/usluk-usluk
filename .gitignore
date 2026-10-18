@@ -1,7 +1,6 @@
 # ============================================================
 # .gitignore — asv_backend
 # File besar / output runtime TIDAK di-versi-git.
-# (File yang dulu sudah ter-track tetap di history; lihat docs/ARCHITECTURE.md)
 # ============================================================
 
 # Python
@@ -16,10 +15,9 @@ venv/
 data/*
 !data/README.md
 
-# Model YOLO — DI-VERSI-GIT (dipakai langsung setelah clone, tanpa unduh)
+# Model YOLO (ONNX) — DI-VERSI-GIT (dipakai langsung setelah clone, tanpa unduh)
 # agar teman bisa "clone lalu jalan" tanpa langkah manual.
-# Bila nanti berat, aktifkan lagi baris di bawah.
-# weights/*.pt
+# weights/*.onnx
 
 # Media (dulu pernah ter-track, sekarang tidak)
 *.jpg
@@ -53,5 +51,3 @@ Thumbs.db
 *.so
 *.dll
 core/build/
-# kecuali DLL Windows prebuilt (opsional, biar teman tanpa MinGW bisa jalan)
-!core/aterkia_core.dll

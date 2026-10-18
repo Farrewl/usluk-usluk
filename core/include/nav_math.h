@@ -5,7 +5,7 @@
  * dengan Python agar hasilnya bisa dibandingkan bit-per-bit di
  * tests/test_core_nav_math.py. Kalau ada selisih, test itu yang menyuarakannya.
  *
- * Dipakai oleh: core/src/state_machine.c (nanti), sisanya di docs/ARCHITECTURE.md
+ * Dipakai oleh: core/src/state_machine.c (nanti), dan modul C lain di core/src
  *
  * Konvensi tanda:
  *   - Bearing  : radian, 0 = utara, positif = searah jarum jam (timur).

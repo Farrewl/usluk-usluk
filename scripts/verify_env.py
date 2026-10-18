@@ -1,15 +1,10 @@
-"""scripts/verify_env.py — verifikasi .venv ASV (dipakai Linux & Windows).
+"""scripts/verify_env.py — verifikasi .venv ASV (Linux).
 
-Dipanggil di akhir setup_minimal.sh / setup_minimal.ps1. Keluar dengan
+Dipanggil di akhir setup_minimal.sh. Keluar dengan
 status non-zero bila ada yang salah (import gagal / ONNX tak bisa dibaca).
 
-Kenapa file .py terpisah (bukan here-string PowerShell / heredoc bash):
-here-string `@'...'@ | python -` ditolak Windows PowerShell 5.1 (penutup
-harus sendirian sebaris) sehingga setup gagal parse. File .py = satu
-sumber, bebas masalah quoting/encoding shell.
-
 Catatan:
-  - Inferensi YOLO kini via ONNX + cv2.dnn (tanpa torch/ultralytics) —
+  - Inferensi YOLO via ONNX + cv2.dnn (tanpa torch/ultralytics) —
     lihat app/yolo_onnx.py. Verifikasi di sini cukup: cv2 punya dnn +
     model .onnx bisa dimuat & dijalankan.
   - Cek ONNX dilewati bila weights/*.onnx belum ada.

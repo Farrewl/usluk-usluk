@@ -1,19 +1,14 @@
 # ============================================================
-# core/Makefile — build library C lintas-OS (1 perintah per OS).
+# core/Makefile — build library C (Linux).
 #
 # Pemakaian:
-#   make -C core linux     # Linux  -> core/libaterkia.so
-#   make -C core windows   # Windows MinGW (native) -> core/aterkia_core.dll
-#   make -C core cross     # Linux  -> .dll via MinGW cross (x86_64-w64-mingw32-gcc)
+#   make -C core linux     # -> core/libaterkia.so
 #   make -C core check     # kompilasi ketat -Wall -Wextra -Werror (tanpa output)
 #   make -C core clean
 #
 # Catatan:
-# - Sumber yang sama untuk kedua OS; cabang Windows sudah di-guard
-#   (#ifdef _WIN32) di mavlink_bridge.c dan gamepad_input.cpp.
-# - gamepad_input.cpp TIDAK masuk library ini (hanya via CMake static
-#   lib, lihat CMakeLists.txt) — di Windows ia berupa stub kompatibel.
-# - Loader Python: app/aterkia_core.py memilih nama lib per OS.
+# - gamepad_input.cpp TIDAK masuk library ini (dipakai via CMake).
+# - Loader Python: app/aterkia_core.py memuat core/libaterkia.so.
 # ============================================================
 
 CC        = gcc
@@ -23,15 +18,7 @@ CPPFLAGS  += -Iinclude
 SRC_C     := $(wildcard src/*.c)
 LM        := -lm
 
-# Compiler MinGW: target `windows` (native, MinGW shell) pakai CC=gcc
-# dari PATH. Target `cross` (dari Linux) pakai CC_WIN, default
-# x86_64-w64-mingw32-gcc (override: make cross CC_WIN=...).
-# LDFLAGS_WIN: -static supaya DLL self-contained (tanpa kebergantungan
-# libgcc_s_seh-1.dll / libwinpthread-1.dll di PATH mesin target).
-CC_WIN    ?= x86_64-w64-mingw32-gcc
-LDFLAGS_WIN ?= -static -static-libgcc
-
-.PHONY: linux windows cross check clean
+.PHONY: linux check clean
 
 # --- Linux: shared object ELF (dipakai app/aterkia_core.py) ---
 linux: libaterkia.so
@@ -39,22 +26,11 @@ linux: libaterkia.so
 libaterkia.so: $(SRC_C) $(wildcard include/*.h)
 	$(CC) -shared -fPIC $(CFLAGS) $(CPPFLAGS) $(SRC_C) -o $@ $(LM)
 
-# --- Windows native (MinGW shell): DLL (dipakai app/aterkia_core.py) ---
-windows:
-	$(CC) -shared $(CFLAGS) $(CPPFLAGS) $(SRC_C) -o aterkia_core.dll $(LDFLAGS_WIN) $(LM)
-
-# --- Cross-build .dll dari Linux (butuh mingw-w64 terpasang) ---
-cross:
-	$(CC_WIN) -shared $(CFLAGS) $(CPPFLAGS) $(SRC_C) -o aterkia_core.dll $(LDFLAGS_WIN) $(LM)
-
-# --- Verifikasi ketat tanpa menghasilkan file (jalur POSIX + jalur
-#     non-POSIX/Windows dipaksa lewat -U__unix__ supaya #else ikut dicek) ---
+# --- Verifikasi ketat tanpa menghasilkan file ---
 check:
 	$(CC) -fsyntax-only $(CFLAGS) $(CPPFLAGS) src/*.c
-	$(CC) -fsyntax-only $(CFLAGS) -U__unix__ -U__linux__ $(CPPFLAGS) src/mavlink_bridge.c
 	$(CXX) -fsyntax-only $(CFLAGS) $(CPPFLAGS) src/gamepad_input.cpp
-	$(CXX) -fsyntax-only $(CFLAGS) -D_WIN32 $(CPPFLAGS) src/gamepad_input.cpp
-	@echo "check: semua jalur (POSIX + Windows) lolos -Wall -Wextra -Werror"
+	@echo "check: lolos -Wall -Wextra -Werror"
 
 clean:
-	rm -f libaterkia.so aterkia_core.dll
+	rm -f libaterkia.so

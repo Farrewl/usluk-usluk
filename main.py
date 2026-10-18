@@ -13,12 +13,7 @@ from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont
 os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = QLibraryInfo.location(
     QLibraryInfo.PluginsPath)
 os.environ.pop("QT_QPA_FONTDIR", None)
-
-
-
 os.environ.setdefault("QT_LOGGING_RULES", "qt.network.ssl.warning=false")
-
-
 
 from app.navigator import NavigatorThread
 
@@ -791,7 +786,7 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     if not WAYPOINTS:
-        print("WARNING: 'plan.csv' is empty or not found.")
+        print("WARNING: lintasan kosong — cek config/trackA.json / trackB.json.")
         print("Application will start with an empty map.")
         print("Use '+ WP' to add waypoints.")
 

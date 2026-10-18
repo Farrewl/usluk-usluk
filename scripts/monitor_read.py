@@ -2,7 +2,7 @@
 """scripts/monitor_read.py — lihat data ekspor monitoring tanpa web.
 
 Pemakai: developer dashboard web (repo terpisah) / debug lapangan. Membaca
-file bridge di `data/monitor/` (lihat docs/MONITOR.md).
+file bridge di `data/monitor/` (lihat README.md bagian Ekspor Monitoring).
 
 Contoh:
     python3 scripts/monitor_read.py               # ringkas telemetry.json

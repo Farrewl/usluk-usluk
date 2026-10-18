@@ -20,7 +20,7 @@ Pertimbangan pemilihan batas (kalibrasi terhadap kamera uji 1280x720):
     di hampir seluruh areanya -> lolos.
 
 Semua fungsi di sini murni (tanpa state) supaya mudah diuji lewat unit
-test — kasus sintetis ada di tests/test_detection_validation.py.
+test — kasus sintetis bisa dibuat terpisah.
 """
 
 import cv2

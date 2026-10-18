@@ -2,13 +2,11 @@
 # ============================================================
 # scripts/setup_minimal.sh — install .venv minimal ASV (Linux).
 #
-# Padanan scripts/setup_minimal.ps1 (urut & kunci SAMA).
 # Hasil: .venv RINGAN (tanpa torch) dengan seluruh fungsi produksi:
 # GUI PyQt, YOLO 4 model (ONNX via cv2.dnn), MAVLink.
 #
 # Pakai:
 #   ./scripts/setup_minimal.sh            # idempoten: aman dijalankan ulang
-#   .venv/bin/python -m unittest discover -s tests    # verifikasi
 #
 # IDEMPOTEN (aman diulang):
 #   - .venv yang sudah ada DIPAKAI ULANG (tak ditimpa/dihapus).
@@ -57,12 +55,11 @@ else
   .venv/bin/pip install -q -r requirements.txt
 fi
 
-# --- [3/3] Verifikasi (satu sumber dgn Windows: scripts/verify_env.py) ---
+# --- [3/3] Verifikasi (scripts/verify_env.py) ---
 echo "[3/3] Verifikasi import inti + inferensi YOLO (ONNX)..."
 .venv/bin/python scripts/verify_env.py
 
 echo
 echo "Selesai. Total: $(du -sh .venv | cut -f1)"
 echo "Jalankan GUI :  ./scripts/run_gui.sh"
-echo "Ekspor monitor: data/monitor/  (lihat docs/MONITOR.md)  cek: scripts/monitor_read.py"
-echo "Jalankan tes :  .venv/bin/python -m unittest discover -s tests"
+echo "Ekspor monitor: data/monitor/  (lihat README.md)  cek: scripts/monitor_read.py"

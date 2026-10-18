@@ -3,7 +3,7 @@
 Kenapa diganti: QWebEngine = Chromium penuh (start lambat, RAM besar,
 berat di Raspberry Pi). Widget ini menggambar manual pakai QPainter:
 tile OSM + garis rute + marker WP + panah kapal. Tanpa dependensi baru,
-jalan di semua laptop (Windows/Linux) selama PyQt5 ada.
+jalan di laptop Linux selama PyQt5 ada.
 
 Fitur (sama seperti peta lama):
   - set_waypoints(list[{'lat','lon'}]) + set_vision_legs(list[int])

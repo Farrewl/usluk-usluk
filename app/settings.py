@@ -3,7 +3,7 @@ app/settings.py — Konfigurasi tunggal seluruh program ASV.
 
 Path data distandarkan ke struktur repo:
   config/   -> site.json + trackA/trackB.json + tuning_params.json
-  weights/  -> model YOLO *.pt      (IKUT ter-commit di repo)
+  weights/  -> model YOLO *.onnx    (IKUT ter-commit di repo)
   data/     -> output runtime: captures, video session, peta sementara
 
 Catatan migrasi: file ini dulu bernama modules/config.py. Nilai di sini
@@ -43,7 +43,7 @@ _DEFAULT_SITE = {
     "TEAM_NAME": "Aterkia",
     "TEAM_PT": "Universitas Diponegoro",
     "TRACK": "A",
-    # Ekspor monitoring ke web terpisah (file bridge, lihat docs/MONITOR.md)
+    # Ekspor monitoring ke web terpisah (file bridge, lihat README.md)
     "MONITOR_ENABLED": True,
     "MONITOR_DIR": "data/monitor",
     "MONITOR_HZ": 5.0,
@@ -337,7 +337,7 @@ class Config:
         self.CAMERA_MIN_ACCEPT_FPS = CAMERA_MIN_ACCEPT_FPS
 
         # Fast-start kamera: buka sekali (mode cache/1280x720 MJPG) tanpa
-        # sweep resolusi/codec berulang (5-25 s di Windows). Negosiasi penuh
+        # sweep resolusi/codec berulang. Negosiasi penuh
         # tetap bisa diminta manual via tombol Scan GUI. Matikan: ASV_CAM_FAST=0.
         _env_fast = os.environ.get("ASV_CAM_FAST", "").strip().lower()
         self.CAMERA_FAST_START = _env_fast not in ("0", "false", "off", "no")

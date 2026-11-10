@@ -1,8 +1,3 @@
-# ============================================================
-# .gitignore — asv_backend
-# File besar / output runtime TIDAK di-versi-git.
-# ============================================================
-
 # Python
 __pycache__/
 *.py[cod]
@@ -14,10 +9,6 @@ venv/
 # Output runtime (folder kerja kapal)
 data/*
 !data/README.md
-
-# Model YOLO (ONNX) — DI-VERSI-GIT (dipakai langsung setelah clone, tanpa unduh)
-# agar teman bisa "clone lalu jalan" tanpa langkah manual.
-# weights/*.onnx
 
 # Media (dulu pernah ter-track, sekarang tidak)
 *.jpg

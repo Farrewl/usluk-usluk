@@ -6,6 +6,7 @@ mode_manager) via app/aterkia_core.py, mengembalikan setpoint manual siap
 arbitrasi. Semua ambang & kurva hidup di C — file ini hanya kabel.
 """
 
+import ctypes
 import glob
 import os
 import time
@@ -22,41 +23,29 @@ _GAMEPAD_PATH = ""
 
 
 def _gamepad_lib():
-    """Muat lib gamepad C++ (build CMake) bila ada; None bila tidak.
-
-    Linux: libasv_gamepad_input.a/.so; Windows: stub tanpa evdev
-    (selalu return None -> caller fallback RC Pixhawk / tombol GUI).
-    """
+    """Simbol gamepad dari libaterkia.so. None bila tak tersedia."""
     global _GAMEPAD_LIB
     if _GAMEPAD_LIB is not None:
-
         return None if _GAMEPAD_LIB is False else _GAMEPAD_LIB
-    if os.name == "nt":
-
+    if os.name == "nt" or core is None or not core.C_AVAILABLE:
         _GAMEPAD_LIB = False
         return None
     try:
-        import ctypes
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        for cand in (
-                os.path.join(root, "core", "build", "libasv_gamepad_input.a"),
-                os.path.join(root, "core", "build", "libasv_gamepad_input.so")):
-            if os.path.exists(cand):
-                _GAMEPAD_LIB = ctypes.CDLL(cand)
-                _GAMEPAD_LIB.gamepad_open.argtypes = [ctypes.c_char_p]
-                _GAMEPAD_LIB.gamepad_open.restype = ctypes.c_int
-                _GAMEPAD_LIB.gamepad_poll.argtypes = [
-                    ctypes.c_int, ctypes.POINTER(ctypes.c_double),
-                    ctypes.POINTER(ctypes.c_double),
-                    ctypes.POINTER(ctypes.c_int)]
-                _GAMEPAD_LIB.gamepad_poll.restype = ctypes.c_int
-                _GAMEPAD_LIB.gamepad_close.argtypes = [ctypes.c_int]
-                _GAMEPAD_LIB.gamepad_close.restype = None
-                return _GAMEPAD_LIB
+        lib = core._lib
+        lib.gamepad_open.argtypes = [ctypes.c_char_p]
+        lib.gamepad_open.restype = ctypes.c_int
+        lib.gamepad_poll.argtypes = [
+            ctypes.c_int, ctypes.POINTER(ctypes.c_double),
+            ctypes.POINTER(ctypes.c_double),
+            ctypes.POINTER(ctypes.c_int)]
+        lib.gamepad_poll.restype = ctypes.c_int
+        lib.gamepad_close.argtypes = [ctypes.c_int]
+        lib.gamepad_close.restype = None
+        _GAMEPAD_LIB = lib
+        return lib
     except Exception:
-        pass
-    _GAMEPAD_LIB = None
-    return None
+        _GAMEPAD_LIB = False
+        return None
 
 
 class ManualLink:

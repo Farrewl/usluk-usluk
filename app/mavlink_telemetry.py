@@ -145,7 +145,10 @@ class MavlinkTelemetry:
     """
 
     def __init__(self, port=None, baud=57600):
-        self.port = detect_serial_port(port)
+        # ASV_MAVLINK: endpoint jaringan (mis. udpout:127.0.0.1:14551) dari
+        # mavlink-router. Bila kosong: pegang serial langsung (mode lama).
+        self.endpoint = os.environ.get("ASV_MAVLINK", "").strip()
+        self.port = None if self.endpoint else detect_serial_port(port)
         self.baud = baud
         self.master = None
         self.connected = False
@@ -171,32 +174,36 @@ class MavlinkTelemetry:
         self._flight_mode_id = None
 
 
+    @property
+    def link_name(self):
+        return self.endpoint or self.port or "-"
+
     def connect(self, timeout_s=8.0):
-        """Buka serial + tunggu heartbeat. True bila Pixhawk merespons."""
+        """Buka link + tunggu heartbeat. True bila Pixhawk merespons."""
         self.last_error = ""
         self.busy = False
         if not MAVLINK_AVAILABLE:
             self.last_error = "no-pymavlink"
-            print("[MAV] pymavlink tidak terpasang — telemetri dimatikan.")
             return False
-        if self.port is None:
-            self.last_error = "no-port"
-            print("[MAV] Tidak ada port serial ditemukan.")
-            return False
-
-        try:
-            self.master = mavutil.mavlink_connection(self.port, baud=self.baud)
-        except Exception as exc:
-            self.last_error = str(exc)
-            errno = getattr(exc, "errno", None)
-            if errno == 16 or "busy" in str(exc).lower():
-                self.busy = True
-                print(f"[MAV] Port {self.port} SIBUK — kemungkinan "
-                      "QGroundControl / mavlink-router masih memakainya. "
-                      "Tutup QGC dulu; app akan retry otomatis.")
-            else:
-                print(f"[MAV] Gagal membuka {self.port}: {exc}")
-            return False
+        if self.endpoint:
+            try:
+                self.master = mavutil.mavlink_connection(
+                    self.endpoint, source_system=2, source_component=191)
+            except Exception as exc:
+                self.last_error = str(exc)
+                return False
+        else:
+            if self.port is None:
+                self.last_error = "no-port"
+                return False
+            try:
+                self.master = mavutil.mavlink_connection(self.port,
+                                                         baud=self.baud)
+            except Exception as exc:
+                self.last_error = str(exc)
+                errno = getattr(exc, "errno", None)
+                self.busy = errno == 16 or "busy" in str(exc).lower()
+                return False
 
         deadline = time.time() + timeout_s
         while time.time() < deadline:
@@ -206,15 +213,13 @@ class MavlinkTelemetry:
                 self.connected = True
                 self.last_heartbeat_time = time.time()
                 self._request_streams()
-                print(f"[MAV] Heartbeat diterima dari "
-                      f"sysid={self.master.target_system} "
-                      f"compid={self.master.target_component} "
-                      f"via {self.port} — attitude live.")
                 return True
-            print(f"[MAV] Menunggu heartbeat {self.port} ...")
         self.last_error = "no-heartbeat"
-        print(f"[MAV] Tidak ada heartbeat dari {self.port} "
-              f"dalam {timeout_s:.0f}s.")
+        try:
+            self.master.close()
+        except Exception:
+            pass
+        self.master = None
         return False
 
     def close(self):

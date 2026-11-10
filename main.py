@@ -1,5 +1,6 @@
-import sys
 import os
+import signal
+import sys
 import time
 
 import cv2
@@ -7,7 +8,7 @@ import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QSplitter, QFrame,
                              QPushButton, QTabWidget, QComboBox)
-from PyQt5.QtCore import QTimer, Qt, QLibraryInfo, QRect
+from PyQt5.QtCore import (QCoreApplication, QLibraryInfo, QRect, QTimer, Qt)
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont
 
 
@@ -156,6 +157,12 @@ def _card(title):
     return frame, layout
 
 
+def build_runtime(waypoints=None, parent=None):
+    """Objek runtime tunggal untuk GUI dan headless."""
+    return NavigatorThread(WAYPOINTS if waypoints is None else waypoints,
+                           parent)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -182,7 +189,7 @@ class MainWindow(QMainWindow):
         self._fps_val = 0.0
         self._settings_dlg = None
 
-        self.nav_thread = NavigatorThread(WAYPOINTS, self)
+        self.nav_thread = build_runtime(WAYPOINTS, self)
         sidebar = self._build_sidebar()
         center = self._build_center()
         right = self._build_right_tabs()
@@ -504,7 +511,7 @@ class MainWindow(QMainWindow):
                 if hasattr(n, "stop_auto"):
                     n.stop_auto()
         except Exception as e:
-            print(f"[START] Gagal toggle auto: {e}")
+            log.warning("toggle auto: %s", e)
 
     def on_manual_kill_toggle(self):
         """KILL / Estop dari GUI: masuk jalur C (mode_manager KILL) +
@@ -514,9 +521,6 @@ class MainWindow(QMainWindow):
         try:
             n = self.nav_thread.navigator
             if hasattr(n, "kill_request"):
-                if on:
-                    print("[KILL] Tombol KILL ditekan — gerak dihentikan, "
-                          "kirim DISARM ke Pixhawk (best-effort).")
                 n.kill_request = bool(on)
         except Exception:
             pass
@@ -811,14 +815,12 @@ class MainWindow(QMainWindow):
                        mode_c)
 
     def closeEvent(self, event):
-        print("Closing application...")
         try:
             self.nav_thread.stop()
             self.nav_thread.wait()
         except Exception:
             pass
         if hasattr(self.nav_thread, 'save_config_to_file'):
-            print("Menyimpan parameter tuning terakhir...")
             try:
                 self.nav_thread.save_config_to_file()
             except Exception:
@@ -826,18 +828,48 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
-if __name__ == "__main__":
+def has_display():
+    """Ada layar? Windows selalu ya; Linux cek DISPLAY/WAYLAND_DISPLAY."""
+    force = os.environ.get("ASV_GUI", "").strip().lower()
+    if force in ("0", "false", "off", "no"):
+        return False
+    if force in ("1", "true", "on", "yes"):
+        return True
+    if os.name == "nt":
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def main():
+    """Satu pintu: GUI kalau ada layar, konsol kalau tidak."""
     if not WAYPOINTS:
-        print("WARNING: lintasan kosong — cek config/trackA.json / trackB.json.")
-        print("Application will start with an empty map.")
-        print("Use '+ WP' to add waypoints.")
+        log.warning("lintasan kosong: %s", CFG_PATH)
+    if has_display():
+        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+        app = QApplication(sys.argv)
+        theme.apply_theme(app)
+        window = MainWindow()
+        window.show()
+        return app.exec_()
 
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    app = QCoreApplication(sys.argv)
+    worker = build_runtime()
+    worker.start()
 
-    app = QApplication(sys.argv)
-    theme.apply_theme(app)
+    def _stop(*_a):
+        worker.stop()
+        worker.wait(5000)
+        app.quit()
 
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec_())
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, _stop)
+    try:
+        return app.exec_()
+    finally:
+        worker.stop()
+        worker.wait(5000)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

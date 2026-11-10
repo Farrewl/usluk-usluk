@@ -207,6 +207,9 @@ class VisionNavigator:
 
         self.output = OutputLink(config)
         self.safety = SafetyManager(config, link=self.output)
+        # Peran dari mode Pixhawk: MISSION (GUIDED) / HOLD / PASS (MANUAL).
+        self._gate_role = "MISSION" if self.auto_started else "HOLD"
+        self._zero_until = 0.0
 
 
         self.avoid_state = {"yaw_bias": 0.0, "memory_s": 0.0}
@@ -988,24 +991,33 @@ class VisionNavigator:
         log.info("Operator: HOLD — kapal ditahan di tempat.")
 
     def _sync_auto_from_qgc(self):
-        """Mirror custom_mode HEARTBEAT (QGC) -> auto_started.
-
-        Bila operator mengubah mode lewat QGroundControl (AUTO/GUIDED),
-        navigator ikut start; kalau ke MANUAL/HOLD, navigator ikut hold.
-        """
+        """Mode HEARTBEAT -> peran navigator."""
         if self.mav is None:
             return
         mid = getattr(self.mav, "flight_mode_id", None)
         if mid is None:
             return
-        auto_ids = {int(getattr(self.config, "FLIGHT_MODE_AUTO", 10)),
-                    int(getattr(self.config, "FLIGHT_MODE_OFFBOARD", 15))}
-        hold_ids = {int(getattr(self.config, "FLIGHT_MODE_HOLD", 4)),
-                    int(getattr(self.config, "FLIGHT_MODE_MANUAL", 0))}
-        if mid in auto_ids:
-            self.auto_started = True
-        elif mid in hold_ids:
-            self.auto_started = False
+        guided = int(getattr(self.config, "FLIGHT_MODE_OFFBOARD", 15))
+        manual = int(getattr(self.config, "FLIGHT_MODE_MANUAL", 0))
+        if int(mid) == guided:
+            self._gate_role = "MISSION"
+        elif int(mid) == manual:
+            self._gate_role = "PASS"
+        else:
+            self._gate_role = "HOLD"
+        self.auto_started = self._gate_role == "MISSION"
+
+    def _zero_stop(self, hold_s=1.0):
+        """Thrust nol sesaat sebelum berhenti kirim setpoint.
+
+        Tanpa ini ArduRover memakai setpoint terakhir saat companion diam.
+        """
+        now = time.monotonic()
+        if self._zero_until <= now:
+            self._zero_until = now + max(0.0, float(hold_s))
+        if now <= self._zero_until:
+            self.output.send(0.0, self.current_yaw_rad or 0.0,
+                             force_send=True)
 
     def _set_state(self, new_state):
         if self.current_state == new_state:
@@ -1137,6 +1149,13 @@ class VisionNavigator:
         d["t0"] = now
 
     def run(self, data_signal):
+        """Bungkus _run: kamera & setpoint selalu dilepas saat keluar."""
+        try:
+            self._run(data_signal)
+        finally:
+            self._cleanup()
+
+    def _run(self, data_signal):
         log.info("Navigator PRODUKSI start (OFFBOARD via Pixhawk).")
         self.running = True
         self.yolo_worker.start()
@@ -1601,7 +1620,10 @@ class VisionNavigator:
                 op_mode = "FAILSAFE"
 
 
-            self.output.send(thrust, target_yaw, lateral_thrust=lateral)
+            if self._gate_role == "PASS":
+                self._zero_stop()
+            else:
+                self.output.send(thrust, target_yaw, lateral_thrust=lateral)
             self._visualize(frame, detections, best_gate, best_box,
                             jarak_ke_wp, box_distance, print_status)
             _t0 = time.monotonic() if self._fps_dbg_on else 0.0
@@ -1763,7 +1785,14 @@ class VisionNavigator:
 
     def _cleanup(self):
         log.info("Navigator cleanup...")
+        self._zero_stop(hold_s=2.0)
         self._stop_video_recording()
+        if self.cam is not None:
+            try:
+                self.cam.close()
+            except Exception:
+                pass
+        self.cap = None
         try:
             self.yolo_worker.stop_and_wait()
         except Exception:

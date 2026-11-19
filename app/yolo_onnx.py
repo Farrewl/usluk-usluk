@@ -99,11 +99,6 @@ class OnnxDetector:
         self.names = {int(k): str(v) for k, v in (names or {}).items()}
         self.iou_thres = float(iou_thres)
         self.net = cv2.dnn.readNetFromONNX(path)
-        try:
-            self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-            self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-        except Exception:
-            pass
 
     def __call__(self, frame, conf=0.25, imgsz=256, verbose=False, **kw):
         fh, fw = frame.shape[:2]

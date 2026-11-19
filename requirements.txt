@@ -15,7 +15,6 @@
 #   .venv/bin/python scripts/verify_env.py
 #
 # Catatan:
-#  - opencv WAJIB varian *headless* (GUI pakai PyQt5, bukan cv2 GUI);
 #    jangan ganti ke opencv-python biasa (duplikat .so Qt).
 #  - Ekspor .pt -> .onnx (sekali, saat training) butuh torch+ultralytics;
 #    itu langkah dev di mesin training, BUKAN dependensi runtime di kapal.
@@ -24,13 +23,13 @@
 # ============================================================
 
 # --- GUI (slim_map murni Qt) ---
-PyQt5==5.15.11
-PyQt5-Qt5==5.15.19
-PyQt5_sip==12.19.0
 
 # --- Visi komputer (ONNX via cv2.dnn; headless saja) ---
 opencv-python-headless==5.0.0.93
 numpy==2.5.3
+
+# --- WebSocket (telemetri & kontrol, tanpa GUI) ---
+websockets>=13.0
 
 # --- Telemetri & hardware ---
 pymavlink==2.4.49

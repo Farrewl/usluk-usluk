@@ -24,7 +24,7 @@ DATA_DIR = os.path.join(ROOT_DIR, "data")
 # Ditaruh di sini (bukan dibaca dari metadata .onnx) agar runtime tak butuh
 # paket `onnx`. Kunci = nama file di weights/.
 YOLO_NAMES = {
-    "buoy.onnx": {0: "green_ball", 1: "red_ball"},
+    "best5.onnx": {0: "green_ball", 1: "red_ball"},
     "box_hijau.onnx": {0: "Box Hijau", 1: "Buoy Hijau", 2: "Buoy Merah"},
     "best_blue_dark.onnx": {0: "Blue-Box"},
     "best_red_new.onnx": {0: "Red-Box"},
@@ -321,7 +321,7 @@ class Config:
         self.PERF_THREADS = int(saved.get('PERF_THREADS', 0) or 0)
 
 
-        self.MODEL_PATH = os.path.join(WEIGHTS_DIR, 'buoy.onnx')
+        self.MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best5.onnx')
         self.BOX_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'box_hijau.onnx')
         self.BLUE_BOX_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best_blue_dark.onnx')
         self.RED_DOCK_MODEL_PATH = os.path.join(WEIGHTS_DIR, 'best_red_new.onnx')

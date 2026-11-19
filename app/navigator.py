@@ -28,8 +28,6 @@ import time
 import cv2
 import numpy as np
 
-from PyQt5.QtCore import QThread, pyqtSignal
-
 from . import settings as cfg
 from . import aterkia_core as core
 from . import geotag
@@ -49,6 +47,8 @@ from .qgc_offboard import QgcOffboard
 from .output_link import OutputLink
 from .safety import SafetyManager
 from .yolo_worker import YoloWorker
+from .behavior import decide, GATE, BOX, DOCK
+from .bus import LatestPacket
 
 try:
     from . import mavlink_telemetry as mavlink_mod
@@ -179,6 +179,10 @@ class VisionNavigator:
         self._surface_taken = False
         self._under_taken = False
         self._dock_done = False
+        self._vision_phase = GATE
+        self._vision_passed = 0
+        self._search_dir = 1
+        self._search_t = time.monotonic()
 
 
         self.task_timer = 0.0
@@ -1046,6 +1050,45 @@ class VisionNavigator:
         self.retreat_step = core.sm_retreat_step_name(res["retreat_step"])
         self._set_state(core.sm_state_name(res["next"]))
 
+    def _step_vision(self, frame, sec, cam_st, man, qgc, op_mode, data_signal):
+        if self._vision_phase == GATE:
+            self.current_state = "WAYPOINT_NAV"
+            mid, model = self._MID_GATE, self.gate_model
+        elif self._vision_phase == BOX:
+            self.current_state = "APPROACH_BOX_SEARCH"
+            mid, model = self._MID_BOX, self.box_model
+        else:
+            self.current_state = "APPROACH_BLUE_BOX_ALIGN"
+            mid, model = self._MID_BLUE, self.blue_box_model
+        if op_mode == "AUTO":
+            self._request_detections(frame)
+        dets = self._detect(frame, model)
+        x, thrust, note = decide(self._vision_phase, dets, 
+                                 self.processing_width, self.processing_height, self.config)
+        if x is None:
+            now = time.monotonic()
+            if now - self._search_t > 4.0:
+                self._search_dir *= -1
+                self._search_t = now
+            yaw_cmd = (self.current_yaw_rad or 0.0) + self._search_dir * 0.4 * self._loop_dt
+        else:
+            raw = core.yaw_correction_c(x, self.image_center_x, 2.0, self.config.FOCAL_LENGTH_PX)
+            yaw_cmd = (self.current_yaw_rad or 0.0) + self._apply_yaw_pid(raw, self.config.VISION_P_GAIN)
+        self.output.send(thrust, yaw_cmd)
+        if self._vision_phase == GATE:
+            if note == "GATE pass":
+                self._vision_passed += 1
+                if self._vision_passed >= getattr(self.config, "VISION_GATES_BEFORE_BOX", 2):
+                    self._vision_phase = BOX
+        elif self._vision_phase == BOX and note == "BOX arrived":
+             self._take_photo(frame)
+             self._vision_phase = DOCK
+        elif self._vision_phase == DOCK and note == "DOCK arrived":
+             self.running = False
+        self._visualize(frame, dets, None, None, 0.0, 0.0, note)
+        self._emit(data_signal, frame, sec, cam_st, self.current_state,
+                   0.0, 0.0, 0.0, note, op_mode, man, qgc, "", {})
+
 
 
 
@@ -1244,6 +1287,10 @@ class VisionNavigator:
             now = time.time()
             n_wp = len(self.waypoints)
 
+            if not self.waypoints or getattr(self.config, "VISION_ONLY", False):
+                self._step_vision(frame, sec, cam_st, man, qgc, op_mode, data_signal)
+                deadline = pace_to_fps(deadline)
+                continue
 
             guard = core.sm_guard(
                 self.current_lat is not None and self.current_lon is not None,
@@ -1738,7 +1785,7 @@ class VisionNavigator:
         pkt["wp_total"] = len(self.waypoints or [])
         self._publish_monitor(pkt, frame, sec, state, op_mode, status)
         try:
-            data_signal.emit(pkt)
+            data_signal.put(pkt)
         except Exception:
             pass
 
@@ -1841,13 +1888,12 @@ class VisionNavigator:
         return self.cam.select_secondary(index)
 
 
-class NavigatorThread(QThread):
-    """Wrapper QThread untuk `VisionNavigator`."""
-
-    newData = pyqtSignal(dict)
+class NavigatorThread(threading.Thread):
+    """Thread runtime: navigator + slot telemetri untuk WebSocket."""
 
     def __init__(self, waypoints, parent=None):
-        super().__init__(parent)
+        super().__init__(daemon=True)
+        self.newData = LatestPacket()
         self.config = cfg.Config()
         self.navigator = VisionNavigator(self.config)
         self.navigator.waypoints = waypoints

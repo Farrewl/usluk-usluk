@@ -46,7 +46,7 @@ Lintasan & identitas tim diatur di `config/site.json` (+ `config/trackA.json`,
 `config/trackB.json`) — bisa juga ganti dari dropdown GUI / env
 `ASV_TRACK=A|B`. Model YOLO sudah ada di `weights/` (tak perlu unduh).
 
-**Hasil setup:** `.venv ±540 MB` (tanpa torch — hemat >2×), GUI PyQt, 4 model
+**Hasil setup:** `.venv ±540 MB` (tanpa torch — hemat >2×), 4 model
 YOLO ONNX, MAVLink, plus `core/libaterkia.so`. Rincian di `requirements.txt`.
 
 ---
@@ -167,7 +167,7 @@ eksplisit** (bukan angka palsu). Modul: `nav_math`, `gate_vision`, `fuzzy`,
 
 ### Model YOLO (ikut di repo)
 
-4 model ada di `weights/`: `buoy.onnx` (gate), `box_hijau.onnx` (kotak hijau),
+4 model ada di `weights/`: `best.pt` (gate), `box_hijau.onnx` (kotak hijau),
 `best_blue_dark.onnx` (kotak biru), `best_red_new.onnx` (docking merah).
 Runtime memakai ONNX via `cv2.dnn` (tanpa torch). **Tak perlu unduh.**
 
@@ -196,11 +196,12 @@ Dua file lintasan: `config/trackA.json` (start dock merah) dan
                                                └───────┴──▶ Pixhawk (OFFBOARD)
                                                                  │
                                                                  ▼
-                                                    GUI PyQt5 (video + peta + HUD)
+                                                    WebSocket telemetri (ws://<ip>:8765)
 ```
 
-- **GUI ↔ navigator**: satu proses, lewat sinyal PyQt (`newData`) — bukan
-  jaringan. Frame video dikirim sebagai numpy array lewat sinyal.
+- **navigator ↔ telemetri**: satu proses, lewat `LatestPacket` (slot
+  1 paket) — lalu dipancarkan ke klien WebSocket. Frame video dikirim
+  sebagai JPEG base64 lewat WebSocket.
 - **Pixhawk tetap pemilik ESC/mixer.** Companion hanya mengirim setpoint
   offboard (`SET_ATTITUDE_TARGET` + thrust). Mixer differential drive di C
   hanya untuk HUD/log/uji (`OutputLink.mixer_pwm()`), **tidak** dikirim ke
@@ -225,9 +226,6 @@ Dua file lintasan: `config/trackA.json` (start dock merah) dan
 | `pixhawk_check.py` | Cek parameter failsafe Pixhawk saat startup (spec per firmware) |
 | `monitor_export.py` | Ekspor **file bridge** → `data/monitor/` untuk web terpisah |
 | `telemetry_snapshot.py` | Rakit snapshot JSON lengkap (identitas…health, semua `params`) |
-| `settings_dialog.py` | Panel tuning GUI |
-| `slim_map.py` | Widget peta ringan (tile) |
-| `gui_theme.py` | Tema/style GUI |
 | `logutil.py` | Logger + throttle |
 | `aterkia_core.py` | ctypes wrapper ke `core/libaterkia.so`, tanpa logika |
 | `geotag.py` | Geo-tag foto (Day/Date/Time, koordinat DD & DM, SOG, COG) |
@@ -364,7 +362,7 @@ agar file tetap portable antar mesin). Nilai default = default kode saat
 
 | Parameter | Default | Misi |
 |---|---|---|
-| `MODEL_PATH` | `weights/buoy.onnx` | Gate (≥2 pelampung) |
+| `MODEL_PATH` | `weights/best.pt` | Gate (≥2 pelampung) |
 | `BOX_MODEL_PATH` | `weights/box_hijau.onnx` | Foto kotak hijau |
 | `BLUE_BOX_MODEL_PATH` | `weights/best_blue_dark.onnx` | Foto kotak biru (gelap) |
 | `RED_DOCK_MODEL_PATH` | `weights/best_red_new.onnx` | Docking kotak merah |

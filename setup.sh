@@ -26,7 +26,7 @@ else
 fi
 
 # 3. Install dependensi
-if .venv/bin/python -c "import cv2, serial, pymavlink; from PyQt5 import QtWidgets" 2>/dev/null; then
+if .venv/bin/python -c "import cv2, serial, pymavlink, websockets" 2>/dev/null; then
   echo "[i] Dependensi Python sudah terpasang."
 else
   echo "[2/2] Menginstal requirements.txt..."

@@ -1074,6 +1074,17 @@ class VisionNavigator:
         else:
             raw = core.yaw_correction_c(x, self.image_center_x, 2.0, self.config.FOCAL_LENGTH_PX)
             yaw_cmd = (self.current_yaw_rad or 0.0) + self._apply_yaw_pid(raw, self.config.VISION_P_GAIN)
+        batt = {}
+        if self.mav is not None and self.mav.has_battery:
+            batt = {"battery_pct": self.mav.battery_pct,
+                    "voltage_v": self.mav.voltage_v,
+                    "current_a": self.mav.current_a}
+        fs_reason = self.safety.check(batt.get("battery_pct"),
+                                    batt.get("voltage_v"))
+        if fs_reason:
+            thrust = 0.0
+            yaw_cmd = (self.current_yaw_rad or 0.0)
+            note = f"FAILSAFE ({fs_reason})"
         self.output.send(thrust, yaw_cmd)
         if self._vision_phase == GATE:
             if note == "GATE pass":

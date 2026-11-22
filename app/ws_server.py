@@ -29,7 +29,10 @@ def _encode_frame(frame, quality=60):
 
 async def _client(ws, slot, worker):
     while True:
-        pkt = await slot.get(timeout=0.2)
+        try:
+            pkt = await asyncio.to_thread(slot.get, 0.2)
+        except Exception:
+            pkt = None
         if pkt is None:
             continue
         out = {k: v for k, v in pkt.items()

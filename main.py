@@ -55,7 +55,7 @@ def main():
     finally:
         task.cancel()
         worker.stop()
-        worker.wait(5000)
+        worker.join(timeout=5.0)
         log.info("runtime berhenti bersih")
 
 

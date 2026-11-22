@@ -21,8 +21,8 @@ import os
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(APP_DIR)
 
-_LIB_CANDIDATES = (("libaterkia.dll", "aterkia_core.dll")
-                   if os.name == "nt" else ("libaterkia.so",))
+_LIB_CANDIDATES = (("libaterkia_rust.dll", "libaterkia.dll", "aterkia_core.dll")
+                   if os.name == "nt" else ("libaterkia_rust.so", "libaterkia.so"))
 _LIB_NAME = next(
     (n for n in _LIB_CANDIDATES
      if os.path.exists(os.path.join(ROOT_DIR, "core", n))),

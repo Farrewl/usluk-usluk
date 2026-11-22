@@ -18,7 +18,14 @@ SRC_C     := $(wildcard src/*.c)
 SRC_CPP   := src/gamepad_input.cpp
 LM        := -lm
 
-.PHONY: linux check clean
+.PHONY: linux windows rust check clean
+
+# --- Rust: core (via cargo) ---
+rust:
+	cd ../rust/asv-core && cargo build --release
+	cp ../rust/asv-core/target/release/libaterkia_core.so libaterkia_rust.so
+	@echo "Rust core build: OK -> libaterkia_rust.so"
+
 
 # --- Linux: shared object ELF ---
 linux: libaterkia.so

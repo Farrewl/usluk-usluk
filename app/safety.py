@@ -49,8 +49,8 @@ class SafetyManager:
     def check(self, battery_pct, voltage_v):
         """Evaluasi failsafe. Return "" bila aman, atau string alasan.
 
-        Caller MENIMPA gerak (thrust 0, yaw tetap) lalu menampilkan status
-        "FAILSAFE (alasan)" bila return bukan "".
+        Bila `config.COMPETITION_MODE` True, aksi saat failsafe = HOLD
+        (bukan RTL), sesuai aturan misi kompetisi.
         """
         if not getattr(self.config, "FAILSAFE_ENABLED", True):
             if self.failsafe_active:
@@ -86,11 +86,15 @@ class SafetyManager:
 
         if reason:
             if not self.failsafe_active:
-                log.warning("FAILSAFE AKTIF: %s — thrust 0 + coba RTL.", reason)
+                log.warning("FAILSAFE AKTIF: %s — thrust 0 + HOLD.", reason)
             self.failsafe_active = True
             self.failsafe_reason = reason
             if self.link is not None:
-                self.link.request_rtl()
+                # Misi kompetisi: failsafe WAJIB HOLD (bukan RTL).
+                if bool(getattr(self.config, "COMPETITION_MODE", False)):
+                    self.link.request_hold()
+                else:
+                    self.link.request_rtl()
             return reason
 
         if self.failsafe_active:

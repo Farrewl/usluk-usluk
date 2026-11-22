@@ -105,6 +105,7 @@ class VisionNavigator:
 
     def __init__(self, config):
         self.config = config
+        self.comp_mode = bool(getattr(config, "COMPETITION_MODE", False))
         self.waypoints = []
         self.current_waypoint_index = 0
         self.current_state = "WAITING_GPS"
@@ -1290,7 +1291,13 @@ class VisionNavigator:
                 op_mode = "MANUAL"
 
             self._sync_auto_from_qgc()
-            if not self.auto_started:
+
+            if self.comp_mode:
+                # Jalur manual RC / QGC / gamepad ditonaktifkan selama kompetisi.
+                man = dict(man, active=False)
+                qgc = dict(qgc, active=False)
+                op_mode = "AUTO" if self.auto_started else "HOLD"
+            elif not self.auto_started:
                 # Startup aman / operator tekan HOLD: kapal ditahan.
                 op_mode = "HOLD"
 

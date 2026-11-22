@@ -21,11 +21,17 @@ import os
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(APP_DIR)
 
-_LIB_NAME = "libaterkia.so"
+_LIB_CANDIDATES = (("libaterkia.dll", "aterkia_core.dll")
+                   if os.name == "nt" else ("libaterkia.so",))
+_LIB_NAME = next(
+    (n for n in _LIB_CANDIDATES
+     if os.path.exists(os.path.join(ROOT_DIR, "core", n))),
+    _LIB_CANDIDATES[0])
 _BUILD_HINT = (
-    "libaterkia.so belum di-build. Jalankan: "
-    "gcc -shared -fPIC -O2 -Icore/include core/src/*.c "
-    "-o core/libaterkia.so -lm")
+    _LIB_NAME + " belum di-build. Jalankan: "
+    "make -C core linux   # Linux\n"
+    "atau (MSYS2/MinGW): g++ -shared -fPIC -O2 -Icore/include "
+    "core/src/*.c -o core/libaterkia.dll -lm")
 LIB_PATH = os.path.join(ROOT_DIR, "core", _LIB_NAME)
 
 C_AVAILABLE = False

@@ -2,8 +2,10 @@
  * core/src/fuzzy.c — Controller fuzzy Sugeno singleton: gain P dinamis
  *
  * Port 1:1 dari app/fuzzy.py. Dua controller:
- *   - GATE    (buoy): 9 aturan, singleton 1.0 / 1.9 / 2.5, semesta jarak 0..2
- *   - DOCKING (box):  7 aturan, singleton 0.5 / 1.2 / 1.9, semesta jarak 0..10
+ *   - GATE    (buoy): 9 aturan, singleton 1.0 / 1.9 / 2.5.
+ *                      Semesta jarak 0..2 m (navigator meng-clamp ke 0..2;
+ *                      bahu kanan JAUH tetap 1 di atas 1 m).
+ *   - DOCKING (box):  7 aturan, singleton 0.5 / 1.2 / 1.9, semesta jarak 0..1
  *
  * Struktur tabel sama persis dengan app/fuzzy.py supaya mudah diaudit:
  *   GATE_DIST MF  = GATE_DIST_MF,  GATE_ERR MF  = GATE_ERROR_MF,
@@ -14,18 +16,24 @@
 /* ------------------------------------------------------------------------ */
 /* Fungsi keanggotaan trapesium (identik dengan app/fuzzy._trapmf)          */
 /* ------------------------------------------------------------------------ */
+/* Bahu: a==b = bahu kiri (1 untuk x<=b), c==d = bahu kanan (1 untuk x>=c). */
 
 static double fuzzy_trapmf(double x, double a, double b, double c, double d) {
-    if (x <= a || x >= d) {
-        return 0.0;
+    if (b > a) {
+        if (x <= a) {
+            return 0.0;
+        }
+        if (x < b) {
+            return (x - a) / (b - a);
+        }
     }
-    if (x < b) {
-        return (b > a) ? (x - a) / (b - a) : 1.0; /* aman b==a (bahu kiri) */
+    if (d > c && x > c) {
+        if (x >= d) {
+            return 0.0;
+        }
+        return (d - x) / (d - c);
     }
-    if (x <= c) {
-        return 1.0;
-    }
-    return (d > c) ? (d - x) / (d - c) : 1.0;     /* aman d==c (bahu kanan) */
+    return 1.0;
 }
 
 /* ------------------------------------------------------------------------ */

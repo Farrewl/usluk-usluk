@@ -26,6 +26,13 @@ linux: libaterkia.so
 libaterkia.so: $(SRC_C) $(SRC_CPP) $(wildcard include/*.h)
 	$(CXX) -shared -fPIC $(CFLAGS) $(CPPFLAGS) $(SRC_C) $(SRC_CPP) -o $@ $(LM)
 
+# --- Windows (MSYS2/MinGW): satu sumber C, output DLL ---
+.PHONY: windows
+windows: libaterkia.dll
+
+libaterkia.dll: $(SRC_C) $(SRC_CPP) $(wildcard include/*.h)
+	$(CXX) -shared -fPIC $(CFLAGS) $(CPPFLAGS) $(SRC_C) $(SRC_CPP) -o $@ $(LM)
+
 # --- Verifikasi ketat tanpa menghasilkan file ---
 check:
 	$(CC) -fsyntax-only $(CFLAGS) $(CPPFLAGS) src/*.c
@@ -33,4 +40,4 @@ check:
 	@echo "check: lolos -Wall -Wextra -Werror"
 
 clean:
-	rm -f libaterkia.so
+	rm -f libaterkia.so libaterkia.dll

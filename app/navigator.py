@@ -614,9 +614,12 @@ class VisionNavigator:
             self.config.FOCAL_LENGTH_PX)
         dynamic_p_gain = self.config.VISION_P_GAIN
         if FUZZY_ENABLED:
+            # MF fuzzy di-tune pada frame 640 px (center 320): error piksel
+            # dinormalisasi agar perilaku sama di resolusi lain.
+            err_px = abs(midpoint_x - self.image_center_x)
+            scale = 320.0 / max(1.0, self.image_center_x)
             dynamic_p_gain = core.fuzzy_gate_gain(
-                min(max(distance_m, 0.0), 2.0),
-                abs(midpoint_x - self.image_center_x))
+                min(max(distance_m, 0.0), 2.0), err_px * scale)
         self.last_used_p_gain = dynamic_p_gain
         return self._apply_yaw_pid(raw_correction_rad, dynamic_p_gain)
 

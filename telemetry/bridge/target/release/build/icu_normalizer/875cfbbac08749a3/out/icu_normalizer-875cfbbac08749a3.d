@@ -1,0 +1,10 @@
+/home/ibnu/Downloads/URDC/usluk-usluk/telemetry/bridge/target/release/build/icu_normalizer/875cfbbac08749a3/out/icu_normalizer-875cfbbac08749a3.d: /home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/lib.rs /home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/properties.rs /home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/provider.rs /home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/uts46.rs
+
+/home/ibnu/Downloads/URDC/usluk-usluk/telemetry/bridge/target/release/build/icu_normalizer/875cfbbac08749a3/out/libicu_normalizer-875cfbbac08749a3.rlib: /home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/lib.rs /home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/properties.rs /home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/provider.rs /home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/uts46.rs
+
+/home/ibnu/Downloads/URDC/usluk-usluk/telemetry/bridge/target/release/build/icu_normalizer/875cfbbac08749a3/out/libicu_normalizer-875cfbbac08749a3.rmeta: /home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/lib.rs /home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/properties.rs /home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/provider.rs /home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/uts46.rs
+
+/home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/lib.rs:
+/home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/properties.rs:
+/home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/provider.rs:
+/home/ibnu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/uts46.rs:
